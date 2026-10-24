@@ -34,6 +34,10 @@ pub struct UiState {
     pub overlay_opacity: f32,
     pub show_particles: bool,
     pub faucet_speed: f32,
+    /// Draw particles as a continuous liquid surface.
+    pub liquid: bool,
+    pub blob_size: f32,
+    pub surface_threshold: f32,
 }
 
 impl Default for UiState {
@@ -52,11 +56,19 @@ impl Default for UiState {
             overlay_opacity: 0.85,
             show_particles: true,
             faucet_speed: 2.0,
+            liquid: true,
+            blob_size: 3.0,
+            surface_threshold: 0.5,
         }
     }
 }
 
 impl UiState {
+    pub fn liquid_style(&self) -> Option<crate::render::LiquidStyle> {
+        self.liquid
+            .then_some(crate::render::LiquidStyle { splat_scale: self.blob_size, threshold: self.surface_threshold })
+    }
+
     pub fn gravity(&self) -> Vec2 {
         let a = self.gravity_deg.to_radians();
         Vec2::new(a.sin(), -a.cos()) * self.gravity_mag
@@ -99,6 +111,8 @@ pub fn panel(
             scene(ui, world, state);
             ui.separator();
             tools(ui, state);
+            ui.separator();
+            look(ui, state);
             ui.separator();
             overlay(ui, world, state, field_range);
             ui.separator();
@@ -212,6 +226,17 @@ fn tools(ui: &mut egui::Ui, state: &mut UiState) {
     }
 }
 
+fn look(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.checkbox(&mut state.liquid, "Liquid surface (L)")
+        .on_hover_text("Blend particles into a continuous surface instead of drawing discs.");
+    if state.liquid {
+        ui.add(egui::Slider::new(&mut state.blob_size, 1.5..=6.0).text("Blob size"))
+            .on_hover_text("Splat radius in particle radii. Bigger = smoother, blobbier.");
+        ui.add(egui::Slider::new(&mut state.surface_threshold, 0.15..=0.9).text("Surface level"))
+            .on_hover_text("Where the surface sits, as a fraction of interior density. Lower = puffier.");
+    }
+}
+
 /// Cycle None -> each field -> None.
 pub fn next_overlay(current: Option<&'static str>, fields: &[sim::FieldInfo]) -> Option<&'static str> {
     let next = match current.and_then(|key| fields.iter().position(|f| f.key == key)) {
@@ -272,7 +297,7 @@ fn solver(ui: &mut egui::Ui, world: &mut World, state: &mut UiState) {
 fn help(ui: &mut egui::Ui) {
     egui::CollapsingHeader::new("Controls").default_open(false).show(ui, |ui| {
         ui.label("Left drag: selected tool (Faucet pours along the drag)\nRight drag: push\nSpace: pause   S: step   R: reset\nP: next preset   N: next solver
-O: next overlay   H: hide/show particles\nLeft/Right arrows: tilt gravity");
+O: next overlay   H: hide/show particles\nL: liquid surface on/off\nLeft/Right arrows: tilt gravity");
     });
 }
 

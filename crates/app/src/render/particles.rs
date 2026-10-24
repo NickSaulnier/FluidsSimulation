@@ -15,21 +15,23 @@ pub struct ParticleLayer {
 }
 
 const VEC2_BYTES: u64 = size_of::<Vec2>() as u64;
+const POS_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x2];
+const VEL_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![1 => Float32x2];
 
 impl ParticleLayer {
+    /// Per-instance position and velocity buffers (locations 0 and 1), shared with any
+    /// other pipeline that draws one quad per particle.
+    pub const INSTANCE_LAYOUTS: [Option<wgpu::VertexBufferLayout<'static>>; 2] = [
+        Some(wgpu::VertexBufferLayout { array_stride: VEC2_BYTES, step_mode: wgpu::VertexStepMode::Instance, attributes: &POS_ATTRS }),
+        Some(wgpu::VertexBufferLayout { array_stride: VEC2_BYTES, step_mode: wgpu::VertexStepMode::Instance, attributes: &VEL_ATTRS }),
+    ];
+
     pub fn new(
         device: &wgpu::Device,
         layout: &wgpu::PipelineLayout,
         shader: &wgpu::ShaderModule,
         format: wgpu::TextureFormat,
     ) -> Self {
-        const POS_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x2];
-        const VEL_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![1 => Float32x2];
-        let instance_layout = |attributes: &'static [wgpu::VertexAttribute]| wgpu::VertexBufferLayout {
-            array_stride: VEC2_BYTES,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes,
-        };
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("particles"),
             layout: Some(layout),
@@ -37,7 +39,7 @@ impl ParticleLayer {
                 module: shader,
                 entry_point: Some("vs_particle"),
                 compilation_options: Default::default(),
-                buffers: &[Some(instance_layout(&POS_ATTRS)), Some(instance_layout(&VEL_ATTRS))],
+                buffers: &Self::INSTANCE_LAYOUTS,
             },
             fragment: Some(wgpu::FragmentState {
                 module: shader,
@@ -82,14 +84,19 @@ impl ParticleLayer {
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        if self.count == 0 {
-            return;
-        }
-        let bytes = u64::from(self.count) * VEC2_BYTES;
         pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.pos.slice(..bytes));
-        pass.set_vertex_buffer(1, self.vel.slice(..bytes));
-        pass.draw(0..4, 0..self.count);
+        let count = self.bind_instances(pass);
+        pass.draw(0..4, 0..count);
+    }
+
+    /// Bind the instance buffers for this frame's particles; returns the instance count.
+    pub fn bind_instances(&self, pass: &mut wgpu::RenderPass<'_>) -> u32 {
+        if self.count > 0 {
+            let bytes = u64::from(self.count) * VEC2_BYTES;
+            pass.set_vertex_buffer(0, self.pos.slice(..bytes));
+            pass.set_vertex_buffer(1, self.vel.slice(..bytes));
+        }
+        self.count
     }
 }
 

@@ -1,13 +1,16 @@
 //! Frame orchestration: shared uniforms, the domain backdrop, and the particle layer.
 
 mod colormap;
+mod liquid;
 mod overlay;
 mod particles;
 mod solid;
 
 use crate::view::View;
 use bytemuck::{Pod, Zeroable};
+pub use liquid::LiquidStyle;
 pub use overlay::FieldFrame;
+use liquid::LiquidLayer;
 use overlay::OverlayLayer;
 use particles::ParticleLayer;
 use solid::SolidLayer;
@@ -30,6 +33,10 @@ pub struct DrawOptions<'a> {
     pub world: &'a sim::World,
     pub field: Option<FieldFrame<'a>>,
     pub show_particles: bool,
+    /// Draw particles as a continuous liquid surface instead of discs.
+    pub liquid: Option<LiquidStyle>,
+    /// Surface size in pixels (the liquid pass renders offscreen at this size).
+    pub target_size: (u32, u32),
 }
 
 pub struct Renderer {
@@ -39,6 +46,7 @@ pub struct Renderer {
     particles: ParticleLayer,
     solid: SolidLayer,
     overlay: OverlayLayer,
+    liquid: LiquidLayer,
 }
 
 /// Colour of the letterbox area around the domain; reads as the walls' outer edge.
@@ -107,7 +115,8 @@ impl Renderer {
         let particles = ParticleLayer::new(device, &layout, &shader, format);
         let solid = SolidLayer::new(device, &bind_group_layout, &shader, format);
         let overlay = OverlayLayer::new(device, &bind_group_layout, format);
-        Self { globals, bind_group, backdrop, particles, solid, overlay }
+        let liquid = LiquidLayer::new(device, &bind_group_layout, format);
+        Self { globals, bind_group, backdrop, particles, solid, overlay, liquid }
     }
 
     pub fn render(
@@ -118,7 +127,7 @@ impl Renderer {
         target: &wgpu::TextureView,
         options: DrawOptions<'_>,
     ) -> Option<(f32, f32)> {
-        let DrawOptions { view, world, field, show_particles } = options;
+        let DrawOptions { view, world, field, show_particles, liquid, target_size } = options;
         let particles = world.solver.particles();
         let globals = Globals {
             scale: view.scale.into(),
@@ -133,6 +142,12 @@ impl Renderer {
         }
         self.solid.upload(device, queue, &world.scene.solid);
         let field_range = self.overlay.upload(device, queue, field);
+        let liquid = liquid.filter(|_| show_particles && particles.is_some());
+        if let Some(style) = liquid {
+            let splat_px = globals.radius * style.splat_scale * view.px_per_metre;
+            self.liquid.prepare(device, queue, target_size, style, splat_px);
+            self.liquid.splat(encoder, &self.bind_group, &self.particles);
+        }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("scene"),
@@ -148,7 +163,9 @@ impl Renderer {
         pass.set_pipeline(&self.backdrop);
         pass.draw(0..4, 0..1);
         self.overlay.draw(&mut pass);
-        if particles.is_some() && show_particles {
+        if liquid.is_some() {
+            self.liquid.composite(&mut pass);
+        } else if particles.is_some() && show_particles {
             self.particles.draw(&mut pass);
         }
         // Walls over particles: hides the sub-cell overlap grid solvers allow.

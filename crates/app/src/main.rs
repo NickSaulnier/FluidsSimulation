@@ -1,7 +1,8 @@
 //! Fluid toy: winit event loop, frame loop, egui panel, keyboard shortcuts.
 //!
 //! Keys: Space pause, S single step (while paused), R reset, P next preset,
-//! N next solver, O next overlay, H hide/show particles, Left/Right tilt gravity, Esc quit. (Not Tab: egui consumes it for
+//! N next solver, O next overlay, H hide/show particles, L liquid surface on/off,
+//! Left/Right tilt gravity, Esc quit. (Not Tab: egui consumes it for
 //! keyboard focus navigation.)
 
 mod gpu;
@@ -167,6 +168,7 @@ impl State {
             KeyCode::KeyP => self.world.load_preset((self.world.preset_index + 1) % PRESETS.len()),
             KeyCode::KeyO => self.ui.overlay = ui::next_overlay(self.ui.overlay, self.world.solver.fields()),
             KeyCode::KeyH => self.ui.show_particles = !self.ui.show_particles,
+            KeyCode::KeyL => self.ui.liquid = !self.ui.liquid,
             KeyCode::KeyN => {
                 self.world.switch_solver((self.world.solver_index + 1) % SOLVERS.len(), self.ui.keep_particles);
             }
@@ -253,7 +255,14 @@ impl State {
                 opacity: self.ui.overlay_opacity,
             })
         });
-        let options = render::DrawOptions { view, world: &self.world, field, show_particles: self.ui.show_particles };
+        let options = render::DrawOptions {
+            view,
+            world: &self.world,
+            field,
+            show_particles: self.ui.show_particles,
+            liquid: self.ui.liquid_style(),
+            target_size: (self.gpu.config.width, self.gpu.config.height),
+        };
         self.field_range = self.renderer.render(device, queue, &mut encoder, &target, options);
 
         // egui on top, in its own pass that keeps the scene underneath.

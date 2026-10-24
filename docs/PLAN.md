@@ -1102,6 +1102,23 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 6 (stretch 1) screen-space liquid findings:**
+  - **Normalise the splat field analytically.** With blob radius k × particle radius,
+    and every solver spacing particles at two radii, the interior sum of the
+    exp(−4(r/R)²) splats is ≈ 0.98 π k²/16, independent of resolution and zoom (checked
+    numerically against a lattice sum within 2%). One "surface level" threshold
+    therefore works for FLIP's 20k particles and PBF's 5k alike.
+  - **Smooth before you threshold or differentiate.** The raw splat sum ripples at
+    particle scale, which gave sparkling specular highlights, black specks and fizzy
+    edges. A 3×3 tent filter in the composite pass, with a step of half the blob's
+    on-screen radius (so it behaves the same at any zoom), fixed all three. Normals are
+    flattened deep inside the fluid so highlights stay at the surface.
+  - **Accumulate into `Rgba16Float`.** It's blendable, while 32-bit float needs an
+    optional feature. The splat pass renders into the texture the composite reads, so
+    the two passes need separate bind group layouts: a texture can't be both bound and
+    a render attachment in one pass.
+  - **PBF benefits most.** At about 5k particles it read as sparse dots; now it reads
+    as continuous water.
 - **Phase 5 findings:**
   - **Pressure in pascals is a free end-to-end test.** The stored pressure (a velocity
     change per unit time) converts as p = stored × ρ × h. In a resting tank it matches
