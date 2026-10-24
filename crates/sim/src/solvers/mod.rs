@@ -7,7 +7,7 @@ pub use flip::{Flip, FlipParams};
 pub use pbf::{Pbf, PbfParams};
 
 use crate::rng::SplitMix64;
-use crate::scene::{ForceBrush, Rect, Scene};
+use crate::scene::{ForceBrush, Rect, Scene, StepInput};
 use crate::solver::ParticleView;
 use glam::Vec2;
 use rayon::prelude::*;
@@ -73,6 +73,75 @@ pub(crate) fn resample(view: ParticleView<'_>, spacing: f32, size: Vec2, pos: &m
     } else {
         pos.extend_from_slice(view.pos);
         vel.extend_from_slice(view.vel);
+    }
+}
+
+/// Emitter and drain bookkeeping shared by the particle solvers.
+pub(crate) struct Emission {
+    /// Fractional particles owed per emitter (scene emitters first, then input's).
+    owed: Vec<f32>,
+    rng: SplitMix64,
+}
+
+impl Default for Emission {
+    fn default() -> Self {
+        Self { owed: Vec::new(), rng: SplitMix64::new(0xE417) }
+    }
+}
+
+impl Emission {
+    pub fn reset(&mut self) {
+        self.owed.clear();
+    }
+
+    /// Remove particles inside drains, then spawn from every emitter at this solver's
+    /// `spacing` (a continuous stream of width x speed per second). Returns
+    /// `(emitted, drained)`. Call before any per-particle scratch is sized.
+    pub fn apply(
+        &mut self,
+        scene: &Scene,
+        input: &StepInput,
+        dt: f32,
+        spacing: f32,
+        pos: &mut Vec<Vec2>,
+        vel: &mut Vec<Vec2>,
+    ) -> (usize, usize) {
+        let before = pos.len();
+        if !scene.drains.is_empty() {
+            let mut i = 0;
+            while i < pos.len() {
+                if scene.drains.iter().any(|d| d.contains(pos[i])) {
+                    pos.swap_remove(i);
+                    vel.swap_remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        let drained = before - pos.len();
+
+        let emitters: Vec<_> = scene.emitters.iter().chain(&input.emitters).copied().collect();
+        self.owed.resize(emitters.len(), 0.0);
+        let mut emitted = 0;
+        for (owed, e) in self.owed.iter_mut().zip(&emitters) {
+            *owed += e.width * e.speed / (spacing * spacing) * dt;
+            let wanted = owed.floor() as usize;
+            *owed -= wanted as f32;
+            let room = scene.max_particles.saturating_sub(pos.len());
+            let dir = e.dir.normalize_or(Vec2::NEG_Y);
+            let across = dir.perp();
+            for _ in 0..wanted.min(room) {
+                // Spread across the nozzle and along this substep's travel, so the stream
+                // has no visible banding.
+                let p = e.pos + across * (self.rng.next_f32() - 0.5) * e.width + dir * self.rng.next_f32() * e.speed * dt;
+                if scene.solid.distance(p) > 0.5 * spacing {
+                    pos.push(p);
+                    vel.push(dir * e.speed);
+                    emitted += 1;
+                }
+            }
+        }
+        (emitted, drained)
     }
 }
 

@@ -11,6 +11,8 @@ pub enum Tool {
     Push,
     PaintWall,
     EraseWall,
+    /// Hold to pour fluid from the cursor, in the direction the mouse moves.
+    Faucet,
 }
 
 pub struct UiState {
@@ -26,6 +28,12 @@ pub struct UiState {
     pub gravity_deg: f32,
     pub gravity_mag: f32,
     pub keep_particles: bool,
+    /// Key of the solver field shown as an overlay (by key, so it survives switching
+    /// to a solver that lists its fields in a different order, or not at all).
+    pub overlay: Option<&'static str>,
+    pub overlay_opacity: f32,
+    pub show_particles: bool,
+    pub faucet_speed: f32,
 }
 
 impl Default for UiState {
@@ -40,6 +48,10 @@ impl Default for UiState {
             gravity_deg: 0.0,
             gravity_mag: 9.81,
             keep_particles: true,
+            overlay: None,
+            overlay_opacity: 0.85,
+            show_particles: true,
+            faucet_speed: 2.0,
         }
     }
 }
@@ -69,7 +81,14 @@ pub struct Cursor {
     pub px_per_metre: f32,
 }
 
-pub fn panel(ui: &mut egui::Ui, world: &mut World, state: &mut UiState, perf: &Perf, cursor: Option<Cursor>) {
+pub fn panel(
+    ui: &mut egui::Ui,
+    world: &mut World,
+    state: &mut UiState,
+    perf: &Perf,
+    cursor: Option<Cursor>,
+    field_range: Option<(f32, f32)>,
+) {
     egui::Panel::right("controls").resizable(false).exact_size(PANEL_WIDTH).show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Fluid toy");
@@ -80,6 +99,8 @@ pub fn panel(ui: &mut egui::Ui, world: &mut World, state: &mut UiState, perf: &P
             scene(ui, world, state);
             ui.separator();
             tools(ui, state);
+            ui.separator();
+            overlay(ui, world, state, field_range);
             ui.separator();
             solver(ui, world, state);
             ui.separator();
@@ -95,6 +116,7 @@ pub fn panel(ui: &mut egui::Ui, world: &mut World, state: &mut UiState, perf: &P
             Tool::Push => egui::Color32::from_rgb(120, 200, 255),
             Tool::PaintWall => egui::Color32::from_rgb(230, 230, 230),
             Tool::EraseWall => egui::Color32::from_rgb(255, 120, 120),
+            Tool::Faucet => egui::Color32::from_rgb(120, 255, 170),
         };
         ui.painter()
             .circle_stroke(centre, state.brush_radius * c.px_per_metre / ppp, egui::Stroke::new(1.5, colour));
@@ -176,9 +198,53 @@ fn tools(ui: &mut egui::Ui, state: &mut UiState) {
         ui.radio_value(&mut state.tool, Tool::Push, "Push");
         ui.radio_value(&mut state.tool, Tool::PaintWall, "Paint wall");
         ui.radio_value(&mut state.tool, Tool::EraseWall, "Erase");
+        ui.radio_value(&mut state.tool, Tool::Faucet, "Faucet");
     });
     ui.add(egui::Slider::new(&mut state.brush_radius, 0.02..=0.3).text("Brush radius").suffix(" m").logarithmic(true));
-    ui.add(egui::Slider::new(&mut state.push_strength, 2.0..=80.0).text("Push strength").logarithmic(true));
+    match state.tool {
+        Tool::Push => {
+            ui.add(egui::Slider::new(&mut state.push_strength, 2.0..=80.0).text("Push strength").logarithmic(true));
+        }
+        Tool::Faucet => {
+            ui.add(egui::Slider::new(&mut state.faucet_speed, 0.2..=6.0).text("Faucet speed").suffix(" m/s"));
+        }
+        _ => {}
+    }
+}
+
+/// Cycle None -> each field -> None.
+pub fn next_overlay(current: Option<&'static str>, fields: &[sim::FieldInfo]) -> Option<&'static str> {
+    let next = match current.and_then(|key| fields.iter().position(|f| f.key == key)) {
+        None => 0,
+        Some(k) => k + 1,
+    };
+    fields.get(next).map(|f| f.key)
+}
+
+fn overlay(ui: &mut egui::Ui, world: &World, state: &mut UiState, range: Option<(f32, f32)>) {
+    let fields = world.solver.fields();
+    let current = state.overlay.and_then(|key| fields.iter().find(|f| f.key == key));
+    egui::ComboBox::from_id_salt("overlay")
+        .selected_text(current.map_or("No overlay", |f| f.label))
+        .width(220.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut state.overlay, None, "No overlay");
+            for f in fields {
+                ui.selectable_value(&mut state.overlay, Some(f.key), f.label);
+            }
+        });
+    if fields.is_empty() {
+        ui.weak(format!("{} has no grid fields", world.solver.name()));
+    }
+    if let (Some(field), Some((lo, hi))) = (current, range) {
+        ui.add(egui::Slider::new(&mut state.overlay_opacity, 0.1..=1.0).text("Opacity"));
+        let legend = match field.kind {
+            sim::FieldKind::Categorical => "grey: air   blue: fluid   dark: solid".to_string(),
+            _ => format!("{lo:.3} .. {hi:.3} {}", field.unit),
+        };
+        ui.label(legend);
+    }
+    ui.checkbox(&mut state.show_particles, "Show particles");
 }
 
 fn solver(ui: &mut egui::Ui, world: &mut World, state: &mut UiState) {
@@ -205,7 +271,8 @@ fn solver(ui: &mut egui::Ui, world: &mut World, state: &mut UiState) {
 
 fn help(ui: &mut egui::Ui) {
     egui::CollapsingHeader::new("Controls").default_open(false).show(ui, |ui| {
-        ui.label("Left drag: selected tool\nRight drag: push\nSpace: pause   S: step   R: reset\nP: next preset   N: next solver\nLeft/Right arrows: tilt gravity");
+        ui.label("Left drag: selected tool (Faucet pours along the drag)\nRight drag: push\nSpace: pause   S: step   R: reset\nP: next preset   N: next solver
+O: next overlay   H: hide/show particles\nLeft/Right arrows: tilt gravity");
     });
 }
 
@@ -246,5 +313,24 @@ impl sim::ParamVisitor for EguiParams<'_> {
     fn section(&mut self, title: &'static str) {
         self.ui.add_space(4.0);
         self.ui.strong(title);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_cycle_wraps_through_none() {
+        let fields = [
+            sim::FieldInfo { key: "a", label: "A", unit: "", kind: sim::FieldKind::Signed },
+            sim::FieldInfo { key: "b", label: "B", unit: "", kind: sim::FieldKind::Signed },
+        ];
+        assert_eq!(next_overlay(None, &fields), Some("a"));
+        assert_eq!(next_overlay(Some("a"), &fields), Some("b"));
+        assert_eq!(next_overlay(Some("b"), &fields), None);
+        // A key the current solver doesn't have (after switching) restarts the cycle.
+        assert_eq!(next_overlay(Some("gone"), &fields), Some("a"));
+        assert_eq!(next_overlay(None, &[]), None);
     }
 }

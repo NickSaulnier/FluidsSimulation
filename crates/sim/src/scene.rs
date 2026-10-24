@@ -34,6 +34,11 @@ pub struct Scene {
     pub solid: SolidMask,
     /// Regions filled with fluid on reset.
     pub fluid_blocks: Vec<Rect>,
+    pub emitters: Vec<Emitter>,
+    /// Particles entering these are removed.
+    pub drains: Vec<Rect>,
+    /// Emitters stop when a solver reaches this many particles.
+    pub max_particles: usize,
 }
 
 impl Scene {
@@ -44,6 +49,9 @@ impl Scene {
             gravity: Vec2::new(0.0, -9.81),
             solid: SolidMask::new_box(size, size.y / mask_cells_y as f32),
             fluid_blocks: Vec::new(),
+            emitters: Vec::new(),
+            drains: Vec::new(),
+            max_particles: 60_000,
         }
     }
 }
@@ -229,10 +237,25 @@ pub struct ForceBrush {
     pub strength: f32,
 }
 
+/// A nozzle producing a steady stream. It is specified as a volume flow (width x
+/// speed, m²/s), not a particle rate, so every solver emits the same amount of fluid
+/// at its own particle resolution.
+#[derive(Clone, Copy, Debug)]
+pub struct Emitter {
+    pub pos: Vec2,
+    /// Unit direction of the stream.
+    pub dir: Vec2,
+    pub speed: f32,
+    /// Width of the nozzle across the stream, metres.
+    pub width: f32,
+}
+
 /// Per-frame user interaction. Each solver interprets it in its own way.
 #[derive(Default, Clone, Debug)]
 pub struct StepInput {
     pub brushes: Vec<ForceBrush>,
+    /// Temporary emitters (the faucet tool), in addition to the scene's.
+    pub emitters: Vec<Emitter>,
 }
 
 #[cfg(test)]

@@ -15,6 +15,35 @@ pub struct ParticleView<'a> {
     pub radius: f32,
 }
 
+/// How a field's values should be read (and coloured).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldKind {
+    /// Centred on zero (e.g. divergence): diverging colour map, symmetric range.
+    Signed,
+    /// Zero or more (e.g. pressure, speed): sequential colour map from zero.
+    NonNegative,
+    /// Small integer categories (e.g. cell type).
+    Categorical,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FieldInfo {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub unit: &'static str,
+    pub kind: FieldKind,
+}
+
+/// Where a filled field sits in world space: sample (i, j) is centred at
+/// `origin + (i + 1/2, j + 1/2) * cell`, row-major with row 0 at the bottom.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldLayout {
+    pub nx: usize,
+    pub ny: usize,
+    pub origin: Vec2,
+    pub cell: f32,
+}
+
 /// How a solver is (re)initialised: from the scene's fluid blocks, or by adopting
 /// another solver's particles (switch solvers mid-splash).
 pub enum Init<'a> {
@@ -57,6 +86,19 @@ pub trait Solver: Send {
 
     /// `None` for pure grid solvers (stable fluids, LBM).
     fn particles(&self) -> Option<ParticleView<'_>>;
+
+    /// Grid fields this solver can show as overlays, indexed by position.
+    fn fields(&self) -> &'static [FieldInfo] {
+        &[]
+    }
+
+    /// Write field `index` into a caller-owned buffer (`NaN` = no data, drawn
+    /// transparent). A buffer rather than a borrowed slice because fields are often
+    /// derived (speed, divergence): the caller reuses its allocation, and the solver
+    /// needs no interior mutability to cache results.
+    fn fill_field(&self, _index: usize, _out: &mut Vec<f32>) -> Option<FieldLayout> {
+        None
+    }
 
     fn stats(&self) -> &Stats;
 }

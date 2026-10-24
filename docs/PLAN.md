@@ -1102,6 +1102,26 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 5 findings:**
+  - **Pressure in pascals is a free end-to-end test.** The stored pressure (a velocity
+    change per unit time) converts as p = stored × ρ × h. In a resting tank it matches
+    ρ·g·depth within 15% in every checked cell (`pressure_field_is_hydrostatic`). That
+    covers the projection, its warm start, and the units in one assertion.
+  - **Emitters are volume flows (width × speed), not particle rates,** so every solver
+    pours the same water at its own resolution. FLIP emits 5,120 particles/s and PBF
+    1,280/s from the same nozzle. The existing count invariant (initial + emitted −
+    drained) checked all of it unchanged.
+  - **Use overflow drains, not floor drains.** Drains at the bottom of the corners
+    emptied the fountain pool within seconds. Tall slots just above the surface hold
+    the level like an overflow pipe.
+  - **The divergence-before-projection overlay doubles as an alignment check.** In a
+    resting tank it's zero except for inflow along the floor and outflow under
+    obstacles, exactly on the solid boundaries, so any half-cell shift or y-flip would
+    show. Overlays sample nearest, one texel per cell.
+  - **Synthetic mouse input isn't reliable for testing egui widgets** (keys are).
+    Overlays got keyboard shortcuts (O cycles, H hides particles), which is better UX
+    anyway.
+  - **Skipped:** running the sim on its own thread. At 200+ fps it isn't needed.
 - **Phase 4 PBF findings:**
   - **The paper's constants aren't scale-free.** Its k = 0.1 (s_corr) and ε depend on
     its units and spacing. Used as-is in this normalisation, s_corr was about 100× the

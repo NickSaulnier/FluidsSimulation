@@ -17,6 +17,7 @@ pub struct Ballistic {
     restitution: f32,
     /// Fraction of tangential speed kept on bounce.
     friction: f32,
+    emission: super::Emission,
     stats: Stats,
 }
 
@@ -28,6 +29,7 @@ impl Default for Ballistic {
             radius: 0.0025,
             restitution: 0.6,
             friction: 0.98,
+            emission: super::Emission::default(),
             stats: Stats::default(),
         }
     }
@@ -76,6 +78,7 @@ impl Solver for Ballistic {
                 self.vel = view.vel.to_vec();
             }
         }
+        self.emission.reset();
         self.stats = Stats { particles: self.pos.len(), ..Stats::default() };
     }
 
@@ -88,6 +91,10 @@ impl Solver for Ballistic {
 
     fn step(&mut self, dt: f32, scene: &Scene, input: &StepInput) {
         let t0 = Instant::now();
+        let (emitted, drained) = self.emission.apply(scene, input, dt, 2.0 * self.radius, &mut self.pos, &mut self.vel);
+        self.stats.emitted += emitted;
+        self.stats.drained += drained;
+        self.stats.particles = self.pos.len();
         super::apply_brushes(&input.brushes, dt, &self.pos, &mut self.vel);
         for (p, v) in self.pos.iter_mut().zip(self.vel.iter_mut()) {
             *v += scene.gravity * dt;

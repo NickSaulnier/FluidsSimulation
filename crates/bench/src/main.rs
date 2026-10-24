@@ -107,6 +107,8 @@ fn apply_sets(world: &mut World, sets: &[String]) -> anyhow::Result<()> {
 /// Results of one run at one thread count.
 struct Run {
     particles: usize,
+    /// (final particles, emitted, drained) at the end of the run.
+    end: (usize, usize, usize),
     frame_ms: Vec<f64>,
     substeps: f64,
     dropped: f64,
@@ -146,6 +148,7 @@ fn run_once(args: &Args, solver: usize, preset: usize) -> anyhow::Result<Run> {
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     let mut run = Run {
         particles: world.initial_particles,
+        end: (0, 0, 0),
         frame_ms: Vec::with_capacity(args.frames as usize),
         substeps: 0.0,
         dropped: 0.0,
@@ -179,6 +182,8 @@ fn run_once(args: &Args, solver: usize, preset: usize) -> anyhow::Result<Run> {
             }
         }
     }
+    let stats = world.solver.stats();
+    run.end = (stats.particles, stats.emitted, stats.drained);
     let frames = f64::from(args.frames);
     run.substeps /= frames;
     run.phases.iter_mut().for_each(|(_, t)| *t /= frames);
@@ -236,6 +241,10 @@ fn run(args: &Args) -> anyhow::Result<()> {
         println!();
     }
     println!("(all times ms per frame)");
+    let (end, emitted, drained) = first.end;
+    if emitted + drained > 0 {
+        println!("particles at end: {end} ({emitted} emitted, {drained} drained)");
+    }
     for (name, worst) in &first.metrics {
         println!("worst {name}: {worst:.3}");
     }

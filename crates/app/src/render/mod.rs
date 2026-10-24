@@ -1,10 +1,14 @@
 //! Frame orchestration: shared uniforms, the domain backdrop, and the particle layer.
 
+mod colormap;
+mod overlay;
 mod particles;
 mod solid;
 
 use crate::view::View;
 use bytemuck::{Pod, Zeroable};
+pub use overlay::FieldFrame;
+use overlay::OverlayLayer;
 use particles::ParticleLayer;
 use solid::SolidLayer;
 
@@ -20,12 +24,21 @@ struct Globals {
     max_speed: f32,
 }
 
+/// Everything one frame draws.
+pub struct DrawOptions<'a> {
+    pub view: &'a View,
+    pub world: &'a sim::World,
+    pub field: Option<FieldFrame<'a>>,
+    pub show_particles: bool,
+}
+
 pub struct Renderer {
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     backdrop: wgpu::RenderPipeline,
     particles: ParticleLayer,
     solid: SolidLayer,
+    overlay: OverlayLayer,
 }
 
 /// Colour of the letterbox area around the domain; reads as the walls' outer edge.
@@ -93,7 +106,8 @@ impl Renderer {
 
         let particles = ParticleLayer::new(device, &layout, &shader, format);
         let solid = SolidLayer::new(device, &bind_group_layout, &shader, format);
-        Self { globals, bind_group, backdrop, particles, solid }
+        let overlay = OverlayLayer::new(device, &bind_group_layout, format);
+        Self { globals, bind_group, backdrop, particles, solid, overlay }
     }
 
     pub fn render(
@@ -102,9 +116,9 @@ impl Renderer {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-        view: &View,
-        world: &sim::World,
-    ) {
+        options: DrawOptions<'_>,
+    ) -> Option<(f32, f32)> {
+        let DrawOptions { view, world, field, show_particles } = options;
         let particles = world.solver.particles();
         let globals = Globals {
             scale: view.scale.into(),
@@ -118,6 +132,7 @@ impl Renderer {
             self.particles.upload(device, queue, p);
         }
         self.solid.upload(device, queue, &world.scene.solid);
+        let field_range = self.overlay.upload(device, queue, field);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("scene"),
@@ -132,10 +147,12 @@ impl Renderer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_pipeline(&self.backdrop);
         pass.draw(0..4, 0..1);
-        if particles.is_some() {
+        self.overlay.draw(&mut pass);
+        if particles.is_some() && show_particles {
             self.particles.draw(&mut pass);
         }
         // Walls over particles: hides the sub-cell overlap grid solvers allow.
         self.solid.draw(&mut pass);
+        field_range
     }
 }

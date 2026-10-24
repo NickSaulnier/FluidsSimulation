@@ -2,7 +2,7 @@
 
 use crate::ui::{Tool, UiState};
 use crate::view::View;
-use sim::{ForceBrush, StepInput, Vec2, World};
+use sim::{Emitter, ForceBrush, StepInput, Vec2, World};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// Cap on the push velocity derived from mouse motion, so a flick can't blow things up.
@@ -72,6 +72,12 @@ impl Input {
                     velocity,
                     strength: ui.push_strength,
                 });
+            }
+            Tool::Faucet => {
+                // Pour along the drag direction; straight down while holding still.
+                let motion = here - prev;
+                let dir = if motion.length() > 1e-3 { motion.normalize() } else { Vec2::NEG_Y };
+                input.emitters.push(Emitter { pos: here, dir, speed: ui.faucet_speed, width: ui.brush_radius });
             }
             Tool::PaintWall | Tool::EraseWall => {
                 // Stamp along the segment since last frame, so fast strokes leave no gaps.

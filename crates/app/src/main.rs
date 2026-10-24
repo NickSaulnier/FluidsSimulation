@@ -1,7 +1,7 @@
 //! Fluid toy: winit event loop, frame loop, egui panel, keyboard shortcuts.
 //!
 //! Keys: Space pause, S single step (while paused), R reset, P next preset,
-//! N next solver, Left/Right tilt gravity, Esc quit. (Not Tab: egui consumes it for
+//! N next solver, O next overlay, H hide/show particles, Left/Right tilt gravity, Esc quit. (Not Tab: egui consumes it for
 //! keyboard focus navigation.)
 
 mod gpu;
@@ -64,6 +64,9 @@ struct State {
     egui_pending_free: Vec<egui::TextureId>,
     world: World,
     ui: UiState,
+    /// Reused buffer for the overlay field, and the range it was last drawn with.
+    field_values: Vec<f32>,
+    field_range: Option<(f32, f32)>,
     input: Input,
     last_frame: Instant,
     perf: PerfCounter,
@@ -145,6 +148,8 @@ impl State {
             egui_pending_free: Vec::new(),
             world,
             ui: UiState::default(),
+            field_values: Vec::new(),
+            field_range: None,
             input: Input::default(),
             last_frame: Instant::now(),
             perf: PerfCounter::new(),
@@ -160,6 +165,8 @@ impl State {
             KeyCode::KeyS => self.ui.step_once = true,
             KeyCode::KeyR => self.world.reset(),
             KeyCode::KeyP => self.world.load_preset((self.world.preset_index + 1) % PRESETS.len()),
+            KeyCode::KeyO => self.ui.overlay = ui::next_overlay(self.ui.overlay, self.world.solver.fields()),
+            KeyCode::KeyH => self.ui.show_particles = !self.ui.show_particles,
             KeyCode::KeyN => {
                 self.world.switch_solver((self.world.solver_index + 1) % SOLVERS.len(), self.ui.keep_particles);
             }
@@ -185,8 +192,9 @@ impl State {
         let raw_input = self.egui_winit.take_egui_input(&self.window);
         let cursor = self.input.cursor().map(|pos| ui::Cursor { pos, px_per_metre: view.px_per_metre });
         let perf = self.perf.latest();
-        let (world, ui_state) = (&mut self.world, &mut self.ui);
-        let mut egui_out = self.egui_ctx.run_ui(raw_input, |ui| ui::panel(ui, world, ui_state, &perf, cursor));
+        let (world, ui_state, field_range) = (&mut self.world, &mut self.ui, self.field_range);
+        let mut egui_out =
+            self.egui_ctx.run_ui(raw_input, |ui| ui::panel(ui, world, ui_state, &perf, cursor, field_range));
         self.egui_winit.handle_platform_output(&self.window, std::mem::take(&mut egui_out.platform_output));
         self.apply_egui_textures(std::mem::take(&mut egui_out.textures_delta));
 
@@ -233,7 +241,20 @@ impl State {
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        self.renderer.render(device, queue, &mut encoder, &target, view, &self.world);
+        // The selected overlay field, looked up by key in whatever the solver offers.
+        let field = self.ui.overlay.and_then(|key| {
+            let fields = self.world.solver.fields();
+            let index = fields.iter().position(|f| f.key == key)?;
+            let layout = self.world.solver.fill_field(index, &mut self.field_values)?;
+            Some(render::FieldFrame {
+                layout,
+                values: &self.field_values,
+                kind: fields[index].kind,
+                opacity: self.ui.overlay_opacity,
+            })
+        });
+        let options = render::DrawOptions { view, world: &self.world, field, show_particles: self.ui.show_particles };
+        self.field_range = self.renderer.render(device, queue, &mut encoder, &target, options);
 
         // egui on top, in its own pass that keeps the scene underneath.
         let screen = egui_wgpu::ScreenDescriptor {

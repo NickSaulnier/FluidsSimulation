@@ -1,6 +1,6 @@
 //! Scene presets. Solver-agnostic: they describe geometry and fluid, nothing else.
 
-use crate::scene::{Rect, Scene};
+use crate::scene::{Emitter, Rect, Scene};
 use glam::Vec2;
 
 pub struct Preset {
@@ -12,6 +12,7 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Dam break", build: dam_break },
     Preset { name: "Double dam break", build: double_dam_break },
     Preset { name: "Tank with obstacle", build: tank_with_obstacle },
+    Preset { name: "Fountain", build: fountain },
 ];
 
 const DOMAIN: Vec2 = Vec2::new(2.0, 1.0);
@@ -29,6 +30,18 @@ pub fn tank_with_obstacle() -> Scene {
     s.fluid_blocks.push(Rect::new(Vec2::new(0.0, 0.0), Vec2::new(2.0, 0.42)));
     s.solid.paint_disc(Vec2::new(1.0, 0.42), 0.14, true);
     s.solid.update_derived();
+    s
+}
+
+/// A jet from the floor of a shallow pool. Overflow drains in both corners, just above
+/// the pool surface, hold the water level (and catch splashes running up the walls).
+pub fn fountain() -> Scene {
+    let mut s = Scene::empty_box(DOMAIN, MASK_CELLS_Y);
+    s.fluid_blocks.push(Rect::new(Vec2::new(0.0, 0.0), Vec2::new(2.0, 0.2)));
+    s.emitters.push(Emitter { pos: Vec2::new(1.0, 0.1), dir: Vec2::Y, speed: 3.2, width: 0.04 });
+    for x in [0.03, 1.91] {
+        s.drains.push(Rect::new(Vec2::new(x, 0.21), Vec2::new(x + 0.06, 0.6)));
+    }
     s
 }
 

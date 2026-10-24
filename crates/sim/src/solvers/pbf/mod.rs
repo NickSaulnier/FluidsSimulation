@@ -134,6 +134,7 @@ pub struct Pbf {
     /// `neighbours[i * MAX_NEIGHBOURS..][..neighbour_count[i]]`.
     neighbours: Vec<u32>,
     neighbour_count: Vec<u8>,
+    emission: super::Emission,
     stats: Stats,
 }
 
@@ -160,6 +161,7 @@ impl Pbf {
             bins: CellBins::default(),
             neighbours: Vec::new(),
             neighbour_count: Vec::new(),
+            emission: super::Emission::default(),
             stats: Stats::default(),
         }
     }
@@ -242,6 +244,7 @@ impl Solver for Pbf {
         self.lambda = vec![0.0; n];
         self.delta = vec![Vec2::ZERO; n];
         self.density = vec![0.0; n];
+        self.emission.reset();
         self.stats = Stats { particles: n, ..Stats::default() };
     }
 
@@ -254,6 +257,17 @@ impl Solver for Pbf {
         let mut timer = PhaseTimer::start();
         let k = self.kernels;
         let rho0 = self.rest_density;
+
+        let (emitted, drained) =
+            self.emission.apply(scene, input, dt, self.params.spacing, &mut self.pos, &mut self.vel);
+        self.stats.emitted += emitted;
+        self.stats.drained += drained;
+        let n = self.pos.len();
+        self.stats.particles = n;
+        self.pred.resize(n, Vec2::ZERO);
+        self.lambda.resize(n, 0.0);
+        self.delta.resize(n, Vec2::ZERO);
+        self.density.resize(n, 0.0);
 
         // Forces, then predict.
         super::apply_brushes(&input.brushes, dt, &self.pos, &mut self.vel);

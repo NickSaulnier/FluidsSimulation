@@ -39,6 +39,11 @@ impl PressureSolver {
     pub fn new(nx: usize, ny: usize) -> Self {
         Self { p: Grid2::new(nx, ny), next: Grid2::new(nx, ny), rhs: Grid2::new(nx, ny), diag: Grid2::new(nx, ny) }
     }
+
+    /// Minus the net outflow (m/s) of each fluid cell before the last projection.
+    pub fn rhs(&self) -> &Grid2<f32> {
+        &self.rhs
+    }
 }
 
 /// Project the grid velocity, warm-started from `pressure` (stored per unit time so the

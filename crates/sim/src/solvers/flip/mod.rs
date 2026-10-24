@@ -19,7 +19,8 @@ use crate::grid::mac::MacGrid;
 use crate::neighbors::CellBins;
 use crate::params::{FloatSpec, IntSpec, ParamVisitor, ToggleSpec};
 use crate::scene::{Scene, StepInput};
-use crate::solver::{Init, Metric, ParticleView, Solver, Stats};
+use crate::grid::mac::CellType;
+use crate::solver::{FieldInfo, FieldKind, FieldLayout, Init, Metric, ParticleView, Solver, Stats};
 use crate::timing::PhaseTimer;
 use glam::Vec2;
 use pressure::{Drift, PressureSolver};
@@ -130,6 +131,17 @@ const DRIFT_STIFFNESS: FloatSpec = FloatSpec {
 /// projection gives metres per second in any splash.
 const MAX_PRESSURE_RESIDUAL: f32 = 0.3;
 
+/// Water density, for reporting pressure in pascals.
+const RHO: f32 = 1000.0;
+
+const FIELDS: &[FieldInfo] = &[
+    FieldInfo { key: "pressure", label: "Pressure", unit: "Pa", kind: FieldKind::NonNegative },
+    FieldInfo { key: "divergence", label: "Divergence before projection", unit: "1/s", kind: FieldKind::Signed },
+    FieldInfo { key: "speed", label: "Speed", unit: "m/s", kind: FieldKind::NonNegative },
+    FieldInfo { key: "density", label: "Particles per cell", unit: "", kind: FieldKind::NonNegative },
+    FieldInfo { key: "cells", label: "Cell type (air / fluid / solid)", unit: "", kind: FieldKind::Categorical },
+];
+
 /// Particles are seeded on a jittered 2x2 sub-lattice per cell, aligned with the grid.
 /// A lattice whose spacing doesn't divide the cell size aliases against it, and the
 /// resulting beat pattern in the density field looks like compression to the drift
@@ -161,6 +173,7 @@ pub struct Flip {
     advect: Vec<Vec2>,
     radius: f32,
     bins: CellBins,
+    emission: super::Emission,
     stats: Stats,
 }
 
@@ -192,6 +205,7 @@ impl Flip {
             advect: Vec::new(),
             radius: 0.0,
             bins: CellBins::default(),
+            emission: super::Emission::default(),
             stats: Stats::default(),
         }
     }
@@ -275,6 +289,7 @@ impl Solver for Flip {
         // Interior density of the seeding lattice, in particles per cell.
         self.rest_density = (PARTICLES_PER_AXIS * PARTICLES_PER_AXIS) as f32;
         self.advect = vec![Vec2::ZERO; self.pos.len()];
+        self.emission.reset();
         self.stats = Stats { particles: self.pos.len(), ..Stats::default() };
     }
 
@@ -286,6 +301,11 @@ impl Solver for Flip {
     fn step(&mut self, dt: f32, scene: &Scene, input: &StepInput) {
         let mut timer = PhaseTimer::start();
         self.refresh_solids(scene);
+        let (emitted, drained) = self.emission.apply(scene, input, dt, 2.0 * self.radius, &mut self.pos, &mut self.vel);
+        self.stats.emitted += emitted;
+        self.stats.drained += drained;
+        self.stats.particles = self.pos.len();
+        self.advect.resize(self.pos.len(), Vec2::ZERO);
         super::apply_brushes(&input.brushes, dt, &self.pos, &mut self.vel);
 
         transfer::mark_cells(&mut self.grid, &self.solid, &self.pos);
@@ -373,6 +393,54 @@ impl Solver for Flip {
 
     fn particles(&self) -> Option<ParticleView<'_>> {
         Some(ParticleView { pos: &self.pos, vel: &self.vel, radius: self.radius })
+    }
+
+    fn fields(&self) -> &'static [FieldInfo] {
+        FIELDS
+    }
+
+    fn fill_field(&self, index: usize, out: &mut Vec<f32>) -> Option<FieldLayout> {
+        let g = &self.grid;
+        let (nx, ny, h) = (g.nx, g.ny, g.h);
+        out.clear();
+        out.resize(nx * ny, f32::NAN);
+        let fluid = |i: usize, j: usize| g.cell[(i, j)] == CellType::Fluid;
+        let mut each_fluid = |f: &dyn Fn(usize, usize) -> f32| {
+            for j in 0..ny {
+                for i in 0..nx {
+                    if fluid(i, j) {
+                        out[j * nx + i] = f(i, j);
+                    }
+                }
+            }
+        };
+        match FIELDS.get(index)?.key {
+            // Stored pressure is a velocity change per unit time; Δu = Δt Δp / (ρ h).
+            "pressure" => each_fluid(&|i, j| self.pressure[(i, j)] * RHO * h),
+            "divergence" => each_fluid(&|i, j| -self.pressure_solver.rhs()[(i, j)] / h),
+            "speed" => each_fluid(&|i, j| {
+                let u = 0.5 * (g.u[(i, j)] + g.u[(i + 1, j)]);
+                let v = 0.5 * (g.v[(i, j)] + g.v[(i, j + 1)]);
+                Vec2::new(u, v).length()
+            }),
+            "density" => {
+                let mut density = Grid2::new(nx, ny);
+                transfer::particle_density(&mut density, h, &self.pos);
+                for (o, &d) in out.iter_mut().zip(density.as_slice()) {
+                    *o = if d > 0.05 { d } else { f32::NAN };
+                }
+            }
+            _ => {
+                for (o, c) in out.iter_mut().zip(g.cell.as_slice()) {
+                    *o = match c {
+                        CellType::Air => 0.0,
+                        CellType::Fluid => 1.0,
+                        CellType::Solid => 2.0,
+                    };
+                }
+            }
+        }
+        Some(FieldLayout { nx, ny, origin: Vec2::ZERO, cell: h })
     }
 
     fn stats(&self) -> &Stats {
@@ -540,7 +608,7 @@ mod tests {
             velocity: Vec2::new(2.0, 0.0),
             strength: 30.0,
         };
-        let input = StepInput { brushes: vec![brush] };
+        let input = StepInput { brushes: vec![brush], ..StepInput::default() };
         let stepper = Stepper::default();
         for _ in 0..10 {
             stepper.advance(&mut flip, &scene, 1.0 / 60.0, &input);
@@ -549,6 +617,49 @@ mod tests {
             flip.pos.iter().zip(&flip.vel).filter(|(p, _)| p.distance(brush.pos) < 0.05).map(|(_, v)| *v).collect();
         let mean_vx = near.iter().map(|v| v.x).sum::<f32>() / near.len() as f32;
         assert!(mean_vx > 0.3, "mean x velocity under the brush is {mean_vx} m/s");
+    }
+
+    /// End-to-end check of the pressure solve, units and all: in a resting tank the
+    /// pressure field must match hydrostatics, p = ρ g (surface - y), in pascals.
+    #[test]
+    fn pressure_field_is_hydrostatic() {
+        let (scene, mut flip) = calm_tank();
+        let stepper = Stepper::default();
+        for _ in 0..120 {
+            stepper.advance(&mut flip, &scene, 1.0 / 60.0, &StepInput::default());
+        }
+        let mut field = Vec::new();
+        let layout = flip.fill_field(0, &mut field).unwrap();
+        let i = layout.nx / 2;
+        let column = |x0: f32| flip.pos.iter().filter(move |p| (p.x - x0).abs() < layout.cell).map(|p| p.y);
+        let x_centre = (i as f32 + 0.5) * layout.cell;
+        let surface = column(x_centre).fold(0.0, f32::max) + flip.radius;
+        let mut checked = 0;
+        for j in 0..layout.ny {
+            let p = field[j * layout.nx + i];
+            let y = (j as f32 + 0.5) * layout.cell;
+            let depth = surface - y;
+            if p.is_nan() || depth < 0.1 {
+                continue; // air, or too close to the surface for a meaningful ratio
+            }
+            let expected = RHO * 9.81 * depth;
+            assert!((p / expected - 1.0).abs() < 0.15, "y = {y:.3}: p = {p:.0} Pa, hydrostatic {expected:.0} Pa");
+            checked += 1;
+        }
+        assert!(checked >= 5, "only {checked} cells checked");
+    }
+
+    /// Fields line up with the grid: sample (i, j) sits at the centre of cell (i, j).
+    #[test]
+    fn field_layout_matches_the_grid() {
+        let (_, flip) = calm_tank();
+        let mut out = Vec::new();
+        for index in 0..FIELDS.len() {
+            let layout = flip.fill_field(index, &mut out).unwrap();
+            assert_eq!(layout, FieldLayout { nx: flip.grid.nx, ny: flip.grid.ny, origin: Vec2::ZERO, cell: flip.grid.h });
+            assert_eq!(out.len(), layout.nx * layout.ny);
+        }
+        assert!(flip.fill_field(FIELDS.len(), &mut out).is_none());
     }
 
     /// After a dam break settles, the fluid must still occupy about as many cells as it
