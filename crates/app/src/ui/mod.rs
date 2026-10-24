@@ -4,6 +4,7 @@
 //! is returned so the scene view is fitted into exactly that area.
 
 mod cheat_sheet;
+mod health;
 mod legend;
 mod panel;
 mod params;

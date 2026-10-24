@@ -1,18 +1,25 @@
 //! Renders solver parameters (from `Solver::visit_params`) as form rows, one rounded
 //! group per section. The visitor streams parameters one at a time, so each group is
 //! opened with `Frame::begin` at its section and closed at the next one (or `finish`).
+//! Advanced sections start collapsed: their header toggles them, and while collapsed
+//! their parameters are skipped.
 
+use super::theme;
 use super::widgets::{self, param_text};
+use egui::RichText;
+use egui_phosphor::regular as icon;
 
 pub struct EguiParams<'u> {
     ui: &'u mut egui::Ui,
     group: Option<egui::frame::Prepared>,
+    /// Inside a collapsed advanced section: don't draw parameters.
+    collapsed: bool,
     restart_requested: bool,
 }
 
 impl<'u> EguiParams<'u> {
     pub fn new(ui: &'u mut egui::Ui) -> Self {
-        Self { ui, group: None, restart_requested: false }
+        Self { ui, group: None, collapsed: false, restart_requested: false }
     }
 
     /// Close the last group. Returns whether a restart-on-change parameter changed.
@@ -26,6 +33,15 @@ impl<'u> EguiParams<'u> {
             group.end(self.ui);
             self.ui.add_space(4.0);
         }
+        self.collapsed = false;
+    }
+
+    fn open_group(&mut self) -> &mut egui::Ui {
+        self.close_group();
+        let group = self.group.insert(widgets::group_frame().begin(self.ui));
+        let ui = &mut group.content_ui;
+        ui.set_min_width(ui.available_width());
+        ui
     }
 
     /// Where rows go: the open group, or the panel itself before any section.
@@ -47,6 +63,9 @@ impl<'u> EguiParams<'u> {
 
 impl sim::ParamVisitor for EguiParams<'_> {
     fn float(&mut self, s: &sim::FloatSpec, v: &mut f32) {
+        if self.collapsed {
+            return;
+        }
         let (label, help) = param_text(s.label, s.help, s.restart);
         let r = widgets::row(self.target(), &label, &help, |ui| {
             ui.add(egui::Slider::new(v, s.range.clone()).logarithmic(s.log)).on_hover_text(&help)
@@ -55,6 +74,9 @@ impl sim::ParamVisitor for EguiParams<'_> {
     }
 
     fn int(&mut self, s: &sim::IntSpec, v: &mut u32) {
+        if self.collapsed {
+            return;
+        }
         let (label, help) = param_text(s.label, s.help, s.restart);
         let r = widgets::row(self.target(), &label, &help, |ui| {
             ui.add(egui::Slider::new(v, s.range.clone())).on_hover_text(&help)
@@ -63,15 +85,33 @@ impl sim::ParamVisitor for EguiParams<'_> {
     }
 
     fn toggle(&mut self, s: &sim::ToggleSpec, v: &mut bool) {
+        if self.collapsed {
+            return;
+        }
         widgets::toggle(self.target(), v, s.label, s.help);
     }
 
     fn section(&mut self, title: &'static str) {
-        self.close_group();
-        let mut group = widgets::group_frame().begin(self.ui);
-        let ui = &mut group.content_ui;
-        ui.set_min_width(ui.available_width());
-        widgets::header(ui, title);
-        self.group = Some(group);
+        widgets::header(self.open_group(), title);
+    }
+
+    fn advanced_section(&mut self, title: &'static str) {
+        let ui = self.open_group();
+        let id = ui.make_persistent_id(("advanced", title));
+        let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+        let caret = if open { icon::CARET_DOWN } else { icon::CARET_RIGHT };
+        let header = RichText::new(format!("{caret} {title}")).strong().size(14.0).color(theme::HEADER);
+        let clicked = ui
+            .horizontal(|ui| {
+                let clicked = ui.add(egui::Button::new(header).frame(false)).clicked();
+                ui.weak("advanced");
+                clicked
+            })
+            .inner;
+        if clicked {
+            open = !open;
+            ui.data_mut(|d| d.insert_temp(id, open));
+        }
+        self.collapsed = !open;
     }
 }

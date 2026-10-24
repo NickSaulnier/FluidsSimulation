@@ -38,4 +38,9 @@ pub trait ParamVisitor {
     fn toggle(&mut self, spec: &ToggleSpec, value: &mut bool);
     /// Optional grouping hint.
     fn section(&mut self, _title: &'static str) {}
+    /// A group of expert settings, which a UI may keep collapsed until asked for. The
+    /// settings themselves are ordinary; only the grouping is a hint.
+    fn advanced_section(&mut self, title: &'static str) {
+        self.section(title);
+    }
 }

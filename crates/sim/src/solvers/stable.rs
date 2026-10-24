@@ -474,13 +474,13 @@ impl Solver for StableFluids {
         v.float(&BUOYANCY, &mut p.buoyancy);
         v.float(&DISSIPATION, &mut p.dissipation);
         v.float(&VORTICITY, &mut p.vorticity);
-        v.section("Solver");
+        v.section("Resolution");
+        v.int(&CELLS_Y, &mut p.cells_y);
+        v.advanced_section("Solver");
         v.toggle(&MULTIGRID, &mut p.multigrid);
         v.int(&PRESSURE_ITERS, &mut p.pressure_iters);
         v.float(&OVER_RELAX, &mut p.over_relax);
         v.float(&CFL, &mut p.cfl);
-        v.section("Grid");
-        v.int(&CELLS_Y, &mut p.cells_y);
     }
 
     fn particles(&self) -> Option<ParticleView<'_>> {

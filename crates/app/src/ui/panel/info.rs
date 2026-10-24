@@ -1,6 +1,8 @@
 //! Info tab: performance, solver metrics, the step breakdown, and the shortcuts.
 
-use crate::ui::Frame;
+use crate::ui::health::{self, Health};
+use crate::ui::{Frame, theme};
+use egui::{Sense, vec2};
 use crate::ui::shortcuts::{Action, MOUSE, SHORTCUTS, tip};
 use crate::ui::widgets::{self, row};
 
@@ -17,13 +19,35 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
 
     widgets::group(ui, &format!("{} metrics", world.solver.name()), |ui| {
         for m in &stats.metrics {
-            row(ui, m.name, m.name, |ui| ui.label(format!("{:.3}", m.value)));
+            let help = match m.tolerance {
+                Some(t) => format!("{}: limit {t}", m.name),
+                None => m.name.to_string(),
+            };
+            row(ui, m.name, &help, |ui| {
+                if let Some(h) = Health::of(m) {
+                    health::dot(ui, h).on_hover_text(&help);
+                }
+                ui.label(format!("{:.3}", m.value));
+                if let Some(t) = m.tolerance {
+                    ui.weak(format!("/ {t}"));
+                }
+            });
         }
-        egui::CollapsingHeader::new("Step breakdown").default_open(false).show(ui, |ui| {
-            for (name, d) in &stats.phases {
-                row(ui, name, "", |ui| ui.label(format!("{:.2} ms", d.as_secs_f64() * 1e3)));
-            }
-        });
+    });
+
+    widgets::group(ui, "Step breakdown", |ui| {
+        let total: f64 = stats.phases.iter().map(|(_, d)| d.as_secs_f64()).sum();
+        for (name, d) in &stats.phases {
+            let share = if total > 0.0 { (d.as_secs_f64() / total) as f32 } else { 0.0 };
+            row(ui, name, "", |ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(80.0, 10.0), Sense::hover());
+                ui.painter().rect_filled(rect, 2, theme::GROUP_FILL.gamma_multiply(1.6));
+                let filled = egui::Rect::from_min_size(rect.min, vec2(rect.width() * share, rect.height()));
+                ui.painter().rect_filled(filled, 2, theme::ACCENT);
+                ui.label(format!("{:.2} ms", d.as_secs_f64() * 1e3));
+            });
+        }
+        row(ui, "total", "", |ui| ui.strong(format!("{:.2} ms", total * 1e3)));
     });
 
     widgets::group(ui, "Shortcuts", |ui| {

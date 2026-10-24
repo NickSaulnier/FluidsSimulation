@@ -481,10 +481,11 @@ impl Solver for Lbm {
         v.float(&TAU, &mut p.tau);
         v.float(&SMAGORINSKY, &mut p.smagorinsky);
         v.float(&BUOYANCY, &mut p.buoyancy);
-        v.section("Lattice");
+        v.section("Resolution");
+        v.int(&CELLS_Y, &mut p.cells_y);
+        v.advanced_section("Lattice");
         v.float(&LATTICE_PER_MPS, &mut p.lattice_per_mps);
         v.int(&MAX_STEPS, &mut p.max_steps_per_frame);
-        v.int(&CELLS_Y, &mut p.cells_y);
     }
 
     fn particles(&self) -> Option<ParticleView<'_>> {

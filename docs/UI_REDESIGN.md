@@ -1,6 +1,6 @@
 # UI Redesign Plan
 
-Status: **approved. Phases A–D done.** A: top bar, status bar, tabbed panel, canvas rect from egui, panel toggle. B: theme, aligned form rows and groups, restart markers; the panel widened to 320 pt so rows fit. C: one shortcut table (`ui/shortcuts.rs`) behind the key handler, tooltips, Info tab and an F1 cheat sheet; tools on 1–4, brush size on [ ]; Esc closes the sheet before quitting; particle-only settings hidden for grid solvers. D: Phosphor icon font (`egui-phosphor` =0.14.0; the regular variant embeds ~490 KB, not the ~50 KB subset estimated in §6); tool strip on the canvas (tools, brush size, the tool's own setting), with the scene fitted beside it; icon transport and panel buttons; tabs with icons; overlay colour-bar legend on the canvas, sampled from the overlay's own colour map. The §8 decisions were taken as recommended
+Status: **approved. Phases A–E done; F (optional extras) remains.** A: top bar, status bar, tabbed panel, canvas rect from egui, panel toggle. B: theme, aligned form rows and groups, restart markers; the panel widened to 320 pt so rows fit. C: one shortcut table (`ui/shortcuts.rs`) behind the key handler, tooltips, Info tab and an F1 cheat sheet; tools on 1–4, brush size on [ ]; Esc closes the sheet before quitting; particle-only settings hidden for grid solvers. D: Phosphor icon font (`egui-phosphor` =0.14.0; the regular variant embeds ~490 KB, not the ~50 KB subset estimated in §6); tool strip on the canvas (tools, brush size, the tool's own setting), with the scene fitted beside it; icon transport and panel buttons; tabs with icons; overlay colour-bar legend on the canvas, sampled from the overlay's own colour map. E: metric health dots (green, amber above 80% of the limit, red over it) in the Info tab and a clickable health summary in the status bar; step-breakdown bars; `ParamVisitor::advanced_section` in `sim`, with each solver's expert settings in collapsed groups. The §8 decisions were taken as recommended
 (2026-10-24):
 
 | # | Decision | Resolution |
@@ -229,7 +229,7 @@ Each phase leaves the app fully working and is committed separately.
 | **B. Forms and theme** (done) | Theme, two-column param grids, group frames, labelled dropdowns, restart markers. | P7 |
 | **C. Context and discoverability** (done) | Hide controls that don't apply. Music drop-zone state. Shortcut table, cheat sheet, shortcut hints in tooltips, new shortcuts. | P5, P6 |
 | **D. Canvas widgets** (done) | Tool strip with icon font, brush size, tool popover. Overlay colour-bar legend on the canvas. | P8 |
-| **E. Health and diagnostics** | Metric health dots, status-bar summary, step-breakdown bars. Advanced param sections (§5.2). | P9 |
+| **E. Health and diagnostics** (done) | Metric health dots, status-bar summary, step-breakdown bars. Advanced param sections (§5.2). | P9 |
 | **F. Optional extras** | Gravity compass, panel hide/show, persisting UI settings between runs **(?)**. | — |
 
 A and B are the bulk of the visible improvement. C–E are each a focused session.

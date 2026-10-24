@@ -150,15 +150,15 @@ impl PbfParams {
 
     /// Walk the parameters (the same list for every PBF implementation).
     pub fn visit(&mut self, v: &mut dyn ParamVisitor) {
-        v.section("Solver");
-        v.int(&ITERATIONS, &mut self.iterations);
-        v.float(&RELAXATION, &mut self.relaxation);
-        v.float(&MAX_DT, &mut self.max_dt);
         v.section("Fluid");
         v.float(&TENSILE_K, &mut self.tensile_k);
         v.float(&VISCOSITY, &mut self.viscosity);
         v.section("Resolution");
         v.float(&SPACING, &mut self.spacing);
+        v.advanced_section("Solver");
+        v.int(&ITERATIONS, &mut self.iterations);
+        v.float(&RELAXATION, &mut self.relaxation);
+        v.float(&MAX_DT, &mut self.max_dt);
     }
 
     /// Largest stable substep for the given peak particle speed.

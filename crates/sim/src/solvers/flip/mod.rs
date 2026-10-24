@@ -402,22 +402,22 @@ impl Solver for Flip {
 
     fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
         let p = &mut self.params;
-        v.section("Transfer");
+        v.section("Fluid");
         v.float(&FLIP_RATIO, &mut p.flip_ratio);
-        v.float(&CFL, &mut p.cfl);
-        v.section("Pressure");
+        v.section("Resolution");
+        v.int(&CELLS_Y, &mut p.cells_y);
+        v.advanced_section("Pressure solver");
         v.toggle(&USE_PCG, &mut p.use_pcg);
         v.toggle(&PCG_MULTIGRID, &mut p.pcg_multigrid);
         v.int(&PRESSURE_ITERS, &mut p.pressure_iters);
         v.float(&OVER_RELAX, &mut p.over_relax);
         v.float(&PCG_TOLERANCE, &mut p.pcg_tolerance);
-        v.section("Particles");
+        v.advanced_section("Stepping and particles");
+        v.float(&CFL, &mut p.cfl);
         v.toggle(&SEPARATE, &mut p.separate_particles);
         v.int(&SEPARATION_ITERS, &mut p.separation_iters);
         v.toggle(&DRIFT, &mut p.compensate_drift);
         v.float(&DRIFT_STIFFNESS, &mut p.drift_stiffness);
-        v.section("Grid");
-        v.int(&CELLS_Y, &mut p.cells_y);
     }
 
     fn particles(&self) -> Option<ParticleView<'_>> {
