@@ -15,6 +15,8 @@ pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
+    /// Non-sRGB view format of the swapchain, for egui (which blends in gamma space).
+    pub ui_format: wgpu::TextureFormat,
 }
 
 impl Gpu {
@@ -44,9 +46,13 @@ impl Gpu {
         let caps = surface.get_capabilities(&adapter);
         config.format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(config.format);
         config.present_mode = wgpu::PresentMode::AutoVsync;
+        let ui_format = config.format.remove_srgb_suffix();
+        if ui_format != config.format {
+            config.view_formats.push(ui_format);
+        }
         surface.configure(&device, &config);
 
-        Ok(Self { instance, window, surface, device, queue, config })
+        Ok(Self { instance, window, surface, device, queue, config, ui_format })
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {

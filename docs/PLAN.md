@@ -1014,6 +1014,14 @@ crate is why they can run at all.
   `PipelineLayoutDescriptor::bind_group_layouts` take `Option`s. Push constants are now
   `immediate_size`. Pipelines and passes have `multiview_mask`, and
   `RequestAdapterOptions` gained fields (use `..Default::default()`).
+- **egui 0.36 differences found in Phase 2.** `Context::run_ui(input, |ui| …)` replaces
+  `run(input, |ctx| …)`. Side panels are `egui::Panel::right(id).exact_size(w).show(ui, …)`.
+  The capture checks are `egui_wants_pointer_input()` / `egui_wants_keyboard_input()`.
+  `egui_wgpu::Renderer::new(device, format, RendererOptions)`. `TexturesDelta::set` holds
+  several deltas per texture, and **`TexturesDelta` panics if dropped undrained**, so
+  upload it every frame, even frames you skip drawing. egui also wants a non-sRGB
+  target: keep the sRGB surface for the scene, add `format.remove_srgb_suffix()` to
+  `SurfaceConfiguration::view_formats`, and give the egui pass a view in that format.
 
 **Window and surface plumbing**
 - Create the window inside `resumed`, not before `run_app`. Wrap it in `Arc<Window>` and
@@ -1073,6 +1081,12 @@ crate is why they can run at all.
      FLIP loses 60–70% of its volume over 10 s. With it, volume holds within a few
      percent and drift compensation becomes unnecessary. So separation and
      `neighbors.rs` moved from Phases 2 and 4 into Phase 1.
+- **Curved obstacles and grid collisions (Phase 2).** Face clamps bound penetration by
+  one radius only for axis-aligned walls. Where a curved wall cuts an open cell's corner,
+  particles can sit about 0.7 cells deep. FLIP's collision now also caps SDF
+  penetration at one radius. That empties only cell corners, so it doesn't bring back
+  the empty-cell leak. The every-solver × every-preset test caught it on the new
+  obstacle preset.
 - **The SDF can only measure penetration depth inside a wall up to about half the wall's
   thickness** (it is sampled at cell centres). Phase 0 hit this: with 1-cell border walls
   and 1.5 cells of travel per substep, particles that overshot were pushed out only part

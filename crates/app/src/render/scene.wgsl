@@ -65,3 +65,33 @@ fn fs_particle(i: ParticleOut) -> @location(0) vec4f {
     let fast = vec3f(0.7, 0.9, 1.0);
     return vec4f(mix(slow, fast, t), alpha);
 }
+
+// ---- Walls: the solid mask texture over the domain --------------------------------
+
+@group(1) @binding(0) var solid_tex: texture_2d<f32>;
+@group(1) @binding(1) var solid_sampler: sampler;
+
+struct SolidOut {
+    @builtin(position) clip: vec4f,
+    @location(0) uv: vec2f,
+};
+
+@vertex
+fn vs_solid(@builtin(vertex_index) vi: u32) -> SolidOut {
+    let uv = corner01(vi);
+    var o: SolidOut;
+    o.clip = to_clip(uv * g.domain);
+    o.uv = uv;   // row 0 of the mask is the floor, so v = y / height directly
+    return o;
+}
+
+@fragment
+fn fs_solid(i: SolidOut) -> @location(0) vec4f {
+    let occupancy = textureSample(solid_tex, solid_sampler, i.uv).r;
+    // Bilinear filtering plus a narrow threshold turns blocky cells into smooth edges.
+    let alpha = smoothstep(0.4, 0.6, occupancy);
+    if alpha <= 0.0 {
+        discard;
+    }
+    return vec4f(0.10, 0.11, 0.13, alpha);
+}

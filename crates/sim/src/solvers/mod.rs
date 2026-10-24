@@ -5,7 +5,7 @@ pub use ballistic::Ballistic;
 pub use flip::{Flip, FlipParams};
 
 use crate::rng::SplitMix64;
-use crate::scene::{Rect, Scene};
+use crate::scene::{ForceBrush, Rect, Scene};
 use glam::Vec2;
 
 /// Seed particles on a jittered lattice inside the scene's fluid blocks, skipping solids.
@@ -21,6 +21,21 @@ pub(crate) fn seed_particles(scene: &Scene, spacing: f32, jitter: f32, out: &mut
                 if scene.solid.distance(p) > 0.5 * spacing {
                     out.push(p);
                 }
+            }
+        }
+    }
+}
+
+/// Blend particle velocities toward each brush's velocity, with linear falloff.
+pub(crate) fn apply_brushes(brushes: &[ForceBrush], dt: f32, pos: &[Vec2], vel: &mut [Vec2]) {
+    for b in brushes {
+        let r2 = b.radius * b.radius;
+        for (p, v) in pos.iter().zip(vel.iter_mut()) {
+            let d2 = p.distance_squared(b.pos);
+            if d2 < r2 {
+                let falloff = 1.0 - d2.sqrt() / b.radius;
+                let blend = (b.strength * falloff * dt).min(1.0);
+                *v += (b.velocity - *v) * blend;
             }
         }
     }

@@ -218,12 +218,14 @@ fn chamfer(occ: &Grid2<u8>, is_source: impl Fn(u8) -> bool) -> Vec<f32> {
     d
 }
 
-/// A circular "push" applied by the mouse: blends velocities inside `radius` toward `velocity`.
+/// A circular "push" applied by the mouse: velocities inside `radius` are pulled toward
+/// `velocity` at `strength` per second, fading linearly to zero at the rim.
 #[derive(Clone, Copy, Debug)]
 pub struct ForceBrush {
     pub pos: Vec2,
     pub radius: f32,
     pub velocity: Vec2,
+    /// Blend rate in 1/s.
     pub strength: f32,
 }
 

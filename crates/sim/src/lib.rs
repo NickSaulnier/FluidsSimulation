@@ -6,6 +6,7 @@
 pub mod grid;
 pub mod invariants;
 pub mod neighbors;
+pub mod params;
 pub mod presets;
 pub mod registry;
 pub mod rng;
@@ -17,6 +18,7 @@ pub mod timing;
 pub mod world;
 
 pub use glam::Vec2;
+pub use params::{FloatSpec, IntSpec, ParamVisitor, ToggleSpec};
 pub use presets::{PRESETS, Preset};
 pub use registry::{SOLVERS, SolverEntry};
 pub use scene::{ForceBrush, Rect, Scene, SolidMask, StepInput};

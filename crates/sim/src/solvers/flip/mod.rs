@@ -17,6 +17,7 @@ mod transfer;
 use crate::grid::Grid2;
 use crate::grid::mac::MacGrid;
 use crate::neighbors::CellBins;
+use crate::params::{FloatSpec, IntSpec, ParamVisitor, ToggleSpec};
 use crate::scene::{Scene, StepInput};
 use crate::solver::{Init, Metric, ParticleView, Solver, Stats};
 use crate::timing::PhaseTimer;
@@ -58,6 +59,70 @@ impl Default for FlipParams {
         }
     }
 }
+
+const CELLS_Y: IntSpec = IntSpec {
+    key: "cells_y",
+    label: "Grid cells (height)",
+    range: 16..=200,
+    restart: true,
+    help: "Resolution. Particle count grows with its square (4 per cell).",
+};
+const FLIP_RATIO: FloatSpec = FloatSpec {
+    key: "flip_ratio",
+    label: "PIC/FLIP blend",
+    range: 0.0..=1.0,
+    log: false,
+    restart: false,
+    help: "0 = PIC (smooth, viscous), 1 = FLIP (lively, noisy).",
+};
+const PRESSURE_ITERS: IntSpec = IntSpec {
+    key: "pressure_iters",
+    label: "Pressure iterations",
+    range: 1..=500,
+    restart: false,
+    help: "Gauss-Seidel sweeps per substep (warm-started, so 30-50 is usually plenty).",
+};
+const OVER_RELAX: FloatSpec = FloatSpec {
+    key: "over_relax",
+    label: "Over-relaxation",
+    range: 1.0..=1.98,
+    log: false,
+    restart: false,
+    help: "SOR factor. Higher converges faster until it doesn't.",
+};
+const CFL: FloatSpec = FloatSpec {
+    key: "cfl",
+    label: "CFL (cells per substep)",
+    range: 0.25..=4.0,
+    log: true,
+    restart: false,
+    help: "Max particle travel per substep. Lower = more substeps, more stable.",
+};
+const SEPARATE: ToggleSpec = ToggleSpec {
+    key: "separate_particles",
+    label: "Separate particles",
+    help: "Push overlapping particles apart. Keeps volume; without it FLIP compacts.",
+};
+const SEPARATION_ITERS: IntSpec = IntSpec {
+    key: "separation_iters",
+    label: "Separation passes",
+    range: 1..=8,
+    restart: false,
+    help: "Relaxation passes per substep.",
+};
+const DRIFT: ToggleSpec = ToggleSpec {
+    key: "compensate_drift",
+    label: "Drift compensation",
+    help: "Extra outflow from over-dense cells. Mostly redundant with separation.",
+};
+const DRIFT_STIFFNESS: FloatSpec = FloatSpec {
+    key: "drift_stiffness",
+    label: "Drift stiffness",
+    range: 0.0..=1.0,
+    log: false,
+    restart: false,
+    help: "Fraction of excess density removed per substep.",
+};
 
 /// Particles are seeded on a jittered 2x2 sub-lattice per cell, aligned with the grid.
 /// A lattice whose spacing doesn't divide the cell size aliases against it, and the
@@ -208,9 +273,10 @@ impl Solver for Flip {
         self.params.cfl * self.grid.h / max_speed.max(1e-3)
     }
 
-    fn step(&mut self, dt: f32, scene: &Scene, _input: &StepInput) {
+    fn step(&mut self, dt: f32, scene: &Scene, input: &StepInput) {
         let mut timer = PhaseTimer::start();
         self.refresh_solids(scene);
+        super::apply_brushes(&input.brushes, dt, &self.pos, &mut self.vel);
 
         transfer::mark_cells(&mut self.grid, &self.solid, &self.pos);
         transfer::particles_to_grid(&mut self.grid, &mut self.weights, &self.pos, &self.vel);
@@ -265,6 +331,23 @@ impl Solver for Flip {
 
         self.stats.phases = timer.finish();
         self.stats.metrics = vec![Metric { name: "pressure residual (1/s)", value: residual, tolerance: None }];
+    }
+
+    fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
+        let p = &mut self.params;
+        v.section("Transfer");
+        v.float(&FLIP_RATIO, &mut p.flip_ratio);
+        v.float(&CFL, &mut p.cfl);
+        v.section("Pressure");
+        v.int(&PRESSURE_ITERS, &mut p.pressure_iters);
+        v.float(&OVER_RELAX, &mut p.over_relax);
+        v.section("Particles");
+        v.toggle(&SEPARATE, &mut p.separate_particles);
+        v.int(&SEPARATION_ITERS, &mut p.separation_iters);
+        v.toggle(&DRIFT, &mut p.compensate_drift);
+        v.float(&DRIFT_STIFFNESS, &mut p.drift_stiffness);
+        v.section("Grid");
+        v.int(&CELLS_Y, &mut p.cells_y);
     }
 
     fn particles(&self) -> Option<ParticleView<'_>> {
@@ -370,6 +453,47 @@ mod tests {
         let y1 = mean_y(&flip);
         assert!(max_speed < 0.1, "max speed {max_speed} m/s after 2 s at rest");
         assert!((y1 - y0).abs() / y0 < 0.02, "mean height {y0} -> {y1}");
+    }
+
+    fn calm_tank() -> (Scene, Flip) {
+        let mut scene = Scene::empty_box(Vec2::new(1.0, 1.0), 64);
+        scene.fluid_blocks.push(Rect::new(Vec2::ZERO, Vec2::new(1.0, 0.5)));
+        let mut flip = Flip::with_params(FlipParams { cells_y: 40, ..FlipParams::default() });
+        flip.reset(&scene, Init::FromScene);
+        (scene, flip)
+    }
+
+    #[test]
+    fn painting_a_wall_through_fluid_ejects_particles() {
+        let (mut scene, mut flip) = calm_tank();
+        let stepper = Stepper::default();
+        scene.solid.paint_disc(Vec2::new(0.5, 0.25), 0.12, true);
+        scene.solid.update_derived();
+        for _ in 0..30 {
+            stepper.advance(&mut flip, &scene, 1.0 / 60.0, &StepInput::default());
+        }
+        let inside = flip.pos.iter().filter(|&&p| scene.solid.distance(p) < -1.25 * flip.radius).count();
+        assert_eq!(inside, 0, "{inside} particles still inside the painted wall");
+    }
+
+    #[test]
+    fn push_brush_moves_fluid() {
+        let (scene, mut flip) = calm_tank();
+        let brush = crate::scene::ForceBrush {
+            pos: Vec2::new(0.5, 0.25),
+            radius: 0.1,
+            velocity: Vec2::new(2.0, 0.0),
+            strength: 30.0,
+        };
+        let input = StepInput { brushes: vec![brush] };
+        let stepper = Stepper::default();
+        for _ in 0..10 {
+            stepper.advance(&mut flip, &scene, 1.0 / 60.0, &input);
+        }
+        let near: Vec<Vec2> =
+            flip.pos.iter().zip(&flip.vel).filter(|(p, _)| p.distance(brush.pos) < 0.05).map(|(_, v)| *v).collect();
+        let mean_vx = near.iter().map(|v| v.x).sum::<f32>() / near.len() as f32;
+        assert!(mean_vx > 0.3, "mean x velocity under the brush is {mean_vx} m/s");
     }
 
     /// After a dam break settles, the fluid must still occupy about as many cells as it

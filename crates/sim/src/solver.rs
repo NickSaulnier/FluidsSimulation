@@ -1,5 +1,6 @@
 //! The solver abstraction. The app, renderer and bench only ever see `dyn Solver`.
 
+use crate::params::ParamVisitor;
 use crate::scene::{Scene, StepInput};
 use glam::Vec2;
 use std::time::Duration;
@@ -49,6 +50,10 @@ pub trait Solver: Send {
     fn max_dt(&self, scene: &Scene) -> f32;
 
     fn step(&mut self, dt: f32, scene: &Scene, input: &StepInput);
+
+    /// Walk the tunable parameters (see `params`). A parameter whose spec has
+    /// `restart: true` only takes effect after the next `reset`.
+    fn visit_params(&mut self, visitor: &mut dyn ParamVisitor);
 
     /// `None` for pure grid solvers (stable fluids, LBM).
     fn particles(&self) -> Option<ParticleView<'_>>;

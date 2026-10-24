@@ -1,10 +1,12 @@
 //! Frame orchestration: shared uniforms, the domain backdrop, and the particle layer.
 
 mod particles;
+mod solid;
 
 use crate::view::View;
 use bytemuck::{Pod, Zeroable};
 use particles::ParticleLayer;
+use solid::SolidLayer;
 
 /// Must match `Globals` in scene.wgsl byte for byte (32 bytes, a multiple of 16 as
 /// uniform buffers require).
@@ -23,6 +25,7 @@ pub struct Renderer {
     bind_group: wgpu::BindGroup,
     backdrop: wgpu::RenderPipeline,
     particles: ParticleLayer,
+    solid: SolidLayer,
 }
 
 /// Colour of the letterbox area around the domain; reads as the walls' outer edge.
@@ -89,7 +92,8 @@ impl Renderer {
         });
 
         let particles = ParticleLayer::new(device, &layout, &shader, format);
-        Self { globals, bind_group, backdrop, particles }
+        let solid = SolidLayer::new(device, &bind_group_layout, &shader, format);
+        Self { globals, bind_group, backdrop, particles, solid }
     }
 
     pub fn render(
@@ -113,6 +117,7 @@ impl Renderer {
         if let Some(p) = particles {
             self.particles.upload(device, queue, p);
         }
+        self.solid.upload(device, queue, &world.scene.solid);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("scene"),
@@ -130,5 +135,7 @@ impl Renderer {
         if particles.is_some() {
             self.particles.draw(&mut pass);
         }
+        // Walls over particles: hides the sub-cell overlap grid solvers allow.
+        self.solid.draw(&mut pass);
     }
 }

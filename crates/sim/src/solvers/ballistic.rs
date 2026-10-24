@@ -3,6 +3,7 @@
 //! No fluid physics at all. It exists to exercise the trait, stepper, renderer and
 //! invariant checks before any fluid math does, and it stays useful as a fixture.
 
+use crate::params::{FloatSpec, ParamVisitor};
 use crate::scene::{Scene, StepInput};
 use crate::solver::{Init, ParticleView, Solver, Stats};
 use glam::Vec2;
@@ -32,6 +33,31 @@ impl Default for Ballistic {
     }
 }
 
+const RADIUS: FloatSpec = FloatSpec {
+    key: "radius",
+    label: "Particle radius (m)",
+    range: 0.001..=0.01,
+    log: true,
+    restart: true,
+    help: "Also sets the seeding spacing, so it changes the particle count.",
+};
+const RESTITUTION: FloatSpec = FloatSpec {
+    key: "restitution",
+    label: "Bounciness",
+    range: 0.0..=1.0,
+    log: false,
+    restart: false,
+    help: "Fraction of normal speed kept on impact.",
+};
+const FRICTION: FloatSpec = FloatSpec {
+    key: "friction",
+    label: "Slipperiness",
+    range: 0.0..=1.0,
+    log: false,
+    restart: false,
+    help: "Fraction of tangential speed kept on impact (1 = frictionless).",
+};
+
 impl Solver for Ballistic {
     fn name(&self) -> &'static str {
         "Ballistic (debug)"
@@ -60,8 +86,9 @@ impl Solver for Ballistic {
         scene.solid.cell_size() / max_speed.max(1e-3)
     }
 
-    fn step(&mut self, dt: f32, scene: &Scene, _input: &StepInput) {
+    fn step(&mut self, dt: f32, scene: &Scene, input: &StepInput) {
         let t0 = Instant::now();
+        super::apply_brushes(&input.brushes, dt, &self.pos, &mut self.vel);
         for (p, v) in self.pos.iter_mut().zip(self.vel.iter_mut()) {
             *v += scene.gravity * dt;
             *p += *v * dt;
@@ -69,6 +96,12 @@ impl Solver for Ballistic {
         let interior = scene.solid.interior();
         super::collide_with_solids(scene, interior, self.radius, self.restitution, self.friction, &mut self.pos, &mut self.vel);
         self.stats.phases = vec![("integrate+collide", t0.elapsed())];
+    }
+
+    fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
+        v.float(&RADIUS, &mut self.radius);
+        v.float(&RESTITUTION, &mut self.restitution);
+        v.float(&FRICTION, &mut self.friction);
     }
 
     fn particles(&self) -> Option<ParticleView<'_>> {

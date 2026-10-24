@@ -11,6 +11,7 @@ pub struct Preset {
 pub static PRESETS: &[Preset] = &[
     Preset { name: "Dam break", build: dam_break },
     Preset { name: "Double dam break", build: double_dam_break },
+    Preset { name: "Tank with obstacle", build: tank_with_obstacle },
 ];
 
 const DOMAIN: Vec2 = Vec2::new(2.0, 1.0);
@@ -19,6 +20,15 @@ const MASK_CELLS_Y: usize = 128;
 pub fn dam_break() -> Scene {
     let mut s = Scene::empty_box(DOMAIN, MASK_CELLS_Y);
     s.fluid_blocks.push(Rect::new(Vec2::new(0.0, 0.0), Vec2::new(0.7, 0.8)));
+    s
+}
+
+/// Calm water around a half-submerged pillar: tilt gravity to slosh it, or stir.
+pub fn tank_with_obstacle() -> Scene {
+    let mut s = Scene::empty_box(DOMAIN, MASK_CELLS_Y);
+    s.fluid_blocks.push(Rect::new(Vec2::new(0.0, 0.0), Vec2::new(2.0, 0.42)));
+    s.solid.paint_disc(Vec2::new(1.0, 0.42), 0.14, true);
+    s.solid.update_derived();
     s
 }
 

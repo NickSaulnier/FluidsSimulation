@@ -64,5 +64,18 @@ pub(super) fn collide(solid: &Grid2<bool>, h: f32, radius: f32, scene: &Scene, p
             p.y = y0 + h - r;
             v.y = v.y.min(0.0);
         }
+
+        // Where a curved wall cuts across an open cell's corner, the face clamps above
+        // allow up to ~0.7 h of penetration. Cap it at one radius using the smooth SDF;
+        // that only empties the deepest corner of a cell, never a whole cell.
+        let d = scene.solid.distance(*p);
+        if d < -r {
+            let n = scene.solid.normal(*p);
+            *p += n * (-r - d);
+            let vn = v.dot(n);
+            if vn < 0.0 {
+                *v -= n * vn;
+            }
+        }
     }
 }
