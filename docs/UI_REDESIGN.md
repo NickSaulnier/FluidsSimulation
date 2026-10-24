@@ -1,6 +1,6 @@
 # UI Redesign Plan
 
-Status: **approved. Phases A–C done.** A: top bar, status bar, tabbed panel, canvas rect from egui, panel toggle. B: theme, aligned form rows and groups, restart markers; the panel widened to 320 pt so rows fit. C: one shortcut table (`ui/shortcuts.rs`) behind the key handler, tooltips, Info tab and an F1 cheat sheet; tools on 1–4, brush size on [ ]; Esc closes the sheet before quitting; particle-only settings hidden for grid solvers. The §8 decisions were taken as recommended
+Status: **approved. Phases A–D done.** A: top bar, status bar, tabbed panel, canvas rect from egui, panel toggle. B: theme, aligned form rows and groups, restart markers; the panel widened to 320 pt so rows fit. C: one shortcut table (`ui/shortcuts.rs`) behind the key handler, tooltips, Info tab and an F1 cheat sheet; tools on 1–4, brush size on [ ]; Esc closes the sheet before quitting; particle-only settings hidden for grid solvers. D: Phosphor icon font (`egui-phosphor` =0.14.0; the regular variant embeds ~490 KB, not the ~50 KB subset estimated in §6); tool strip on the canvas (tools, brush size, the tool's own setting), with the scene fitted beside it; icon transport and panel buttons; tabs with icons; overlay colour-bar legend on the canvas, sampled from the overlay's own colour map. The §8 decisions were taken as recommended
 (2026-10-24):
 
 | # | Decision | Resolution |
@@ -228,7 +228,7 @@ Each phase leaves the app fully working and is committed separately.
 | **A. Skeleton** (done) | Split `ui.rs` into modules. Canvas rect from egui (§5.1). Top bar, status bar, tabbed side panel. Move the existing widgets into place, otherwise unchanged. | P1, P2, P3, P4, P10 |
 | **B. Forms and theme** (done) | Theme, two-column param grids, group frames, labelled dropdowns, restart markers. | P7 |
 | **C. Context and discoverability** (done) | Hide controls that don't apply. Music drop-zone state. Shortcut table, cheat sheet, shortcut hints in tooltips, new shortcuts. | P5, P6 |
-| **D. Canvas widgets** | Tool strip with icon font, brush size, tool popover. Overlay colour-bar legend on the canvas. | P8 |
+| **D. Canvas widgets** (done) | Tool strip with icon font, brush size, tool popover. Overlay colour-bar legend on the canvas. | P8 |
 | **E. Health and diagnostics** | Metric health dots, status-bar summary, step-breakdown bars. Advanced param sections (§5.2). | P9 |
 | **F. Optional extras** | Gravity compass, panel hide/show, persisting UI settings between runs **(?)**. | — |
 

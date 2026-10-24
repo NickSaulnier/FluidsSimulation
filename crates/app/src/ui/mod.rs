@@ -1,14 +1,16 @@
-//! The egui interface: a top bar (run, scene, solver, tools), a status bar, and a tabbed
-//! side panel. Solver parameters come from `Solver::visit_params`, so nothing here names
+//! The egui interface: a top bar (run, scene, solver), a status bar, a tabbed side
+//! panel, and on the canvas a tool strip and the overlay legend. Solver parameters come from `Solver::visit_params`, so nothing here names
 //! a specific solver. Whatever is left after the bars and panel is the canvas; its rect
 //! is returned so the scene view is fitted into exactly that area.
 
 mod cheat_sheet;
+mod legend;
 mod panel;
 mod params;
 pub mod shortcuts;
 mod status_bar;
 pub mod theme;
+mod tool_strip;
 mod top_bar;
 mod widgets;
 
@@ -143,8 +145,9 @@ pub struct Frame<'a> {
     pub field_range: Option<(f32, f32)>,
 }
 
-/// Lay out the whole interface and return the canvas rect (points): the area left over
-/// for the scene.
+/// Lay out the whole interface and return the rect (points) to fit the scene into: the
+/// canvas the bars and panel leave over, minus the tool strip's column, so the strip
+/// never hides any of the fluid.
 pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> egui::Rect {
     egui::Panel::top("top_bar").show(ui, |ui| top_bar::show(ui, f));
     egui::Panel::bottom("status_bar").show(ui, |ui| status_bar::show(ui, f));
@@ -152,12 +155,17 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
         egui::Panel::right("side_panel").resizable(false).exact_size(PANEL_WIDTH).show(ui, |ui| panel::show(ui, f));
     }
     let canvas = ui.available_rect_before_wrap();
+    tool_strip::show(ui.ctx(), canvas, f.state);
+    if let Some((field, range)) = overlay_legend(f) {
+        legend::show(ui.ctx(), canvas, field, range);
+    }
     if f.state.cheat_sheet {
         cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);
     }
 
-    // Brush outline, clipped to the canvas so it never draws over the controls.
-    if let Some(c) = cursor {
+    // Brush outline, clipped to the canvas so it never draws over the controls, and
+    // hidden over the on-canvas widgets (strokes don't start there either).
+    if let Some(c) = cursor.filter(|_| !ui.ctx().is_pointer_over_egui()) {
         let ppp = ui.ctx().pixels_per_point();
         let centre = egui::pos2(c.pos.x / ppp, c.pos.y / ppp);
         let colour = match f.state.tool {
@@ -172,7 +180,15 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
             egui::Stroke::new(1.5, colour),
         );
     }
-    canvas
+    canvas.with_min_x((canvas.min.x + tool_strip::RESERVED_WIDTH).min(canvas.max.x))
+}
+
+/// The overlay field to explain in the legend: the one the user picked, if this solver
+/// has it and it was drawn last frame (which gives its range).
+fn overlay_legend(f: &Frame<'_>) -> Option<(&'static sim::FieldInfo, (f32, f32))> {
+    let key = f.state.overlay?;
+    let field = f.world.solver.fields().iter().find(|field| field.key == key)?;
+    Some((field, f.field_range?))
 }
 
 /// Cycle None -> each field -> None.

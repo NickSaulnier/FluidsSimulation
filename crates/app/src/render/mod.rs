@@ -1,6 +1,6 @@
 //! Frame orchestration: shared uniforms, the domain backdrop, and the particle layer.
 
-mod colormap;
+pub mod colormap;
 mod liquid;
 mod overlay;
 mod particles;

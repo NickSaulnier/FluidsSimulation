@@ -6,16 +6,18 @@ mod simulate;
 mod view;
 
 use super::{Frame, Tab};
+use egui_phosphor::regular as icon;
 
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let playing = f.music.is_playing();
+        let music = if playing { format!("{} Music •", icon::MUSIC_NOTES) } else { format!("{} Music", icon::MUSIC_NOTES) };
         for (tab, label) in [
-            (Tab::Simulate, "Simulate"),
-            (Tab::View, "View"),
-            (Tab::Music, if playing { "Music •" } else { "Music" }),
-            (Tab::Info, "Info"),
+            (Tab::Simulate, format!("{} Simulate", icon::SLIDERS)),
+            (Tab::View, format!("{} View", icon::EYE)),
+            (Tab::Music, music),
+            (Tab::Info, format!("{} Info", icon::INFO)),
         ] {
             ui.selectable_value(&mut f.state.tab, tab, label);
         }

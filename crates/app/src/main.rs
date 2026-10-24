@@ -240,8 +240,8 @@ impl State {
             ui::Frame { world: &mut self.world, state: &mut self.ui, music: &mut self.music, perf: &perf, field_range: self.field_range };
         let mut canvas = None;
         let mut egui_out = self.egui_ctx.run_ui(raw_input, |ui| canvas = Some(ui::layout(ui, &mut frame, cursor)));
-        // Fit this frame's input and drawing to the canvas just laid out (the panel may
-        // have been shown or hidden).
+        // Fit this frame's input and drawing to the scene area just laid out (the panel
+        // may have been shown or hidden).
         self.canvas = canvas;
         let view = self.view();
         self.egui_winit.handle_platform_output(&self.window, std::mem::take(&mut egui_out.platform_output));

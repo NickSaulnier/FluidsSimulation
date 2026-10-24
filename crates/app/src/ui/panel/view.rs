@@ -51,13 +51,8 @@ fn overlay(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     if fields.is_empty() {
         ui.weak(format!("{} has no grid fields", world.solver.name()));
     }
-    if let (Some(field), Some((lo, hi))) = (current, f.field_range) {
+    // The legend for the field is on the canvas, next to what it describes.
+    if current.is_some() {
         row(ui, "Opacity", "", |ui| ui.add(egui::Slider::new(&mut s.overlay_opacity, 0.1..=1.0)));
-        let legend = match field.kind {
-            sim::FieldKind::Categorical => "grey: air   blue: fluid   dark: solid".to_string(),
-            sim::FieldKind::Concentration => "transparent: none   white: full".to_string(),
-            _ => format!("{lo:.3} .. {hi:.3} {}", field.unit),
-        };
-        row(ui, "Range", "", |ui| ui.label(legend));
     }
 }

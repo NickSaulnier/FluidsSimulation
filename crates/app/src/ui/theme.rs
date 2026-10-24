@@ -17,8 +17,14 @@ const WIDGET: Color32 = Color32::from_rgb(52, 56, 66);
 const WIDGET_HOVER: Color32 = Color32::from_rgb(66, 71, 84);
 const TEXT: Color32 = Color32::from_rgb(200, 205, 215);
 
-/// Install the theme. Always dark: the scene is drawn dark whatever the system theme.
+/// Install the theme and the icon font. Always dark: the scene is drawn dark whatever
+/// the system theme.
 pub fn apply(ctx: &egui::Context) {
+    // Phosphor icons (egui's own fonts lack most symbols), as a fallback after the text
+    // font so icon codepoints can be mixed into ordinary labels.
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    ctx.set_fonts(fonts);
     ctx.set_theme(egui::Theme::Dark);
     ctx.style_mut_of(egui::Theme::Dark, |s| {
         let sp = &mut s.spacing;
