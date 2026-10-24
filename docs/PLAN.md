@@ -1102,6 +1102,31 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 6 (stretch 2) conjugate-gradient pressure findings:**
+  - **Built:** Jacobi-preconditioned CG, warm-started, stopping at a max-residual
+    tolerance in m/s. Each iteration is three fused row-parallel map-reduce passes; dot
+    products accumulate in f64 per row. It's selectable in the FLIP panel.
+  - **p ≥ 0 needs a primal–dual active set, not clamping.** Clamping CG's answer
+    expanded the dam break by 67%. Releasing negative cells without re-admission left
+    0.33 m/s residuals in splashes, because early releases got stuck. The working loop:
+    solve; release cells with p < 0; re-admit released cells with inflow above the
+    tolerance; re-solve warm-started. Never finish on an unsolved change. Only release
+    after a converged solve, since unconverged iterates have spurious negatives. Share
+    one iteration budget across rounds.
+  - **From a cold start CG wins big.** On a 48-cell-deep tank, Gauss–Seidel reaches
+    0.011 m/s after 400 iterations, while CG reaches 0.005 after 100 and 2e-4 (the f32
+    floor) after 200.
+  - **In the simulation, warm-started Gauss–Seidel wins.** At 40k particles on a quiet
+    machine, 8 threads: GS (50 iterations) spends 4.7 ms per frame on pressure, with a
+    mean residual of 0.009 m/s and a worst of 0.117. CG at a 0.003 tolerance spends
+    14.6 ms (3.1× slower), averaging 100 iterations (231 worst), for a mean of 0.004
+    and a worst of 0.088. CG doesn't scale any better either: 3.1× against 2.9× from 1
+    to 8 threads (measured with the app running, so relative only). The
+    hypothesis that fewer synchronisations would scale better was wrong: warm starting
+    removed Gauss–Seidel's weakness (slow smooth modes), and CG still needs O(N)
+    iterations at 3 synchronisations each. The default stays Gauss–Seidel.
+  - **What would actually win:** a multigrid preconditioner (MGPCG) to cut CG's
+    iteration count to about 10–20, or multigrid on its own. That's a project of its own.
 - **Phase 6 (stretch 1) screen-space liquid findings:**
   - **Normalise the splat field analytically.** With blob radius k × particle radius,
     and every solver spacing particles at two radii, the interior sum of the

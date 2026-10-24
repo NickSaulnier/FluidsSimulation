@@ -1,4 +1,4 @@
-//! FLIP: particles carry velocity, a staggered MAC grid enforces incompressibility.
+﻿//! FLIP: particles carry velocity, a staggered MAC grid enforces incompressibility.
 //!
 //! Per substep (Bridson ch. 7; structure after Ten Minute Physics #18):
 //! classify cells -> P2G -> gravity on the grid -> solid boundaries -> pressure
@@ -23,7 +23,7 @@ use crate::grid::mac::CellType;
 use crate::solver::{FieldInfo, FieldKind, FieldLayout, Init, Metric, ParticleView, Solver, Stats};
 use crate::timing::PhaseTimer;
 use glam::Vec2;
-use pressure::{Drift, PressureSolver};
+use pressure::{Drift, Method, PressureSolver};
 use transfer::P2gScratch;
 use rayon::prelude::*;
 
@@ -33,8 +33,13 @@ pub struct FlipParams {
     pub cells_y: u32,
     /// 0 = PIC (smooth, viscous), 1 = FLIP (lively, noisy).
     pub flip_ratio: f32,
+    /// Gauss-Seidel iterations, or the maximum for conjugate gradients.
     pub pressure_iters: u32,
     pub over_relax: f32,
+    /// Conjugate gradients instead of Gauss-Seidel.
+    pub use_pcg: bool,
+    /// PCG stops when the largest unbalanced flux falls below this (m/s).
+    pub pcg_tolerance: f32,
     pub compensate_drift: bool,
     /// Fraction of a cell's excess particle density removed per substep.
     pub drift_stiffness: f32,
@@ -51,6 +56,10 @@ impl Default for FlipParams {
             flip_ratio: 0.9,
             pressure_iters: 50,
             over_relax: 1.9,
+            // Measured: at equal accuracy, warm-started Gauss-Seidel is ~3x faster than
+            // Jacobi-PCG on these grids and scales as well (see docs/PLAN.md).
+            use_pcg: false,
+            pcg_tolerance: 0.01,
             // Separation alone keeps volume within a few percent over 10 s of dam break;
             // drift compensation on top mostly adds restlessness.
             compensate_drift: false,
@@ -83,6 +92,19 @@ const PRESSURE_ITERS: IntSpec = IntSpec {
     range: 1..=500,
     restart: false,
     help: "Gauss-Seidel sweeps per substep (warm-started, so 30-50 is usually plenty).",
+};
+const USE_PCG: ToggleSpec = ToggleSpec {
+    key: "use_pcg",
+    label: "Conjugate gradients",
+    help: "Jacobi-preconditioned CG to a tolerance instead of fixed Gauss-Seidel sweeps. Far            faster from a cold start, but warm-started Gauss-Seidel wins here (measured ~3x).",
+};
+const PCG_TOLERANCE: FloatSpec = FloatSpec {
+    key: "pcg_tolerance",
+    label: "CG tolerance (m/s)",
+    range: 0.0005..=0.1,
+    log: true,
+    restart: false,
+    help: "CG stops when the largest unbalanced flux in any fluid cell is below this.",
 };
 const OVER_RELAX: FloatSpec = FloatSpec {
     key: "over_relax",
@@ -324,16 +346,14 @@ impl Solver for Flip {
         });
         timer.lap("forces");
 
-        pressure::project(
-            &mut self.grid,
-            &mut self.pressure_solver,
-            &mut self.pressure,
-            &self.density,
-            dt,
-            self.params.pressure_iters,
-            self.params.over_relax,
-            drift,
-        );
+        let p = &self.params;
+        let method = if p.use_pcg {
+            Method::Pcg { max_iterations: p.pressure_iters, tolerance: p.pcg_tolerance }
+        } else {
+            Method::GaussSeidel { iterations: p.pressure_iters, over_relax: p.over_relax }
+        };
+        let pressure_iterations =
+            pressure::project(&mut self.grid, &mut self.pressure_solver, &mut self.pressure, &self.density, dt, method, drift);
         let residual = pressure::max_residual(&self.grid, &self.pressure);
         timer.lap("pressure");
 
@@ -371,7 +391,7 @@ impl Solver for Flip {
             name: "pressure residual (m/s)",
             value: residual,
             tolerance: Some(MAX_PRESSURE_RESIDUAL),
-        }];
+        }, Metric { name: "pressure iterations", value: pressure_iterations as f32, tolerance: None }];
     }
 
     fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
@@ -380,8 +400,10 @@ impl Solver for Flip {
         v.float(&FLIP_RATIO, &mut p.flip_ratio);
         v.float(&CFL, &mut p.cfl);
         v.section("Pressure");
+        v.toggle(&USE_PCG, &mut p.use_pcg);
         v.int(&PRESSURE_ITERS, &mut p.pressure_iters);
         v.float(&OVER_RELAX, &mut p.over_relax);
+        v.float(&PCG_TOLERANCE, &mut p.pcg_tolerance);
         v.section("Particles");
         v.toggle(&SEPARATE, &mut p.separate_particles);
         v.int(&SEPARATION_ITERS, &mut p.separation_iters);
@@ -415,7 +437,7 @@ impl Solver for Flip {
             }
         };
         match FIELDS.get(index)?.key {
-            // Stored pressure is a velocity change per unit time; Δu = Δt Δp / (ρ h).
+            // Stored pressure is a velocity change per unit time; Î”u = Î”t Î”p / (Ï h).
             "pressure" => each_fluid(&|i, j| self.pressure[(i, j)] * RHO * h),
             "divergence" => each_fluid(&|i, j| -self.pressure_solver.rhs()[(i, j)] / h),
             "speed" => each_fluid(&|i, j| {
@@ -517,7 +539,8 @@ mod tests {
 
         let mut p = Grid2::new(nx, ny);
         let before = pressure::max_residual(&grid, &p);
-        pressure::project(&mut grid, &mut PressureSolver::new(nx, ny), &mut p, &Grid2::new(nx, ny), 1.0, 300, 1.9, None);
+        let method = Method::GaussSeidel { iterations: 300, over_relax: 1.9 };
+        pressure::project(&mut grid, &mut PressureSolver::new(nx, ny), &mut p, &Grid2::new(nx, ny), 1.0, method, None);
         let after = pressure::max_residual(&grid, &p);
         assert!(after < before * 1e-3, "residual {before} -> {after}");
     }
@@ -579,11 +602,75 @@ mod tests {
     }
 
     fn calm_tank() -> (Scene, Flip) {
+        calm_tank_with(FlipParams::default())
+    }
+
+    fn calm_tank_with(params: FlipParams) -> (Scene, Flip) {
         let mut scene = Scene::empty_box(Vec2::new(1.0, 1.0), 64);
         scene.fluid_blocks.push(Rect::new(Vec2::ZERO, Vec2::new(1.0, 0.5)));
-        let mut flip = Flip::with_params(FlipParams { cells_y: 40, ..FlipParams::default() });
+        let mut flip = Flip::with_params(FlipParams { cells_y: 40, ..params });
         flip.reset(&scene, Init::FromScene);
         (scene, flip)
+    }
+
+    fn pcg_params() -> FlipParams {
+        FlipParams { use_pcg: true, pressure_iters: 200, ..FlipParams::default() }
+    }
+
+    /// A tank-like pressure system: fluid in the lower half of a closed box with air
+    /// above, flowing down at 1 m/s plus noise, solid boundaries enforced.
+    fn falling_tank_grid() -> MacGrid {
+        let (nx, ny) = (96, 96);
+        let (mut grid, solid) = closed_box_grid(nx, ny, 1.0 / ny as f32);
+        for j in 0..ny {
+            for i in 0..nx {
+                grid.cell[(i, j)] = if solid[(i, j)] {
+                    CellType::Solid
+                } else if j < ny / 2 {
+                    CellType::Fluid
+                } else {
+                    CellType::Air
+                };
+            }
+        }
+        let mut rng = SplitMix64::new(5);
+        grid.u.as_mut_slice().iter_mut().for_each(|x| *x = 0.2 * rng.signed());
+        grid.v.as_mut_slice().iter_mut().for_each(|x| *x = -1.0 + 0.2 * rng.signed());
+        transfer::enforce_solid_boundaries(&mut grid);
+        grid
+    }
+
+    fn solve(grid: &mut MacGrid, method: Method) -> (u32, f32) {
+        let (nx, ny) = (grid.nx, grid.ny);
+        let mut p = Grid2::new(nx, ny);
+        let used = pressure::project(grid, &mut PressureSolver::new(nx, ny), &mut p, &Grid2::new(nx, ny), 1.0 / 60.0, method, None);
+        (used, pressure::max_residual(grid, &p))
+    }
+
+    #[test]
+    fn pcg_converges_to_its_tolerance() {
+        let mut grid = falling_tank_grid();
+        let (used, residual) = solve(&mut grid, Method::Pcg { max_iterations: 1000, tolerance: 1e-4 });
+        assert!(used < 1000, "PCG didn't converge in 1000 iterations");
+        // f32 bottoms out around 2e-4 m/s for velocities of order 1 m/s (see the
+        // convergence table: 200 and 400 iterations both stall there).
+        assert!(residual < 1e-3, "residual {residual} m/s after {used} iterations");
+    }
+
+    /// The point of CG: the smooth, deep pressure modes that stall Gauss-Seidel are what
+    /// CG resolves fastest. From a cold start, CG must reach Gauss-Seidel's 200-iteration
+    /// residual in far fewer iterations.
+    /// The point of CG: the smooth, deep pressure modes that stall Gauss-Seidel are what
+    /// CG resolves fastest. From a cold start on a 48-cell-deep tank, CG must match
+    /// Gauss-Seidel's 400-iteration residual in under half the iterations (measured:
+    /// GS 0.011 m/s at 400; CG 0.005 at 100).
+    #[test]
+    fn pcg_needs_far_fewer_iterations_than_gauss_seidel() {
+        let (_, gs_residual) = solve(&mut falling_tank_grid(), Method::GaussSeidel { iterations: 400, over_relax: 1.9 });
+        let (cg_iterations, cg_residual) =
+            solve(&mut falling_tank_grid(), Method::Pcg { max_iterations: 400, tolerance: gs_residual });
+        assert!(cg_residual <= gs_residual * 1.01, "CG residual {cg_residual} vs GS {gs_residual}");
+        assert!(cg_iterations < 200, "CG took {cg_iterations} iterations to match 400 of Gauss-Seidel ({gs_residual} m/s)");
     }
 
     #[test]
@@ -620,10 +707,19 @@ mod tests {
     }
 
     /// End-to-end check of the pressure solve, units and all: in a resting tank the
-    /// pressure field must match hydrostatics, p = ρ g (surface - y), in pascals.
+    /// pressure field must match hydrostatics, p = Ï g (surface - y), in pascals.
     #[test]
     fn pressure_field_is_hydrostatic() {
-        let (scene, mut flip) = calm_tank();
+        check_hydrostatic(FlipParams::default());
+    }
+
+    #[test]
+    fn pcg_pressure_field_is_hydrostatic() {
+        check_hydrostatic(pcg_params());
+    }
+
+    fn check_hydrostatic(params: FlipParams) {
+        let (scene, mut flip) = calm_tank_with(params);
         let stepper = Stepper::default();
         for _ in 0..120 {
             stepper.advance(&mut flip, &scene, 1.0 / 60.0, &StepInput::default());
@@ -667,8 +763,17 @@ mod tests {
     /// projection) and leaks into spurious air cells along walls.
     #[test]
     fn dam_break_keeps_its_volume() {
+        check_dam_break_volume(FlipParams::default());
+    }
+
+    #[test]
+    fn pcg_dam_break_keeps_its_volume() {
+        check_dam_break_volume(pcg_params());
+    }
+
+    fn check_dam_break_volume(params: FlipParams) {
         let scene = crate::presets::dam_break();
-        let mut flip = Flip::with_params(FlipParams { cells_y: 50, ..FlipParams::default() });
+        let mut flip = Flip::with_params(FlipParams { cells_y: 50, ..params });
         flip.reset(&scene, Init::FromScene);
         let occupied = |f: &Flip| {
             let h = f.grid.h;

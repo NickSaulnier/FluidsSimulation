@@ -114,8 +114,8 @@ struct Run {
     dropped: f64,
     /// Mean ms per frame for each solver phase, in the solver's order.
     phases: Vec<(&'static str, f64)>,
-    /// Worst value seen for each solver metric.
-    metrics: Vec<(&'static str, f32)>,
+    /// Worst and summed value for each solver metric.
+    metrics: Vec<(&'static str, f32, f64)>,
 }
 
 impl Run {
@@ -167,9 +167,12 @@ fn run_once(args: &Args, solver: usize, preset: usize) -> anyhow::Result<Run> {
             }
         }
         for m in &world.solver.stats().metrics {
-            match run.metrics.iter_mut().find(|(n, _)| *n == m.name) {
-                Some((_, worst)) => *worst = worst.max(m.value),
-                None => run.metrics.push((m.name, m.value)),
+            match run.metrics.iter_mut().find(|(n, _, _)| *n == m.name) {
+                Some((_, worst, sum)) => {
+                    *worst = worst.max(m.value);
+                    *sum += f64::from(m.value);
+                }
+                None => run.metrics.push((m.name, m.value, f64::from(m.value))),
             }
         }
         if args.check {
@@ -245,8 +248,8 @@ fn run(args: &Args) -> anyhow::Result<()> {
     if emitted + drained > 0 {
         println!("particles at end: {end} ({emitted} emitted, {drained} drained)");
     }
-    for (name, worst) in &first.metrics {
-        println!("worst {name}: {worst:.3}");
+    for (name, worst, sum) in &first.metrics {
+        println!("{name}: mean {:.3}, worst {worst:.3}", sum / f64::from(args.frames));
     }
     if args.check {
         println!("invariants: ok");
