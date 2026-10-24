@@ -35,9 +35,6 @@ const OPPOSITE: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 const MAX_LATTICE_SPEED: f32 = 0.3;
 /// Inlets and brushes drive at most this lattice speed (Mach 0.35).
 const MAX_SOURCE_SPEED: f32 = 0.2;
-/// Wide inlets release dye in stripes this far apart (streaklines), narrow jets solid.
-const STRIPE_PITCH: f32 = 0.08;
-const STRIPED_WIDTH: f32 = 0.25;
 
 type Populations = [f32; 9];
 
@@ -260,16 +257,13 @@ impl Lbm {
             for i in 0..nx {
                 let c = self.centre(i, j);
                 self.role[(i, j)] = if self.solid[(i, j)] {
+                    self.dye[(i, j)] = 0.0;
                     Role::Solid
-                } else if let Some((e, across)) = emitters.iter().find_map(|e| {
-                    let dir = e.dir.normalize_or(Vec2::NEG_Y);
-                    let d = c - e.pos;
-                    let across = d.dot(dir.perp());
-                    (across.abs() <= 0.5 * e.width.max(h) && d.dot(dir).abs() <= h).then_some((e, across))
-                }) {
+                } else if let Some((e, across)) =
+                    emitters.iter().find_map(|e| super::nozzle_offset(e, h, c).map(|across| (e, across)))
+                {
                     let u = (e.dir.normalize_or(Vec2::NEG_Y) * e.speed * to_lattice).clamp_length_max(MAX_SOURCE_SPEED);
-                    let stripe = ((across / (0.5 * STRIPE_PITCH)).floor() as i32).rem_euclid(2) == 0;
-                    self.dye[(i, j)] = if e.width < STRIPED_WIDTH || stripe { 1.0 } else { 0.0 };
+                    self.dye[(i, j)] = super::nozzle_dye(e, across);
                     Role::Inlet(u)
                 } else if scene.drains.iter().any(|d| d.contains(c)) {
                     Role::Outlet
@@ -358,49 +352,17 @@ impl Lbm {
         std::mem::swap(&mut self.f, &mut self.f_next);
     }
 
-    /// MacCormack dye advection (Selle et al. 2008) through the (physical) LBM velocity:
-    /// a semi-Lagrangian step forward, one back, and half the round-trip error added
-    /// back, clamped to the values it was interpolated from so it can't overshoot.
-    /// Plain semi-Lagrangian smears the streaklines out within half the tunnel.
+    /// Dye advection through the (physical) LBM velocity. MacCormack rather than plain
+    /// semi-Lagrangian: the latter smears the streaklines out within half the tunnel.
     fn advect_dye(&mut self, dt: f32) {
         let (h, scale) = (self.h, 1.0 / self.params.lattice_per_mps);
         let (vel, role) = (&self.vel, &self.role);
-        let speed_at = |p: Vec2| {
+        let velocity = |p: Vec2| {
             let s = Stencil::on(vel, h, CENTRE_OFFSET, p);
             s.corners().into_iter().zip(s.w).map(|(c, w)| vel[c] * w).sum::<Vec2>() * scale
         };
-        let departure = |i: usize, j: usize, dt: f32| {
-            let p = (Vec2::new(i as f32, j as f32) + CENTRE_OFFSET) * h;
-            let mid = p - 0.5 * dt * speed_at(p);
-            p - dt * speed_at(mid)
-        };
-        let semi_lagrangian = |src: &Grid2<f32>, out: &mut Grid2<f32>, dt: f32| {
-            out.par_rows_mut().enumerate().for_each(|(j, row)| {
-                for (i, o) in row.iter_mut().enumerate() {
-                    *o = match role[(i, j)] {
-                        Role::Solid => 0.0,
-                        Role::Inlet(_) => src[(i, j)],
-                        _ => Stencil::on(src, h, CENTRE_OFFSET, departure(i, j, dt)).sample(src),
-                    };
-                }
-            });
-        };
-        semi_lagrangian(&self.dye, &mut self.dye_next, dt);
-        semi_lagrangian(&self.dye_next, &mut self.dye_back, -dt);
-        let (dye, forward) = (&self.dye, &self.dye_next);
-        self.dye_back.par_rows_mut().enumerate().for_each(|(j, row)| {
-            for (i, o) in row.iter_mut().enumerate() {
-                if !matches!(role[(i, j)], Role::Fluid | Role::Outlet) {
-                    *o = forward[(i, j)];
-                    continue;
-                }
-                let corrected = forward[(i, j)] + 0.5 * (dye[(i, j)] - *o);
-                let s = Stencil::on(dye, h, CENTRE_OFFSET, departure(i, j, dt));
-                let (lo, hi) = s.corners().into_iter().fold((f32::MAX, f32::MIN), |(lo, hi), c| (lo.min(dye[c]), hi.max(dye[c])));
-                *o = corrected.clamp(lo, hi);
-            }
-        });
-        std::mem::swap(&mut self.dye, &mut self.dye_back);
+        let frozen = |i: usize, j: usize| matches!(role[(i, j)], Role::Solid | Role::Inlet(_));
+        super::maccormack(&mut self.dye, &mut self.dye_next, &mut self.dye_back, h, dt, velocity, frozen);
     }
 
     fn normalise_mass(&mut self) {

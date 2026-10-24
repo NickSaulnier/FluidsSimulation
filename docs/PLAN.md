@@ -1102,6 +1102,65 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Follow-ups: MGPCG, open boundaries for stable fluids, shared MacCormack dye:**
+  - **Multigrid-preconditioned CG** (`solvers/multigrid.rs`, McAdams et al. 2010).
+    - *Design:* one V-cycle as the CG preconditioner, with these ingredients:
+      - red-black Gauss–Seidel smoothing: red then black before the coarse correction,
+        black then red after;
+      - bilinear prolongation, with its transpose as restriction;
+      - symmetric sweeps on a ≤6-cell coarsest level;
+      - coarse cells labelled Dirichlet if any child is, else active, else solid.
+
+      That combination keeps the preconditioner symmetric positive definite, as CG
+      requires.
+    - *Closed domains:* in an all-fluid box (singular, no Dirichlet cell), the
+      preconditioned residual has its mean removed.
+    - *Cold start:* 8 iterations against Jacobi-PCG's 139 on a 96² falling tank. A
+      closed all-fluid box converges in 6.
+  - **Serial beat parallel for the V-cycle.** Rayon per-pass dispatch on ~20k-cell
+    levels cost as much as the work saved. A 200×100 V-cycle took 180–430 µs in
+    parallel (depending on the threshold and the thread count), against 180 µs serial
+    with damped Jacobi. Then:
+    - switching to in-place red-black Gauss–Seidel, with one pre- and one post-sweep
+      instead of two damped-Jacobi sweeps each, brought it to 100 µs;
+    - the multigrid setup costs 46 µs.
+  - **FLIP keeps warm-started Gauss–Seidel.** On the dam break, pressure time per frame
+    was:
+
+    | Method | 100 cells high | 200 cells high |
+    |---|---|---|
+    | Gauss–Seidel, 50 sweeps (warm-started) | 2.9 ms | 15.7 ms |
+    | MGPCG | 4.3 ms | 36 ms |
+    | Jacobi-PCG | 5.1 ms | n/a |
+
+    - The p ≥ 0 active set re-solves up to 8 times per substep. Rebuilding the
+      hierarchy plus a V-cycle each round made MGPCG *slower* (7 ms), until later
+      rounds switched to Jacobi: they only correct short-wavelength error around the
+      cells that flipped.
+    - Warm starting already removes most of the smooth error multigrid is for.
+    - FLIP's CG option now defaults to the multigrid preconditioner.
+  - **Stable fluids defaults to MGPCG.** With no active set and no free surface,
+    multigrid is where it pays:
+    - pressure 1.7 ms vs 2.7 ms for 60 Gauss–Seidel sweeps;
+    - worst residual 0.005 m/s vs 0.046.
+    - Gauss–Seidel can't absorb the wind tunnel's sudden full-height inflow: 0.48 m/s
+      residual on frame 0. MGPCG converges.
+  - **Open boundaries for stable fluids.**
+    - *Outlets:* drains become air cells (p = 0) and remove dye.
+    - *Inlets:* emitter nozzles become solid cells whose faces carry the jet velocity.
+      The projection never changes faces touching solids, so these are
+      prescribed-flux boundaries.
+      - Against a wall, a nozzle is a true inflow (the wind tunnel).
+      - In open fluid, it draws in as much as it pushes out (a pump), so the faucet in
+        a closed box keeps the Neumann problem solvable.
+      - The edge case: a faucet nozzle touching a wall in a closed box is an
+        unbalanced source.
+    - *Result:* stable fluids now sheds its own vortex street in the wind tunnel. The
+      test checks that flow at mid-tunnel averages 1 m/s, which a closed box can only
+      recirculate to zero.
+  - **Shared toolkit.** `maccormack`, `nozzle_offset` and `nozzle_dye` moved to
+    `solvers/mod.rs`, so LBM and stable fluids share the limited MacCormack dye
+    advection and striped streaklines. Stable fluids' dye is now as sharp as LBM's.
 - **Phase 6 (stretch 8) Lattice Boltzmann findings:**
   - **Model.** D2Q9 BGK with a Smagorinsky subgrid term, fused pull-stream + collide
     into a second buffer. Each row writes only its own cells, so rayon parallelises it

@@ -1,5 +1,5 @@
 //! Pressure projection, by red-black Gauss-Seidel with successive over-relaxation or by
-//! Jacobi-preconditioned conjugate gradients, in parallel either way. Air cells have
+//! conjugate gradients (Jacobi- or multigrid-preconditioned), in parallel either way. Air cells have
 //! p = 0 (free surface, Dirichlet); faces touching solids are never changed (Neumann).
 //!
 //! Pressure is constrained to be non-negative (projected Gauss-Seidel): water can push on
@@ -11,6 +11,7 @@
 //! deep modes that hydrostatic pressure consists of; without warm starting, a 50-iteration
 //! budget can't rebuild it from zero each substep and deep fluid slowly compacts.
 
+use super::multigrid::Multigrid;
 use crate::grid::Grid2;
 use crate::grid::mac::{CellType, MacGrid};
 use rayon::prelude::*;
@@ -31,9 +32,10 @@ pub(super) struct Drift {
 pub(super) enum Method {
     /// Red-black Gauss-Seidel with SOR, a fixed number of iterations.
     GaussSeidel { iterations: u32, over_relax: f32, non_negative: bool },
-    /// Jacobi-preconditioned conjugate gradients until the max residual (m/s) is below
-    /// `tolerance`, inside an active-set loop when p >= 0 is enforced.
-    Pcg { max_iterations: u32, tolerance: f32, non_negative: bool },
+    /// Preconditioned conjugate gradients until the max residual (m/s) is below
+    /// `tolerance`, inside an active-set loop when p >= 0 is enforced. The
+    /// preconditioner is one multigrid V-cycle (MGPCG) if `multigrid`, else Jacobi.
+    Pcg { max_iterations: u32, tolerance: f32, non_negative: bool, multigrid: bool },
 }
 
 /// Plain CG can't express p >= 0 (no suction). Clamping its answer afterwards breaks the
@@ -63,12 +65,27 @@ pub(super) struct PressureSolver {
     z: Grid2<f32>,
     dir: Grid2<f32>,
     a_dir: Grid2<f32>,
+    /// Solid cells, which the multigrid hierarchy needs to tell walls from air.
+    solid: Grid2<bool>,
+    multigrid: Multigrid,
 }
 
 impl PressureSolver {
     pub fn new(nx: usize, ny: usize) -> Self {
         let g = || Grid2::new(nx, ny);
-        Self { p: g(), next: g(), rhs: g(), diag: g(), diag_full: g(), r: g(), z: g(), dir: g(), a_dir: g() }
+        Self {
+            p: g(),
+            next: g(),
+            rhs: g(),
+            diag: g(),
+            diag_full: g(),
+            r: g(),
+            z: g(),
+            dir: g(),
+            a_dir: g(),
+            solid: Grid2::new(nx, ny),
+            multigrid: Multigrid::default(),
+        }
     }
 
     /// Minus the net outflow (m/s) of each fluid cell before the last projection.
@@ -125,6 +142,10 @@ pub(super) fn project(
         );
     }
 
+    for (s, c) in solver.solid.as_mut_slice().iter_mut().zip(grid.cell.as_slice()) {
+        *s = *c == CellType::Solid;
+    }
+
     let iterations = match method {
         Method::GaussSeidel { iterations, over_relax, non_negative } => {
             for _ in 0..iterations {
@@ -133,8 +154,10 @@ pub(super) fn project(
             }
             iterations
         }
-        Method::Pcg { max_iterations, tolerance, non_negative: false } => pcg(solver, max_iterations, tolerance).0,
-        Method::Pcg { max_iterations, tolerance, non_negative: true } => {
+        Method::Pcg { max_iterations, tolerance, non_negative: false, multigrid } => {
+            pcg(solver, max_iterations, tolerance, multigrid).0
+        }
+        Method::Pcg { max_iterations, tolerance, non_negative: true, multigrid } => {
             // One iteration budget shared by all rounds. Cells are only released after a
             // converged solve: an unconverged iterate has spurious negative values.
             // Never finish on an active-set change without re-solving: that leaves exactly
@@ -142,7 +165,10 @@ pub(super) fn project(
             solver.diag_full.copy_from(&solver.diag);
             let mut used = 0;
             for round in 0..ACTIVE_SET_ROUNDS {
-                let (iterations, converged) = pcg(solver, max_iterations - used, tolerance);
+                // Multigrid for the first, global solve. Later rounds only correct around
+                // cells the active set flipped, short-wavelength error that Jacobi handles
+                // cheaply; a V-cycle and hierarchy rebuild per round cost more than they save.
+                let (iterations, converged) = pcg(solver, max_iterations - used, tolerance, multigrid && round == 0);
                 used += iterations;
                 if !converged || round + 1 == ACTIVE_SET_ROUNDS {
                     clamp_negative_pressures(solver);
@@ -276,16 +302,24 @@ fn apply_a(v: &Grid2<f32>, diag: &Grid2<f32>, i: usize, j: usize) -> f32 {
     s * v[(i, j)] - neighbours
 }
 
-/// Jacobi-preconditioned conjugate gradients on `A p = rhs`, from the warm-started `p`.
+/// Preconditioned conjugate gradients on `A p = rhs`, from the warm-started `p`.
 /// Stops when the largest residual (an unbalanced flux in m/s, like the invariant) is
 /// below `tolerance`. Returns the iterations used and whether it converged.
+///
+/// The Jacobi preconditioner (z = r / diag) is fused into the passes below. With
+/// `multigrid`, z is then replaced by a V-cycle and r·z recomputed: one extra pass,
+/// against a V-cycle costing roughly ten Jacobi passes, for far fewer iterations.
 ///
 /// Each iteration is three fused row-parallel passes (matvec + dot; update + dot + max;
 /// new direction), against two synchronisations per Gauss-Seidel iteration, but it needs
 /// far fewer iterations to converge because CG doesn't stall on smooth, deep modes.
 /// Dot products accumulate in f64 per row.
-fn pcg(solver: &mut PressureSolver, max_iterations: u32, tolerance: f32) -> (u32, bool) {
-    let PressureSolver { p, rhs, diag, r, z, dir, a_dir, .. } = solver;
+fn pcg(solver: &mut PressureSolver, max_iterations: u32, tolerance: f32, multigrid: bool) -> (u32, bool) {
+    let PressureSolver { p, rhs, diag, r, z, dir, a_dir, solid, multigrid: mg, .. } = solver;
+    let mut mg = multigrid.then(|| {
+        mg.setup(diag, solid);
+        mg
+    });
     let (p_ro, rhs_ro, diag_ro) = (&*p, &*rhs, &*diag);
 
     // r = b - A p, z = M⁻¹ r, d = z.
@@ -309,6 +343,11 @@ fn pcg(solver: &mut PressureSolver, max_iterations: u32, tolerance: f32) -> (u32
         .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1.max(b.1)));
     if max_r <= tolerance {
         return (0, true);
+    }
+    if let Some(mg) = mg.as_deref_mut() {
+        mg.apply(r, z);
+        dir.copy_from(z);
+        rz = dot(r, z);
     }
 
     for k in 0..max_iterations {
@@ -357,6 +396,13 @@ fn pcg(solver: &mut PressureSolver, max_iterations: u32, tolerance: f32) -> (u32
         if max_r <= tolerance {
             return (k + 1, true);
         }
+        let rz_new = match mg.as_deref_mut() {
+            Some(mg) => {
+                mg.apply(r, z);
+                dot(r, z)
+            }
+            None => rz_new,
+        };
 
         // d = z + β d.
         let beta = (rz_new / rz) as f32;
@@ -369,6 +415,10 @@ fn pcg(solver: &mut PressureSolver, max_iterations: u32, tolerance: f32) -> (u32
         });
     }
     (max_iterations, false)
+}
+
+fn dot(a: &Grid2<f32>, b: &Grid2<f32>) -> f64 {
+    a.as_slice().par_iter().zip(b.as_slice()).map(|(x, y)| f64::from(*x) * f64::from(*y)).sum()
 }
 
 /// Update every cell of one colour (`(i + j) % 2 == colour`) from its neighbours.

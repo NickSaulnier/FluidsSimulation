@@ -1,9 +1,14 @@
 //! Stable fluids (Stam 1999) on the MAC grid: one fluid filling the whole domain, with
 //! a dye that carries buoyancy. There are no particles; the renderer shows the dye.
 //!
-//! Per substep: sources (emitters inject dye and momentum, brushes push) -> buoyancy ->
-//! vorticity confinement -> semi-Lagrangian advection of velocity (RK2 backtrace) ->
-//! pressure projection -> advection of the dye through the projected velocity.
+//! Per substep: cell types (open boundaries) -> brushes -> buoyancy -> vorticity
+//! confinement -> semi-Lagrangian advection of velocity (RK2 backtrace) -> pressure
+//! projection -> MacCormack advection of the dye through the projected velocity.
+//!
+//! Open boundaries: drains are outlets (p = 0, like air, and dye leaving through them
+//! is removed). Emitter nozzles are boundary cells whose faces carry the jet velocity:
+//! against a wall that's a true inflow (the wind tunnel), in open fluid a pump that
+//! pushes out as much as it draws in (the faucet), so a closed box stays solvable.
 //!
 //! In a closed, all-fluid domain plain gravity is a gradient that the projection removes
 //! completely, so gravity acts through the dye instead (Boussinesq buoyancy). Heavy dye
@@ -13,7 +18,7 @@
 use super::pressure::{self, Method, PressureSolver};
 use crate::grid::Grid2;
 use crate::grid::mac::{CENTRE_OFFSET, CellType, MacGrid, Stencil, U_OFFSET, V_OFFSET};
-use crate::params::{FloatSpec, IntSpec, ParamVisitor};
+use crate::params::{FloatSpec, IntSpec, ParamVisitor, ToggleSpec};
 use crate::scene::{Scene, StepInput};
 use crate::solver::{FieldInfo, FieldKind, FieldLayout, Init, Metric, ParticleView, Solver, Stats};
 use crate::timing::PhaseTimer;
@@ -23,8 +28,11 @@ use rayon::prelude::*;
 #[derive(Clone, Debug)]
 pub struct StableParams {
     pub cells_y: u32,
+    /// Gauss-Seidel sweeps, or the maximum CG iterations with `multigrid`.
     pub pressure_iters: u32,
     pub over_relax: f32,
+    /// Multigrid-preconditioned CG to `MGPCG_TOLERANCE` instead of fixed Gauss-Seidel.
+    pub multigrid: bool,
     /// Boussinesq coefficient: acceleration along gravity per unit dye, as a fraction of
     /// g. Positive sinks (heavy ink), negative rises (warm smoke).
     pub buoyancy: f32,
@@ -39,7 +47,16 @@ pub struct StableParams {
 
 impl Default for StableParams {
     fn default() -> Self {
-        Self { cells_y: 128, pressure_iters: 60, over_relax: 1.9, buoyancy: 0.5, vorticity: 0.15, dissipation: 0.0, cfl: 3.0 }
+        Self {
+            cells_y: 128,
+            pressure_iters: 60,
+            over_relax: 1.9,
+            multigrid: true,
+            buoyancy: 0.5,
+            vorticity: 0.15,
+            dissipation: 0.0,
+            cfl: 3.0,
+        }
     }
 }
 
@@ -55,8 +72,15 @@ const PRESSURE_ITERS: IntSpec = IntSpec {
     label: "Pressure iterations",
     range: 1..=500,
     restart: false,
-    help: "Red-black Gauss-Seidel sweeps per substep (warm-started).",
+    help: "Red-black Gauss-Seidel sweeps per substep (warm-started), or the CG iteration cap.",
 };
+const MULTIGRID: ToggleSpec = ToggleSpec {
+    key: "multigrid",
+    label: "Multigrid CG (MGPCG)",
+    help: "Solve pressure by multigrid-preconditioned CG to a tolerance instead of fixed Gauss-Seidel sweeps.",
+};
+/// MGPCG stopping tolerance: largest unbalanced flux, m/s.
+const MGPCG_TOLERANCE: f32 = 0.005;
 const OVER_RELAX: FloatSpec = FloatSpec {
     key: "over_relax",
     label: "Over-relaxation",
@@ -115,7 +139,10 @@ pub struct StableFluids {
     v_next: Grid2<f32>,
     dye: Grid2<f32>,
     dye_next: Grid2<f32>,
+    dye_back: Grid2<f32>,
     curl: Grid2<f32>,
+    /// Nozzle cells this step, with their jet velocity.
+    inlets: Vec<(usize, usize, Vec2)>,
     solid: Grid2<bool>,
     solid_generation: Option<u64>,
     pressure: Grid2<f32>,
@@ -138,7 +165,9 @@ impl StableFluids {
             v_next: Grid2::new(2, 3),
             dye: Grid2::new(2, 2),
             dye_next: Grid2::new(2, 2),
+            dye_back: Grid2::new(2, 2),
             curl: Grid2::new(2, 2),
+            inlets: Vec::new(),
             solid: Grid2::new(2, 2),
             solid_generation: None,
             pressure: Grid2::new(2, 2),
@@ -158,6 +187,7 @@ impl StableFluids {
         self.v_next = Grid2::new(nx, ny + 1);
         self.dye = Grid2::new(nx, ny);
         self.dye_next = Grid2::new(nx, ny);
+        self.dye_back = Grid2::new(nx, ny);
         self.curl = Grid2::new(nx, ny);
         self.solid = Grid2::new(nx, ny);
         self.solid_generation = None;
@@ -165,14 +195,46 @@ impl StableFluids {
         self.pressure_solver = PressureSolver::new(nx, ny);
     }
 
-    /// Every non-solid cell is fluid: there is no free surface.
-    fn refresh_solids(&mut self, scene: &Scene) {
+    /// Cell types for this step. Every non-solid cell is fluid (there is no free
+    /// surface), except drains (air: p = 0, dye removed) and emitter nozzles (solid,
+    /// with the jet velocity on their faces; see `set_inlet_faces`).
+    fn update_cells(&mut self, scene: &Scene, input: &StepInput) {
         if self.solid_generation != Some(scene.solid.generation()) {
             super::resample_solids(scene, self.grid.h, &mut self.solid);
             self.solid_generation = Some(scene.solid.generation());
         }
-        for (c, &s) in self.grid.cell.as_mut_slice().iter_mut().zip(self.solid.as_slice()) {
-            *c = if s { CellType::Solid } else { CellType::Fluid };
+        let h = self.grid.h;
+        let emitters: Vec<_> = scene.emitters.iter().chain(&input.emitters).collect();
+        self.inlets.clear();
+        for j in 0..self.grid.ny {
+            for i in 0..self.grid.nx {
+                let c = self.centre(i, j);
+                let nozzle = emitters.iter().find_map(|e| super::nozzle_offset(e, h, c).map(|across| (e, across)));
+                let kind = if self.solid[(i, j)] {
+                    self.dye[(i, j)] = 0.0;
+                    CellType::Solid
+                } else if let Some((e, across)) = nozzle {
+                    self.dye[(i, j)] = super::nozzle_dye(e, across);
+                    self.inlets.push((i, j, e.dir.normalize_or(Vec2::NEG_Y) * e.speed));
+                    CellType::Solid
+                } else if scene.drains.iter().any(|d| d.contains(c)) {
+                    self.dye[(i, j)] = 0.0;
+                    CellType::Air
+                } else {
+                    CellType::Fluid
+                };
+                self.grid.cell[(i, j)] = kind;
+            }
+        }
+    }
+
+    /// Every face of a nozzle cell carries the jet velocity. The projection never
+    /// changes faces touching solids, so these act as prescribed-flux boundaries.
+    fn set_inlet_faces(&mut self) {
+        let g = &mut self.grid;
+        for &(i, j, v) in &self.inlets {
+            (g.u[(i, j)], g.u[(i + 1, j)]) = (v.x, v.x);
+            (g.v[(i, j)], g.v[(i, j + 1)]) = (v.y, v.y);
         }
     }
 
@@ -180,29 +242,9 @@ impl StableFluids {
         (Vec2::new(i as f32, j as f32) + 0.5) * self.grid.h
     }
 
-    /// Emitters fill their nozzle with dye and set its faces to the jet velocity;
-    /// brushes blend face velocities toward theirs.
-    fn apply_sources(&mut self, scene: &Scene, input: &StepInput, dt: f32) {
+    /// Brushes blend face velocities toward theirs.
+    fn apply_brushes(&mut self, input: &StepInput, dt: f32) {
         let h = self.grid.h;
-        for e in scene.emitters.iter().chain(&input.emitters) {
-            let dir = e.dir.normalize_or(Vec2::NEG_Y);
-            let across = dir.perp();
-            let depth = (e.speed * dt).max(h);
-            for j in 0..self.grid.ny {
-                for i in 0..self.grid.nx {
-                    let d = self.centre(i, j) - e.pos;
-                    if self.solid[(i, j)] || d.dot(across).abs() > 0.5 * e.width.max(h) || d.dot(dir).abs() > depth {
-                        continue;
-                    }
-                    self.dye[(i, j)] = 1.0;
-                    let v = dir * e.speed;
-                    self.grid.u[(i, j)] = v.x;
-                    self.grid.u[(i + 1, j)] = v.x;
-                    self.grid.v[(i, j)] = v.y;
-                    self.grid.v[(i, j + 1)] = v.y;
-                }
-            }
-        }
         for b in &input.brushes {
             let blend = |p: Vec2, current: f32, target: f32| {
                 let d = p.distance(b.pos);
@@ -326,26 +368,23 @@ impl StableFluids {
         std::mem::swap(&mut self.grid.v, &mut self.v_next);
     }
 
+    /// MacCormack (see `super::maccormack`): plain semi-Lagrangian blurs the dye.
     fn advect_dye(&mut self, dt: f32) {
         let g = &self.grid;
-        let (h, dye, solid) = (g.h, &self.dye, &self.solid);
+        let h = g.h;
+        let velocity = |q: Vec2| {
+            Vec2::new(Stencil::on(&g.u, h, U_OFFSET, q).sample(&g.u), Stencil::on(&g.v, h, V_OFFSET, q).sample(&g.v))
+        };
+        let frozen = |i: usize, j: usize| g.cell[(i, j)] == CellType::Solid;
+        super::maccormack(&mut self.dye, &mut self.dye_next, &mut self.dye_back, h, dt, velocity, frozen);
         let keep = (1.0 - self.params.dissipation * dt).clamp(0.0, 1.0);
-        self.dye_next.par_rows_mut().enumerate().for_each(|(j, row)| {
-            for (i, out) in row.iter_mut().enumerate() {
-                if solid[(i, j)] {
-                    *out = 0.0;
-                    continue;
+        if keep < 1.0 {
+            for (d, c) in self.dye.as_mut_slice().iter_mut().zip(self.grid.cell.as_slice()) {
+                if *c != CellType::Solid {
+                    *d *= keep;
                 }
-                let p = (Vec2::new(i as f32, j as f32) + CENTRE_OFFSET) * h;
-                let vel = |q: Vec2| {
-                    Vec2::new(Stencil::on(&g.u, h, U_OFFSET, q).sample(&g.u), Stencil::on(&g.v, h, V_OFFSET, q).sample(&g.v))
-                };
-                let mid = p - 0.5 * dt * vel(p);
-                let src = p - dt * vel(mid);
-                *out = keep * Stencil::on(dye, h, CENTRE_OFFSET, src).sample(dye);
             }
-        });
-        std::mem::swap(&mut self.dye, &mut self.dye_next);
+        }
     }
 
     fn max_speed(&self) -> f32 {
@@ -361,7 +400,7 @@ impl Solver for StableFluids {
 
     fn reset(&mut self, scene: &Scene, init: Init<'_>) {
         self.resize(scene.size);
-        self.refresh_solids(scene);
+        self.update_cells(scene, &StepInput::default());
         let (nx, ny, h) = (self.grid.nx, self.grid.ny, self.grid.h);
         match init {
             Init::FromScene => {
@@ -395,21 +434,24 @@ impl Solver for StableFluids {
 
     fn step(&mut self, dt: f32, scene: &Scene, input: &StepInput) {
         let mut timer = PhaseTimer::start();
-        self.refresh_solids(scene);
-        self.apply_sources(scene, input, dt);
+        self.update_cells(scene, input);
+        self.apply_brushes(input, dt);
         self.apply_buoyancy(scene.gravity, dt);
         self.confine_vorticity(dt);
         self.grid.zero_solid_faces();
+        self.set_inlet_faces();
         timer.lap("forces");
 
         self.advect_velocity(dt);
         self.grid.zero_solid_faces();
+        self.set_inlet_faces();
         timer.lap("advect velocity");
 
-        let method = Method::GaussSeidel {
-            iterations: self.params.pressure_iters,
-            over_relax: self.params.over_relax,
-            non_negative: false,
+        let p = &self.params;
+        let method = if p.multigrid {
+            Method::Pcg { max_iterations: p.pressure_iters, tolerance: MGPCG_TOLERANCE, non_negative: false, multigrid: true }
+        } else {
+            Method::GaussSeidel { iterations: p.pressure_iters, over_relax: p.over_relax, non_negative: false }
         };
         let no_density = &self.dye; // unused without drift compensation
         pressure::project(&mut self.grid, &mut self.pressure_solver, &mut self.pressure, no_density, dt, method, None);
@@ -433,6 +475,7 @@ impl Solver for StableFluids {
         v.float(&DISSIPATION, &mut p.dissipation);
         v.float(&VORTICITY, &mut p.vorticity);
         v.section("Solver");
+        v.toggle(&MULTIGRID, &mut p.multigrid);
         v.int(&PRESSURE_ITERS, &mut p.pressure_iters);
         v.float(&OVER_RELAX, &mut p.over_relax);
         v.float(&CFL, &mut p.cfl);
@@ -526,6 +569,26 @@ mod tests {
     fn light_dye_rises() {
         let (_, before, after) = run(-0.5, Rect::new(Vec2::new(0.8, 0.0), Vec2::new(1.2, 0.3)), 1.5);
         assert!(after.y > before.y + 0.05, "centroid {before} -> {after}");
+    }
+
+    /// Open boundaries: the wind tunnel's inlet (nozzle against the wall) and outlet
+    /// (drain, p = 0) carry a through-flow. Without them a closed box can only
+    /// recirculate, and the flow at mid-tunnel would average zero.
+    #[test]
+    fn wind_tunnel_flows_through() {
+        let scene = crate::presets::wind_tunnel();
+        let mut s = StableFluids::with_params(StableParams { cells_y: 64, ..StableParams::default() });
+        s.reset(&scene, Init::FromScene);
+        let stepper = Stepper::default();
+        for _ in 0..120 {
+            stepper.advance(&mut s, &scene, 1.0 / 60.0, &StepInput::default());
+        }
+        let g = &s.grid;
+        let i = (1.5 / g.h) as usize;
+        let open: Vec<f32> = (0..g.ny).filter(|&j| g.cell[(i, j)] == CellType::Fluid).map(|j| g.u[(i, j)]).collect();
+        let mean = open.iter().sum::<f32>() / open.len() as f32;
+        assert!((0.8..1.2).contains(&mean), "mean flow across x = 1.5 m is {mean} m/s (inlet 1 m/s)");
+        assert!(s.stats.metrics[0].value < 0.05, "residual {}", s.stats.metrics[0].value);
     }
 
     /// The projected velocity is divergence-free (it's a closed, all-fluid domain, so

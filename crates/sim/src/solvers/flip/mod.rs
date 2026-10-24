@@ -1,4 +1,4 @@
-﻿//! FLIP: particles carry velocity, a staggered MAC grid enforces incompressibility.
+//! FLIP: particles carry velocity, a staggered MAC grid enforces incompressibility.
 //!
 //! Per substep (Bridson ch. 7; structure after Ten Minute Physics #18):
 //! classify cells -> P2G -> gravity on the grid -> solid boundaries -> pressure
@@ -39,6 +39,8 @@ pub struct FlipParams {
     pub use_pcg: bool,
     /// PCG stops when the largest unbalanced flux falls below this (m/s).
     pub pcg_tolerance: f32,
+    /// Precondition CG with a multigrid V-cycle (MGPCG) instead of Jacobi.
+    pub pcg_multigrid: bool,
     pub compensate_drift: bool,
     /// Fraction of a cell's excess particle density removed per substep.
     pub drift_stiffness: f32,
@@ -55,10 +57,12 @@ impl Default for FlipParams {
             flip_ratio: 0.9,
             pressure_iters: 50,
             over_relax: 1.9,
-            // Measured: at equal accuracy, warm-started Gauss-Seidel is ~3x faster than
-            // Jacobi-PCG on these grids and scales as well (see docs/PLAN.md).
+            // Measured: warm-started Gauss-Seidel beats Jacobi-PCG ~3x and multigrid-PCG
+            // ~1.5x here: FLIP's p >= 0 active set re-solves several times per substep,
+            // and warm starts leave little smooth error for multigrid (see docs/PLAN.md).
             use_pcg: false,
             pcg_tolerance: 0.01,
+            pcg_multigrid: true,
             // Separation alone keeps volume within a few percent over 10 s of dam break;
             // drift compensation on top mostly adds restlessness.
             compensate_drift: false,
@@ -95,7 +99,12 @@ const PRESSURE_ITERS: IntSpec = IntSpec {
 const USE_PCG: ToggleSpec = ToggleSpec {
     key: "use_pcg",
     label: "Conjugate gradients",
-    help: "Jacobi-preconditioned CG to a tolerance instead of fixed Gauss-Seidel sweeps. Far            faster from a cold start, but warm-started Gauss-Seidel wins here (measured ~3x).",
+    help: "Preconditioned CG to a tolerance instead of fixed Gauss-Seidel sweeps. Far faster from a cold start, but warm-started Gauss-Seidel wins here (measured 1.5-3x).",
+};
+const PCG_MULTIGRID: ToggleSpec = ToggleSpec {
+    key: "pcg_multigrid",
+    label: "Multigrid preconditioner",
+    help: "Precondition CG with a multigrid V-cycle (MGPCG) instead of Jacobi: far fewer iterations, each costlier.",
 };
 const PCG_TOLERANCE: FloatSpec = FloatSpec {
     key: "pcg_tolerance",
@@ -340,7 +349,12 @@ impl Solver for Flip {
 
         let p = &self.params;
         let method = if p.use_pcg {
-            Method::Pcg { max_iterations: p.pressure_iters, tolerance: p.pcg_tolerance, non_negative: true }
+            Method::Pcg {
+                max_iterations: p.pressure_iters,
+                tolerance: p.pcg_tolerance,
+                non_negative: true,
+                multigrid: p.pcg_multigrid,
+            }
         } else {
             Method::GaussSeidel { iterations: p.pressure_iters, over_relax: p.over_relax, non_negative: true }
         };
@@ -393,6 +407,7 @@ impl Solver for Flip {
         v.float(&CFL, &mut p.cfl);
         v.section("Pressure");
         v.toggle(&USE_PCG, &mut p.use_pcg);
+        v.toggle(&PCG_MULTIGRID, &mut p.pcg_multigrid);
         v.int(&PRESSURE_ITERS, &mut p.pressure_iters);
         v.float(&OVER_RELAX, &mut p.over_relax);
         v.float(&PCG_TOLERANCE, &mut p.pcg_tolerance);
@@ -606,7 +621,7 @@ mod tests {
     }
 
     fn pcg_params() -> FlipParams {
-        FlipParams { use_pcg: true, pressure_iters: 200, ..FlipParams::default() }
+        FlipParams { use_pcg: true, pcg_multigrid: false, pressure_iters: 200, ..FlipParams::default() }
     }
 
     /// A tank-like pressure system: fluid in the lower half of a closed box with air
@@ -642,7 +657,7 @@ mod tests {
     #[test]
     fn pcg_converges_to_its_tolerance() {
         let mut grid = falling_tank_grid();
-        let (used, residual) = solve(&mut grid, Method::Pcg { max_iterations: 1000, tolerance: 1e-4, non_negative: true });
+        let (used, residual) = solve(&mut grid, Method::Pcg { max_iterations: 1000, tolerance: 1e-4, non_negative: true, multigrid: false });
         assert!(used < 1000, "PCG didn't converge in 1000 iterations");
         // f32 bottoms out around 2e-4 m/s for velocities of order 1 m/s (see the
         // convergence table: 200 and 400 iterations both stall there).
@@ -660,9 +675,47 @@ mod tests {
     fn pcg_needs_far_fewer_iterations_than_gauss_seidel() {
         let (_, gs_residual) = solve(&mut falling_tank_grid(), Method::GaussSeidel { iterations: 400, over_relax: 1.9, non_negative: true });
         let (cg_iterations, cg_residual) =
-            solve(&mut falling_tank_grid(), Method::Pcg { max_iterations: 400, tolerance: gs_residual, non_negative: true });
+            solve(&mut falling_tank_grid(), Method::Pcg { max_iterations: 400, tolerance: gs_residual, non_negative: true, multigrid: false });
         assert!(cg_residual <= gs_residual * 1.01, "CG residual {cg_residual} vs GS {gs_residual}");
         assert!(cg_iterations < 200, "CG took {cg_iterations} iterations to match 400 of Gauss-Seidel ({gs_residual} m/s)");
+    }
+
+    /// MGPCG's point: from a cold start the multigrid-preconditioned CG needs a small
+    /// fraction of Jacobi-PCG's iterations to reach the same tolerance (measured: 8 vs
+    /// 139 on this 96x96 grid).
+    #[test]
+    fn multigrid_preconditioner_cuts_cg_iterations() {
+        let method = |multigrid| Method::Pcg { max_iterations: 1000, tolerance: 1e-3, non_negative: true, multigrid };
+        let (jacobi, jacobi_residual) = solve(&mut falling_tank_grid(), method(false));
+        let (mg, mg_residual) = solve(&mut falling_tank_grid(), method(true));
+        assert!(mg_residual < 1e-3 && jacobi_residual < 1e-3, "residuals: MG {mg_residual}, Jacobi {jacobi_residual}");
+        assert!(mg * 8 < jacobi, "MGPCG took {mg} iterations, Jacobi-PCG {jacobi}");
+    }
+
+    /// A closed, all-fluid box (no air: pressure defined only up to a constant, the
+    /// stable-fluids case) must still converge with the multigrid preconditioner.
+    #[test]
+    fn multigrid_cg_handles_a_closed_all_fluid_box() {
+        let (nx, ny) = (64, 64);
+        let (mut grid, solid) = closed_box_grid(nx, ny, 1.0 / ny as f32);
+        for (c, &s) in grid.cell.as_mut_slice().iter_mut().zip(solid.as_slice()) {
+            *c = if s { CellType::Solid } else { CellType::Fluid };
+        }
+        let mut rng = SplitMix64::new(9);
+        grid.u.as_mut_slice().iter_mut().for_each(|x| *x = rng.signed());
+        grid.v.as_mut_slice().iter_mut().for_each(|x| *x = rng.signed());
+        grid.zero_solid_faces();
+        let mut p = Grid2::new(nx, ny);
+        let method = Method::Pcg { max_iterations: 200, tolerance: 1e-3, non_negative: false, multigrid: true };
+        let used = pressure::project(&mut grid, &mut PressureSolver::new(nx, ny), &mut p, &Grid2::new(nx, ny), 1.0, method, None);
+        let residual = pressure::max_residual(&grid, &p, false);
+        assert!(residual < 1e-3, "residual {residual} m/s after {used} iterations");
+        assert!(used < 20, "{used} iterations");
+    }
+
+    #[test]
+    fn mgpcg_pressure_field_is_hydrostatic() {
+        check_hydrostatic(FlipParams { pcg_multigrid: true, ..pcg_params() });
     }
 
     #[test]

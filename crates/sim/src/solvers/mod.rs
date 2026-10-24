@@ -4,6 +4,7 @@
 pub mod ballistic;
 pub mod flip;
 pub mod lbm;
+mod multigrid;
 pub mod pbf;
 mod pressure;
 pub mod stable;
@@ -15,8 +16,9 @@ pub use pbf::{Pbf, PbfParams};
 pub use stable::{StableFluids, StableParams};
 
 use crate::grid::Grid2;
+use crate::grid::mac::{CENTRE_OFFSET, Stencil};
 use crate::rng::SplitMix64;
-use crate::scene::{ForceBrush, Rect, Scene, StepInput};
+use crate::scene::{Emitter, ForceBrush, Rect, Scene, StepInput};
 use crate::solver::ParticleView;
 use glam::Vec2;
 use rayon::prelude::*;
@@ -221,4 +223,75 @@ pub fn collide_with_solids(
             }
         }
     }
+}
+
+/// Wide nozzles release dye in stripes this far apart (wind-tunnel streaklines);
+/// narrower ones release solid dye.
+const STRIPE_PITCH: f32 = 0.08;
+const STRIPED_WIDTH: f32 = 0.25;
+
+/// For grid solvers that model emitters as boundary cells: if the cell centred at `c`
+/// (cell size `h`) is in the emitter's nozzle, its offset across the stream. The
+/// nozzle is a slab one cell either side of `pos`, `width` across.
+pub fn nozzle_offset(e: &Emitter, h: f32, c: Vec2) -> Option<f32> {
+    let dir = e.dir.normalize_or(Vec2::NEG_Y);
+    let d = c - e.pos;
+    let across = d.dot(dir.perp());
+    (across.abs() <= 0.5 * e.width.max(h) && d.dot(dir).abs() <= h).then_some(across)
+}
+
+/// Dye concentration a nozzle releases at offset `across` from its centre line.
+pub fn nozzle_dye(e: &Emitter, across: f32) -> f32 {
+    let stripe = ((across / (0.5 * STRIPE_PITCH)).floor() as i32).rem_euclid(2) == 0;
+    if e.width < STRIPED_WIDTH || stripe { 1.0 } else { 0.0 }
+}
+
+/// MacCormack advection (Selle et al. 2008) of a cell-centred scalar `q` through
+/// `velocity` (m/s at a point): a semi-Lagrangian step forward, one back, and half the
+/// round-trip error added back, clamped to the values the forward step interpolated
+/// from so it can't overshoot. Much less diffusive than plain semi-Lagrangian, which
+/// smears a streakline out within a few dozen cells. `frozen` cells (solids, inlets)
+/// keep their value and still act as sources for their neighbours.
+pub fn maccormack(
+    q: &mut Grid2<f32>,
+    forward: &mut Grid2<f32>,
+    back: &mut Grid2<f32>,
+    h: f32,
+    dt: f32,
+    velocity: impl Fn(Vec2) -> Vec2 + Sync,
+    frozen: impl Fn(usize, usize) -> bool + Sync,
+) {
+    let departure = |i: usize, j: usize, dt: f32| {
+        let p = (Vec2::new(i as f32, j as f32) + CENTRE_OFFSET) * h;
+        let mid = p - 0.5 * dt * velocity(p);
+        p - dt * velocity(mid)
+    };
+    let semi_lagrangian = |src: &Grid2<f32>, out: &mut Grid2<f32>, dt: f32| {
+        out.par_rows_mut().enumerate().for_each(|(j, row)| {
+            for (i, o) in row.iter_mut().enumerate() {
+                *o = if frozen(i, j) {
+                    src[(i, j)]
+                } else {
+                    Stencil::on(src, h, CENTRE_OFFSET, departure(i, j, dt)).sample(src)
+                };
+            }
+        });
+    };
+    semi_lagrangian(q, forward, dt);
+    semi_lagrangian(forward, back, -dt);
+    let (q_ro, forward) = (&*q, &*forward);
+    back.par_rows_mut().enumerate().for_each(|(j, row)| {
+        for (i, o) in row.iter_mut().enumerate() {
+            if frozen(i, j) {
+                *o = q_ro[(i, j)];
+                continue;
+            }
+            let corrected = forward[(i, j)] + 0.5 * (q_ro[(i, j)] - *o);
+            let s = Stencil::on(q_ro, h, CENTRE_OFFSET, departure(i, j, dt));
+            let (lo, hi) =
+                s.corners().into_iter().fold((f32::MAX, f32::MIN), |(lo, hi), c| (lo.min(q_ro[c]), hi.max(q_ro[c])));
+            *o = corrected.clamp(lo, hi);
+        }
+    });
+    std::mem::swap(q, back);
 }
