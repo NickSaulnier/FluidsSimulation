@@ -110,7 +110,8 @@ pub fn panel(
     cursor: Option<Cursor>,
     field_range: Option<(f32, f32)>,
 ) {
-    egui::Panel::right("controls").resizable(false).exact_size(PANEL_WIDTH).show(ui, |ui| {
+    let window = ui.max_rect();
+    let panel = egui::Panel::right("controls").resizable(false).exact_size(PANEL_WIDTH).show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Fluid toy");
             stats(ui, world, perf);
@@ -133,9 +134,10 @@ pub fn panel(
         });
     });
 
-    // Brush outline, drawn on the background layer so it sits under the panel.
+    // Brush outline, clipped to the canvas left of the panel so it never draws over
+    // the controls.
     if let Some(c) = cursor {
-        let ppp = ui.ctx().pixels_per_point();
+        let canvas = egui::Rect::from_min_max(window.min, egui::pos2(panel.response.rect.min.x, window.max.y));        let ppp = ui.ctx().pixels_per_point();
         let centre = egui::pos2(c.pos.x / ppp, c.pos.y / ppp);
         let colour = match state.tool {
             Tool::Push => egui::Color32::from_rgb(120, 200, 255),
@@ -144,6 +146,7 @@ pub fn panel(
             Tool::Faucet => egui::Color32::from_rgb(120, 255, 170),
         };
         ui.painter()
+            .with_clip_rect(canvas)
             .circle_stroke(centre, state.brush_radius * c.px_per_metre / ppp, egui::Stroke::new(1.5, colour));
     }
 }
