@@ -1,10 +1,13 @@
-//! Audio-reactive mode: play a track and fire fluid pulses on its kick drums.
+//! Audio-reactive mode: fire fluid pulses on the kick drums of either a track file
+//! played by the app, or whatever the computer is playing (live, see `live`).
 //!
 //! Loading (decode + kick analysis) runs on a background thread so a long track doesn't
-//! freeze the window. Kicks are detected offline (see `kicks`), so during playback the
-//! only work is comparing their times against the player's position.
+//! freeze the window. A track's kicks are detected offline (see `kicks`), so during
+//! playback the only work is comparing their times against the player's position. Live
+//! audio is analysed as it arrives.
 
 pub mod kicks;
+pub mod live;
 
 use kicks::{Kick, Onsets};
 use rodio::Source;
@@ -50,6 +53,8 @@ struct Pulse {
 
 pub struct Music {
     pub track: Option<Track>,
+    /// Capturing the computer's audio output instead of playing the track.
+    pub live: Option<live::LiveInput>,
     pub error: Option<String>,
     pub sensitivity: f32,
     pub gain: f32,
@@ -73,6 +78,7 @@ impl Default for Music {
     fn default() -> Self {
         Self {
             track: None,
+            live: None,
             error: None,
             sensitivity: 1.5,
             gain: 1.0,
@@ -104,6 +110,32 @@ impl Music {
         });
         self.loading = Some((name, rx));
         self.error = None;
+    }
+
+    /// Switch between the track and live capture of the computer's audio output. The
+    /// track pauses while live, or the capture would hear it too.
+    pub fn set_live(&mut self, on: bool) {
+        if on == self.live.is_some() {
+            return;
+        }
+        if !on {
+            self.live = None;
+            return;
+        }
+        if let Some(p) = &self.player {
+            p.pause();
+        }
+        match live::LiveInput::open() {
+            Ok(input) => {
+                self.live = Some(input);
+                self.error = None;
+            }
+            Err(e) => self.error = Some(format!("can't capture system audio: {e}")),
+        }
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.live.is_some()
     }
 
     pub fn loading_name(&self) -> Option<&str> {
@@ -163,6 +195,14 @@ impl Music {
                 }
             }
         }
+        if let Some(input) = &mut self.live {
+            for kick in input.poll(self.sensitivity) {
+                self.pulses.push(Pulse { started: Instant::now(), strength: kick.strength, lane: LANES[self.lane % LANES.len()] });
+                self.lane += 1;
+                self.last_kick = Some(Instant::now());
+            }
+            return;
+        }
         // Read the player before borrowing the track: `position()` borrows all of `self`.
         let playing = self.player.as_ref().is_some_and(|p| !p.is_paused());
         let pos = self.position();
@@ -216,6 +256,8 @@ impl Music {
 
     fn start(&mut self, loaded: Loaded) {
         let Loaded { name, channels, rate, samples, onsets } = loaded;
+        // Dropping a file means "play this": leave live mode.
+        self.live = None;
         let duration = samples.len() as f32 / (f32::from(channels.get()) * rate.get() as f32);
         if self.device.is_none() {
             match rodio::DeviceSinkBuilder::open_default_sink() {

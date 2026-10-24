@@ -4,8 +4,9 @@
 //! closes the cheat sheet, or quits. (Not Tab: egui consumes it for keyboard focus
 //! navigation.)
 //!
-//! Usage: `fluid-toy [TRACK] [--mute]`. A track (mp3, ogg, flac, wav) can also be
-//! dropped onto the window; its kick drums then make the water jump.
+//! Usage: `fluid-toy [TRACK] [--mute] [--live]`. A track (mp3, ogg, flac, wav) can also
+//! be dropped onto the window; its kick drums then make the water jump. `--live` instead
+//! listens to whatever the computer is playing (Spotify, a browser...).
 
 mod audio;
 mod gpu;
@@ -173,6 +174,9 @@ impl State {
         music.muted = args.iter().any(|a| a == "--mute");
         if let Some(track) = args.iter().find(|a| !a.starts_with("--")) {
             music.load(track.into());
+        }
+        if args.iter().any(|a| a == "--live") {
+            music.set_live(true);
         }
         Ok(Self {
             window,

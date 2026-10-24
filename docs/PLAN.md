@@ -1102,6 +1102,40 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Live system-audio mode (Spotify or anything else playing):**
+  - **Why not Spotify directly:** it exposes neither raw audio (the streams are DRM'd)
+    nor, for new apps since late 2024, its audio-analysis data. So the app captures
+    the computer's output instead.
+  - **Capture:** on Windows, cpal's WASAPI backend turns an *output* device opened as
+    an input stream into loopback capture (`audio/live.rs`). cpal comes re-exported
+    by rodio, so there's no new dependency.
+    - The callback downmixes to mono into a buffer capped at 1 s; the frame loop
+      drains it.
+    - WASAPI delivers nothing while the system is silent, so the level meter decays
+      on its own.
+  - **Detection:** `kicks::LiveDetector` is the offline pipeline made causal:
+    - the same low-pass filter, now one sample at a time and shared with the offline
+      path;
+    - the same onset function;
+    - a trailing threshold window, with peaks confirmed one hop (~11 ms) late;
+    - the floor and strength scale taken from the last 10 s instead of the whole
+      track;
+    - a −46 dBFS gate standing in for the track-wide floor during silence and intros.
+
+    Tests check that it finds the synthetic beat's kicks (after 1 s of warm-up) with
+    no false ones, that results don't depend on how the audio is chunked, and that it
+    stays quiet on silence and quiet noise.
+  - **Checked live:** a 120 bpm test beat played through Windows while capturing
+    "Headphones" at 48 kHz made the water splash on each kick. Other audio already
+    playing on the machine was picked up too: loopback hears everything.
+  - **Usage:** Music tab → Source → "System audio (live)", or start with `--live`.
+    Dropping a file switches back to track mode, and the app's own track pauses while
+    live so the capture doesn't hear it.
+  - **Later:**
+    - per-app capture, so only Spotify is heard: Windows 10 2004+ process loopback;
+    - macOS: ScreenCaptureKit, or BlackHole;
+    - Linux: a PulseAudio/PipeWire monitor source;
+    - browser: tab audio via `getDisplayMedia`.
 - **Follow-ups: MGPCG, open boundaries for stable fluids, shared MacCormack dye:**
   - **Multigrid-preconditioned CG** (`solvers/multigrid.rs`, McAdams et al. 2010).
     - *Design:* one V-cycle as the CG preconditioner, with these ingredients:

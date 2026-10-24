@@ -1,4 +1,5 @@
-//! Offline kick-drum detection.
+//! Kick-drum detection, offline (a whole track at load) or live (`LiveDetector`, for
+//! audio captured as it plays).
 //!
 //! 1. Low-pass the mono signal (biquad, ~150 Hz): kick drums live there, hi-hats and most
 //!    melody don't.
@@ -11,9 +12,16 @@
 //!    where it is only relative to noise, so peaks must also clear a floor relative to
 //!    the whole track's strong onsets.
 //!
-//! Done once when a track loads (and re-picked when sensitivity changes), so playback
-//! only has to compare precomputed times against the clock.
+//! Offline, this runs once when a track loads (and re-picks when sensitivity changes),
+//! so playback only has to compare precomputed times against the clock.
+//!
+//! Live, the same steps run causally: the threshold window trails the current hop
+//! instead of being centred on it, peaks are confirmed one hop late, the floor comes
+//! from the last several seconds instead of the whole track, and a close second peak
+//! can't replace a kick that has already fired. A quiet-signal gate stands in for the
+//! track-wide floor during intros and silence.
 
+use std::collections::VecDeque;
 use std::f32::consts::PI;
 
 const CUTOFF_HZ: f32 = 150.0;
@@ -26,6 +34,10 @@ const MIN_GAP_S: f32 = 0.1;
 /// Peaks must reach this fraction of the track's strong onsets (98th percentile of the
 /// non-zero onset values).
 const FLOOR_FRACTION: f32 = 0.2;
+/// Live: how much recent history stands in for "the whole track" (floor, strength).
+const LIVE_HISTORY_S: f32 = 10.0;
+/// Live: low-band RMS below this is treated as silence (about -46 dBFS).
+const LIVE_GATE_RMS: f32 = 0.005;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Kick {
@@ -43,7 +55,8 @@ pub struct Onsets {
 
 /// Low-pass, frame, and turn into an onset function.
 pub fn onset_function(mono: &[f32], sample_rate: u32) -> Onsets {
-    let low = lowpass(mono, sample_rate as f32, CUTOFF_HZ);
+    let mut filter = Biquad::lowpass(sample_rate as f32, CUTOFF_HZ);
+    let low: Vec<f32> = mono.iter().map(|&x| filter.process(x)).collect();
     let frames = low.len().saturating_sub(WINDOW) / HOP + 1;
     let energy: Vec<f32> = (0..frames)
         .map(|k| {
@@ -93,22 +106,137 @@ pub fn pick_kicks(onsets: &Onsets, sensitivity: f32) -> Vec<Kick> {
     picked.into_iter().map(|(k, s)| Kick { time: k as f32 * onsets.hop_seconds, strength: s / strongest }).collect()
 }
 
-/// RBJ biquad low-pass (Q = 1/√2).
-fn lowpass(x: &[f32], sample_rate: f32, cutoff: f32) -> Vec<f32> {
-    let w0 = 2.0 * PI * cutoff / sample_rate;
-    let alpha = w0.sin() / (2.0 * std::f32::consts::FRAC_1_SQRT_2);
-    let cos = w0.cos();
-    let a0 = 1.0 + alpha;
-    let (b0, b1, b2) = ((1.0 - cos) / 2.0 / a0, (1.0 - cos) / a0, (1.0 - cos) / 2.0 / a0);
-    let (a1, a2) = (-2.0 * cos / a0, (1.0 - alpha) / a0);
-    let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
-    x.iter()
-        .map(|&x0| {
-            let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-            (x2, x1, y2, y1) = (x1, x0, y1, y0);
-            y0
-        })
-        .collect()
+/// RBJ biquad low-pass (Q = 1/√2), one sample at a time so it can also run live.
+struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    x: [f32; 2],
+    y: [f32; 2],
+}
+
+impl Biquad {
+    fn lowpass(sample_rate: f32, cutoff: f32) -> Self {
+        let w0 = 2.0 * PI * cutoff / sample_rate;
+        let alpha = w0.sin() / (2.0 * std::f32::consts::FRAC_1_SQRT_2);
+        let cos = w0.cos();
+        let a0 = 1.0 + alpha;
+        Self {
+            b: [(1.0 - cos) / 2.0 / a0, (1.0 - cos) / a0, (1.0 - cos) / 2.0 / a0],
+            a: [-2.0 * cos / a0, (1.0 - alpha) / a0],
+            x: [0.0; 2],
+            y: [0.0; 2],
+        }
+    }
+
+    fn process(&mut self, x0: f32) -> f32 {
+        let [b0, b1, b2] = self.b;
+        let [a1, a2] = self.a;
+        let y0 = b0 * x0 + b1 * self.x[0] + b2 * self.x[1] - a1 * self.y[0] - a2 * self.y[1];
+        self.x = [x0, self.x[0]];
+        self.y = [y0, self.y[0]];
+        y0
+    }
+}
+
+/// Kick detection on audio arriving in chunks of any size, as it plays.
+pub struct LiveDetector {
+    filter: Biquad,
+    hop_seconds: f32,
+    /// The last `WINDOW` low-passed samples.
+    window: VecDeque<f32>,
+    since_hop: usize,
+    hops: usize,
+    prev_log_energy: Option<f32>,
+    /// Onset values for the threshold window (trailing), newest last.
+    recent: VecDeque<f32>,
+    /// Onset values over `LIVE_HISTORY_S`, for the floor and the strength scale.
+    history: VecDeque<f32>,
+    /// The previous hop's onset value and gate state, awaiting the next hop to
+    /// confirm it as a peak.
+    pending: Option<(f32, bool)>,
+    last_kick_hop: Option<usize>,
+}
+
+impl LiveDetector {
+    pub fn new(sample_rate: u32) -> Self {
+        Self {
+            filter: Biquad::lowpass(sample_rate as f32, CUTOFF_HZ),
+            hop_seconds: HOP as f32 / sample_rate as f32,
+            window: VecDeque::with_capacity(WINDOW),
+            since_hop: 0,
+            hops: 0,
+            prev_log_energy: None,
+            recent: VecDeque::new(),
+            history: VecDeque::new(),
+            pending: None,
+            last_kick_hop: None,
+        }
+    }
+
+    /// Feed mono samples; kicks found in them are appended to `out`, timed in seconds
+    /// since the detector started (the start of their analysis frame, as offline).
+    pub fn process(&mut self, mono: &[f32], sensitivity: f32, out: &mut Vec<Kick>) {
+        for &x in mono {
+            if self.window.len() == WINDOW {
+                self.window.pop_front();
+            }
+            self.window.push_back(self.filter.process(x));
+            self.since_hop += 1;
+            if self.window.len() == WINDOW && self.since_hop >= HOP {
+                self.since_hop = 0;
+                self.hop(sensitivity, out);
+            }
+        }
+    }
+
+    fn hop(&mut self, sensitivity: f32, out: &mut Vec<Kick>) {
+        let energy = self.window.iter().map(|x| x * x).sum::<f32>() / WINDOW as f32;
+        let log = (energy + 1e-7).ln();
+        let value = self.prev_log_energy.map_or(0.0, |prev| (log - prev).max(0.0));
+        self.prev_log_energy = Some(log);
+        let audible = energy.sqrt() > LIVE_GATE_RMS;
+
+        let context = ((CONTEXT_S / self.hop_seconds) as usize).max(1);
+        let history_len = ((LIVE_HISTORY_S / self.hop_seconds) as usize).max(1);
+        push_capped(&mut self.recent, value, 2 * context + 1);
+        push_capped(&mut self.history, value, history_len);
+
+        // The previous hop is a peak if it's at least as big as both neighbours.
+        if let Some((candidate, was_audible)) = self.pending.replace((value, audible))
+            && was_audible
+            && candidate > 0.0
+            && candidate >= value
+        {
+            let k = self.hops - 1;
+            let before = self.recent.iter().rev().nth(2).copied().unwrap_or(0.0);
+            // Threshold over the trailing window, which ends at the candidate.
+            let window: Vec<f32> = self.recent.iter().take(self.recent.len() - 1).copied().collect();
+            let mean = window.iter().sum::<f32>() / window.len() as f32;
+            let var = window.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / window.len() as f32;
+            let mut nonzero: Vec<f32> = self.history.iter().copied().filter(|&x| x > 0.0).collect();
+            nonzero.sort_by(f32::total_cmp);
+            let strong = nonzero.get((nonzero.len() as f32 * 0.98) as usize).copied().unwrap_or(candidate);
+            let min_gap = ((MIN_GAP_S / self.hop_seconds) as usize).max(1);
+            let spaced = self.last_kick_hop.is_none_or(|last| k - last >= min_gap);
+            if candidate >= before
+                && candidate > mean + sensitivity * var.sqrt()
+                && candidate >= FLOOR_FRACTION * strong
+                && spaced
+            {
+                let scale = nonzero.last().copied().unwrap_or(candidate).max(1e-6);
+                out.push(Kick { time: k as f32 * self.hop_seconds, strength: (candidate / scale).min(1.0) });
+                self.last_kick_hop = Some(k);
+            }
+        }
+        self.hops += 1;
+    }
+}
+
+fn push_capped(q: &mut VecDeque<f32>, v: f32, cap: usize) {
+    if q.len() == cap {
+        q.pop_front();
+    }
+    q.push_back(v);
 }
 
 #[cfg(test)]
@@ -171,6 +299,50 @@ pub mod tests {
             assert!(truth.iter().any(|t| (k.time - t).abs() < tolerance), "false kick at {:.3} s", k.time);
         }
         assert!(kicks.iter().all(|k| (0.0..=1.0).contains(&k.strength)));
+    }
+
+    /// The live detector, fed the same beat in uneven chunks as a capture callback would,
+    /// finds the same kicks (after a second of warm-up, which the trailing window and
+    /// history need) and is unaffected by how the audio was chunked.
+    #[test]
+    fn live_detector_finds_the_kicks_in_any_chunking() {
+        let rate = 44_100;
+        let (signal, truth) = synthetic_beat(rate, 10.0, 120.0);
+        let run = |chunk: usize| {
+            let mut detector = LiveDetector::new(rate);
+            let mut kicks = Vec::new();
+            for (i, part) in signal.chunks(chunk).enumerate() {
+                // Vary the chunk size, as real callbacks do.
+                let split = (i * 37) % part.len().max(1);
+                detector.process(&part[..split], 1.5, &mut kicks);
+                detector.process(&part[split..], 1.5, &mut kicks);
+            }
+            kicks
+        };
+        let kicks = run(441);
+        assert_eq!(kicks, run(4096), "chunking changed the result");
+        let tolerance = 0.03;
+        for t in truth.iter().filter(|&&t| t > 1.0) {
+            assert!(kicks.iter().any(|k| (k.time - t).abs() < tolerance), "missed the kick at {t:.3} s; found {kicks:?}");
+        }
+        for k in &kicks {
+            assert!(truth.iter().any(|t| (k.time - t).abs() < tolerance), "false kick at {:.3} s", k.time);
+        }
+        assert!(kicks.iter().all(|k| (0.0..=1.0).contains(&k.strength)));
+    }
+
+    /// Silence, and a quiet noise bed with no beat (an intro), give no live kicks.
+    #[test]
+    fn live_detector_ignores_silence_and_quiet_noise() {
+        let rate = 44_100;
+        let mut kicks = Vec::new();
+        LiveDetector::new(rate).process(&vec![0.0; 5 * rate as usize], 1.5, &mut kicks);
+        assert!(kicks.is_empty(), "{kicks:?}");
+        let (beat, _) = synthetic_beat(rate, 5.0, 120.0);
+        // The beat generator's noise bed alone: everything before its first kick, looped.
+        let bed: Vec<f32> = beat[..(0.2 * rate as f32) as usize].iter().cycle().take(5 * rate as usize).copied().collect();
+        LiveDetector::new(rate).process(&bed, 1.5, &mut kicks);
+        assert!(kicks.is_empty(), "noise bed fired {} kicks", kicks.len());
     }
 
     #[test]
