@@ -1,8 +1,8 @@
-﻿//! Fluid toy: winit event loop, frame loop, egui panel, keyboard shortcuts.
+//! Fluid toy: winit event loop, frame loop, egui panel, keyboard shortcuts.
 //!
 //! Keys: Space pause, S single step (while paused), R reset, P next preset,
 //! N next solver, O next overlay, H hide/show particles, L liquid surface on/off,
-//! M play/pause music, Left/Right tilt gravity, Esc quit.
+//! M play/pause music, `  ` hide/show the side panel, Left/Right tilt gravity, Esc quit.
 //!
 //! Usage: `fluid-toy [TRACK] [--mute]`. A track (mp3, ogg, flac, wav) can also be
 //! dropped onto the window; its kick drums then make the water jump. (Not Tab: egui consumes it for
@@ -80,6 +80,8 @@ struct State {
     field_values: Vec<f32>,
     field_range: Option<(f32, f32)>,
     input: Input,
+    /// Canvas rect (points) from the last UI layout.
+    canvas: Option<egui::Rect>,
     /// The `World::scene_generation` whose gravity the UI last took on.
     gravity_synced: u64,
     last_frame: Instant,
@@ -173,6 +175,7 @@ impl State {
             field_values: Vec::new(),
             field_range: None,
             input: Input::default(),
+            canvas: None,
             gravity_synced: u64::MAX, // take the first scene's gravity too
             last_frame: Instant::now(),
             perf: PerfCounter::new(),
@@ -192,6 +195,7 @@ impl State {
             KeyCode::KeyH => self.ui.show_particles = !self.ui.show_particles,
             KeyCode::KeyL => self.ui.liquid = !self.ui.liquid,
             KeyCode::KeyM => self.music.toggle_play(),
+            KeyCode::Backquote => self.ui.panel_open = !self.ui.panel_open,
             KeyCode::KeyN => {
                 self.world.switch_solver((self.world.solver_index + 1) % self.world.solvers.len(), self.ui.keep_particles);
             }
@@ -199,12 +203,16 @@ impl State {
         }
     }
 
-    /// The domain is fitted into the window minus the panel on the right.
+    /// The domain is fitted into the canvas: what the UI's bars and panel leave over
+    /// (last laid out), or the whole window before the first layout.
     fn view(&self) -> View {
         let size = self.window.inner_size();
-        let panel_px = (ui::PANEL_WIDTH * self.egui_ctx.pixels_per_point()) as u32;
-        let scene_area = winit::dpi::PhysicalSize::new(size.width.saturating_sub(panel_px).max(1), size.height);
-        View::fit(self.world.scene.size, scene_area, VIEW_MARGIN_PX).with_window(size)
+        let ppp = self.egui_ctx.pixels_per_point();
+        let (min, area) = match self.canvas {
+            Some(r) => (glam::Vec2::new(r.min.x, r.min.y) * ppp, glam::Vec2::new(r.width(), r.height()) * ppp),
+            None => (glam::Vec2::ZERO, glam::Vec2::new(size.width as f32, size.height as f32)),
+        };
+        View::fit_in(self.world.scene.size, min, area, VIEW_MARGIN_PX, size)
     }
 
     fn frame(&mut self) {
@@ -218,9 +226,14 @@ impl State {
         let cursor = self.input.cursor().map(|pos| ui::Cursor { pos, px_per_metre: view.px_per_metre });
         let perf = self.perf.latest();
         self.music.update();
-        let (world, ui_state, music, field_range) = (&mut self.world, &mut self.ui, &mut self.music, self.field_range);
-        let mut egui_out =
-            self.egui_ctx.run_ui(raw_input, |ui| ui::panel(ui, world, ui_state, music, &perf, cursor, field_range));
+        let mut frame =
+            ui::Frame { world: &mut self.world, state: &mut self.ui, music: &mut self.music, perf: &perf, field_range: self.field_range };
+        let mut canvas = None;
+        let mut egui_out = self.egui_ctx.run_ui(raw_input, |ui| canvas = Some(ui::layout(ui, &mut frame, cursor)));
+        // Fit this frame's input and drawing to the canvas just laid out (the panel may
+        // have been shown or hidden).
+        self.canvas = canvas;
+        let view = self.view();
         self.egui_winit.handle_platform_output(&self.window, std::mem::take(&mut egui_out.platform_output));
         self.apply_egui_textures(std::mem::take(&mut egui_out.textures_delta));
 

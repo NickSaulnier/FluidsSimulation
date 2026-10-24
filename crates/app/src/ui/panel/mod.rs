@@ -1,0 +1,30 @@
+//! The side panel: one tab at a time instead of one long scrolling column.
+
+mod info;
+mod music;
+mod simulate;
+mod view;
+
+use super::{Frame, Tab};
+
+pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let playing = f.music.is_playing();
+        for (tab, label) in [
+            (Tab::Simulate, "Simulate"),
+            (Tab::View, "View"),
+            (Tab::Music, if playing { "Music •" } else { "Music" }),
+            (Tab::Info, "Info"),
+        ] {
+            ui.selectable_value(&mut f.state.tab, tab, label);
+        }
+    });
+    ui.separator();
+    egui::ScrollArea::vertical().show(ui, |ui| match f.state.tab {
+        Tab::Simulate => simulate::show(ui, f),
+        Tab::View => view::show(ui, f),
+        Tab::Music => music::show(ui, f.music),
+        Tab::Info => info::show(ui, f),
+    });
+}
