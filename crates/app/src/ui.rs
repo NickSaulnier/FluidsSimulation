@@ -1,7 +1,9 @@
 //! The egui control panel. Solver parameters come from `Solver::visit_params`, so this
 //! file never names a specific solver.
 
+use crate::audio::{KickAction, Music};
 use sim::{PRESETS, SOLVERS, Vec2, World};
+use std::time::Duration;
 
 /// Panel width in points; the scene view is fitted into the rest of the window.
 pub const PANEL_WIDTH: f32 = 340.0;
@@ -97,6 +99,7 @@ pub fn panel(
     ui: &mut egui::Ui,
     world: &mut World,
     state: &mut UiState,
+    music: &mut Music,
     perf: &Perf,
     cursor: Option<Cursor>,
     field_range: Option<(f32, f32)>,
@@ -111,6 +114,8 @@ pub fn panel(
             scene(ui, world, state);
             ui.separator();
             tools(ui, state);
+            ui.separator();
+            music_section(ui, music);
             ui.separator();
             look(ui, state);
             ui.separator();
@@ -226,6 +231,47 @@ fn tools(ui: &mut egui::Ui, state: &mut UiState) {
     }
 }
 
+fn music_section(ui: &mut egui::Ui, music: &mut Music) {
+    ui.strong("Music");
+    if let Some(name) = music.loading_name() {
+        ui.label(format!("Loading {name}..."));
+    }
+    if let Some(e) = &music.error {
+        ui.colored_label(egui::Color32::from_rgb(255, 120, 120), e);
+    }
+    let Some(track) = &music.track else {
+        ui.weak("Drop an audio file on the window to make the water dance to its kick drums.");
+        return;
+    };
+    let (name, duration, kicks) = (track.name.clone(), track.duration, track.kicks.len());
+    let pos = music.position().min(duration);
+    ui.label(format!("{name}  {}:{:02} / {}:{:02}", pos as u32 / 60, pos as u32 % 60, duration as u32 / 60, duration as u32 % 60));
+    ui.horizontal(|ui| {
+        if ui.button(if music.is_playing() { "Pause (M)" } else { "Play (M)" }).clicked() {
+            music.toggle_play();
+        }
+        if ui.button("Restart").clicked() {
+            music.restart();
+        }
+        if ui.checkbox(&mut music.muted, "Mute").changed() {
+            music.apply_volume();
+        }
+        let flash = music.last_kick.is_some_and(|t| t.elapsed() < Duration::from_millis(150));
+        let colour = if flash { egui::Color32::from_rgb(255, 210, 90) } else { egui::Color32::from_gray(70) };
+        // Plain text: egui's default font has no "●" glyph.
+        ui.colored_label(colour, "KICK");
+    });
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut music.action, KickAction::Splash, "Splash")
+            .on_hover_text("Kicks shove the water upward.");
+        ui.radio_value(&mut music.action, KickAction::Jet, "Jet")
+            .on_hover_text("Kicks fire jets from the floor (adds water; the Fountain preset drains it).");
+    });
+    ui.add(egui::Slider::new(&mut music.sensitivity, 0.5..=4.0).text("Selectivity"))
+        .on_hover_text(format!("Higher = only the clearest kicks. {kicks} kicks detected."));
+    ui.add(egui::Slider::new(&mut music.gain, 0.2..=3.0).text("Strength").logarithmic(true));
+}
+
 fn look(ui: &mut egui::Ui, state: &mut UiState) {
     ui.checkbox(&mut state.liquid, "Liquid surface (L)")
         .on_hover_text("Blend particles into a continuous surface instead of drawing discs.");
@@ -297,7 +343,7 @@ fn solver(ui: &mut egui::Ui, world: &mut World, state: &mut UiState) {
 fn help(ui: &mut egui::Ui) {
     egui::CollapsingHeader::new("Controls").default_open(false).show(ui, |ui| {
         ui.label("Left drag: selected tool (Faucet pours along the drag)\nRight drag: push\nSpace: pause   S: step   R: reset\nP: next preset   N: next solver
-O: next overlay   H: hide/show particles\nL: liquid surface on/off\nLeft/Right arrows: tilt gravity");
+O: next overlay   H: hide/show particles\nL: liquid surface on/off   M: play/pause music\nDrop an audio file to load music\nLeft/Right arrows: tilt gravity");
     });
 }
 

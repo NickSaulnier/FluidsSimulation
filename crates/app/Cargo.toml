@@ -19,6 +19,7 @@ egui-wgpu.workspace = true
 egui-winit.workspace = true
 glam.workspace = true
 rayon.workspace = true
+rodio.workspace = true
 bytemuck.workspace = true
 pollster.workspace = true
 anyhow.workspace = true

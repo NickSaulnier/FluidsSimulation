@@ -1102,6 +1102,26 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 6 (stretch 3) audio-reactive findings:**
+  - **Detect kicks offline, when the track loads.** A background thread decodes, mixes
+    to mono, low-passes at 150 Hz, takes frame energy every 512 samples, and builds a
+    log-energy onset function. Peaks are picked against an adaptive threshold, at least
+    0.1 s apart. Playback then only compares precomputed times with
+    `Player::get_pos()`, so the timing is exact, and the "selectivity" slider re-picks
+    instantly.
+  - **An adaptive threshold alone fires on noise in quiet stretches** (intros,
+    breakdowns, the tail), because there it's only relative to noise; the synthetic-track
+    test caught a false kick in the tail. Peaks must also clear 20% of the track's strong
+    onsets (98th percentile of non-zero values).
+  - **Kicks become fluid input:** Splash (an upward force brush, conserves water) or Jet
+    (emitter pulses, adds water; pair with the fountain's drains). Lanes cycle across
+    the floor. Both reuse the Phase 2 and 5 input paths unchanged.
+  - **rodio 0.22 API:** `DeviceSinkBuilder::open_default_sink()`,
+    `Player::connect_new(sink.mixer())`, `Decoder::try_from(File)`, f32 samples,
+    `NonZero` channel count and sample rate. Pinned to 0.22.2, since 0.23.0 was under
+    two weeks old. Tracks load from the command line or by dropping a file on the
+    window (winit's `DroppedFile`, no dialog crate needed); `--mute` starts muted.
+  - **egui's default font has no "●".** It renders as a box.
 - **Phase 6 (stretch 2) conjugate-gradient pressure findings:**
   - **Built:** Jacobi-preconditioned CG, warm-started, stopping at a max-residual
     tolerance in m/s. Each iteration is three fused row-parallel map-reduce passes; dot

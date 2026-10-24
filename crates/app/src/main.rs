@@ -1,16 +1,21 @@
-//! Fluid toy: winit event loop, frame loop, egui panel, keyboard shortcuts.
+﻿//! Fluid toy: winit event loop, frame loop, egui panel, keyboard shortcuts.
 //!
 //! Keys: Space pause, S single step (while paused), R reset, P next preset,
 //! N next solver, O next overlay, H hide/show particles, L liquid surface on/off,
-//! Left/Right tilt gravity, Esc quit. (Not Tab: egui consumes it for
+//! M play/pause music, Left/Right tilt gravity, Esc quit.
+//!
+//! Usage: `fluid-toy [TRACK] [--mute]`. A track (mp3, ogg, flac, wav) can also be
+//! dropped onto the window; its kick drums then make the water jump. (Not Tab: egui consumes it for
 //! keyboard focus navigation.)
 
+mod audio;
 mod gpu;
 mod input;
 mod render;
 mod ui;
 mod view;
 
+use audio::Music;
 use gpu::Gpu;
 use input::Input;
 use render::Renderer;
@@ -65,6 +70,7 @@ struct State {
     egui_pending_free: Vec<egui::TextureId>,
     world: World,
     ui: UiState,
+    music: Music,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
     field_values: Vec<f32>,
     field_range: Option<(f32, f32)>,
@@ -96,6 +102,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => state.gpu.resize(size),
             WindowEvent::RedrawRequested => state.frame(),
+            WindowEvent::DroppedFile(path) => state.music.load(path),
             WindowEvent::KeyboardInput {
                 event: KeyEvent { physical_key: PhysicalKey::Code(key), state: ElementState::Pressed, repeat, .. },
                 ..
@@ -139,6 +146,12 @@ impl State {
 
         let world = World::new(0, 0);
         log::info!("{} particles", world.initial_particles);
+        let mut music = Music::default();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        music.muted = args.iter().any(|a| a == "--mute");
+        if let Some(track) = args.iter().find(|a| !a.starts_with("--")) {
+            music.load(track.into());
+        }
         Ok(Self {
             window,
             gpu,
@@ -149,6 +162,7 @@ impl State {
             egui_pending_free: Vec::new(),
             world,
             ui: UiState::default(),
+            music,
             field_values: Vec::new(),
             field_range: None,
             input: Input::default(),
@@ -169,6 +183,7 @@ impl State {
             KeyCode::KeyO => self.ui.overlay = ui::next_overlay(self.ui.overlay, self.world.solver.fields()),
             KeyCode::KeyH => self.ui.show_particles = !self.ui.show_particles,
             KeyCode::KeyL => self.ui.liquid = !self.ui.liquid,
+            KeyCode::KeyM => self.music.toggle_play(),
             KeyCode::KeyN => {
                 self.world.switch_solver((self.world.solver_index + 1) % SOLVERS.len(), self.ui.keep_particles);
             }
@@ -194,15 +209,19 @@ impl State {
         let raw_input = self.egui_winit.take_egui_input(&self.window);
         let cursor = self.input.cursor().map(|pos| ui::Cursor { pos, px_per_metre: view.px_per_metre });
         let perf = self.perf.latest();
-        let (world, ui_state, field_range) = (&mut self.world, &mut self.ui, self.field_range);
+        self.music.update();
+        let (world, ui_state, music, field_range) = (&mut self.world, &mut self.ui, &mut self.music, self.field_range);
         let mut egui_out =
-            self.egui_ctx.run_ui(raw_input, |ui| ui::panel(ui, world, ui_state, &perf, cursor, field_range));
+            self.egui_ctx.run_ui(raw_input, |ui| ui::panel(ui, world, ui_state, music, &perf, cursor, field_range));
         self.egui_winit.handle_platform_output(&self.window, std::mem::take(&mut egui_out.platform_output));
         self.apply_egui_textures(std::mem::take(&mut egui_out.textures_delta));
 
         // Tools and gravity, then the simulation step.
         self.world.scene.gravity = self.ui.gravity();
-        let step_input = self.input.apply(&view, &self.ui, &mut self.world, real_dt);
+        let mut step_input = self.input.apply(&view, &self.ui, &mut self.world, real_dt);
+        let (brushes, emitters) = self.music.pulse_input(self.world.scene.size);
+        step_input.brushes.extend(brushes);
+        step_input.emitters.extend(emitters);
         let wanted = real_dt * self.ui.speed;
         let sim_dt = if !self.ui.paused {
             Some(wanted.min(MAX_FRAME_DT))
@@ -381,3 +400,4 @@ impl PerfCounter {
         self.latest
     }
 }
+

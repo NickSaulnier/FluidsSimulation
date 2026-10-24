@@ -18,6 +18,7 @@ winit      = "=0.30.13"
 egui       = "=0.36.2"
 egui-wgpu  = "=0.36.2"
 egui-winit = "=0.36.2"
+rodio      = "=0.22.2"
 rayon      = "1.12"
 glam       = { version = "0.34", features = ["bytemuck"] }
 bytemuck   = { version = "1", features = ["derive"] }
