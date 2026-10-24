@@ -19,9 +19,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// Longest simulated time per rendered frame. After a stall (window drag, breakpoint)
-/// the sim resumes calmly instead of trying to catch up in one giant step.
-const MAX_FRAME_DT: f32 = 1.0 / 30.0;
+/// Longest simulated time per rendered frame. Below 60 fps the sim runs in slow motion
+/// instead of asking for more simulated time per frame, which costs more substeps, which
+/// makes the frame slower still. Also keeps a stall (window drag, breakpoint) harmless.
+const MAX_FRAME_DT: f32 = 1.0 / 60.0;
 const SINGLE_STEP_DT: f32 = 1.0 / 60.0;
 const VIEW_MARGIN_PX: f32 = 16.0;
 

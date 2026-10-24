@@ -566,6 +566,14 @@ impl Stepper {
 
 ### 4.1 FLIP (per substep)
 
+> **As built in Phase 1**, the order differs from the list below, which follows TMP.
+> Per substep: classify cells → P2G → save `u_prev` → gravity *on the grid* → solid
+> boundaries → warm-started, non-negative pressure projection → G2P → advect particles
+> through the grid (PIC) velocity → particle separation → collide with the grid's own
+> solid cells. Seeding is a jittered 2×2 per cell, aligned with the grid. Drift
+> compensation exists but is off by default. See the Phase 1 findings in §8 for why
+> each change was needed.
+
 Following Ten Minute Physics' structure, with Bridson ch. 7 for background:
 
 1. **Integrate particles:** `v += g·dt`, apply force brushes (shared helper), `x += v·dt`.
@@ -837,7 +845,7 @@ for now.
   distance transform), gravity tilt.
 - Solid-mask texture quad.
 - Presets: dam break, double dam break, tank with obstacle.
-- FLIP particle separation and drift compensation if skipped.
+- (Done in Phase 1: FLIP particle separation, drift compensation, `neighbors.rs`.)
 
 **Milestone:** stir it, slosh it by tilting gravity, draw a wall through a moving
 splash, switch to Ballistic and back.
@@ -1042,6 +1050,29 @@ crate is why they can run at all.
 - Volume loss in FLIP → drift compensation. Clumping → particle separation.
 - Particles inside freshly painted walls: push out along the SDF gradient. Erasing walls
   needs no special case.
+- **Phase 1 FLIP findings.** Each of these was found by a failing test or a trace, not by eye:
+  1. *Moving particles before projecting sinks a resting fluid.* `v += g·dt; x += v·dt`
+     before the projection moves every particle down by g·dt² per substep, even in a
+     completely full closed box. Put gravity on the grid and advect after G2P. TMP's
+     particle separation and drift compensation mask this.
+  2. *Particles and pressure must agree on where walls are.* Kept out of open cells by
+     the smooth SDF, wall-adjacent cells sat empty, became air (p = 0), and the fluid
+     drained sideways into them. With the opposite rule, particles sat inside solid cells
+     and compacted there. Fix: FLIP collides with the faces of its own solid cells
+     (`flip/collide.rs`) and seeds every open cell. The scene SDF only rescues particles
+     deep inside a freshly painted obstacle.
+  3. *Unconverged pressure looks like slow compaction.* 50 cold-started Gauss–Seidel
+     iterations can't rebuild hydrostatic pressure 35 cells deep every substep.
+     Warm-starting from the previous substep's pressure fixes it at no cost.
+  4. *Walls must not pull.* With signed pressure, a splash that reaches the ceiling hangs
+     there by suction. Clamping accumulated pressure at ≥ 0 (projected Gauss–Seidel)
+     lets fluid separate.
+  5. *Drift compensation needs separation, and a seed lattice that doesn't alias.* A
+     0.6 h seed spacing beats against the grid (density 2.2–3.2 against a rest value of
+     2.8), which the compensation reads as compression. Without particle separation,
+     FLIP loses 60–70% of its volume over 10 s. With it, volume holds within a few
+     percent and drift compensation becomes unnecessary. So separation and
+     `neighbors.rs` moved from Phases 2 and 4 into Phase 1.
 - **The SDF can only measure penetration depth inside a wall up to about half the wall's
   thickness** (it is sampled at cell centres). Phase 0 hit this: with 1-cell border walls
   and 1.5 cells of travel per substep, particles that overshot were pushed out only part

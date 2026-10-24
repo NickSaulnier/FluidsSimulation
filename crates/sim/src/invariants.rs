@@ -10,7 +10,7 @@ pub enum Violation {
     NonFinite { index: usize },
     #[error("{count} particles are outside the domain")]
     OutOfDomain { count: usize },
-    #[error("{count} particles are deeper than one radius inside a solid")]
+    #[error("{count} particles are more than a radius inside a solid")]
     InSolid { count: usize },
     #[error("particle count {actual}, expected {expected} (initial + emitted - drained)")]
     CountMismatch { expected: usize, actual: usize },
@@ -31,7 +31,9 @@ pub fn check(world: &World) -> Vec<Violation> {
         if outside > 0 {
             out.push(Violation::OutOfDomain { count: outside });
         }
-        let in_solid = view.pos.iter().filter(|&&p| world.scene.solid.distance(p) < -view.radius).count();
+        // Grid solvers resolve walls to their cell faces, which may sit up to one particle
+        // radius inside the scene's smooth wall; allow that plus some SDF slack.
+        let in_solid = view.pos.iter().filter(|&&p| world.scene.solid.distance(p) < -1.25 * view.radius).count();
         if in_solid > 0 {
             out.push(Violation::InSolid { count: in_solid });
         }

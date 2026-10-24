@@ -1,4 +1,4 @@
-//! Headless runner: `cargo run -p bench --release -- --solver ballistic --frames 600`.
+//! Headless runner: `cargo run -p bench --release -- --solver flip --frames 600`.
 //!
 //! Phase 0 version: frame timing and invariant checks. Per-phase breakdowns and
 //! thread sweeps come in Phase 3.
@@ -12,7 +12,7 @@ use std::time::Duration;
 #[derive(Parser)]
 struct Args {
     /// Solver name (case-insensitive prefix match against the registry).
-    #[arg(long, default_value = "ballistic")]
+    #[arg(long, default_value = "flip")]
     solver: String,
     /// Preset name (case-insensitive prefix match).
     #[arg(long, default_value = "dam")]

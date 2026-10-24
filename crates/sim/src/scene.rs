@@ -21,6 +21,10 @@ impl Rect {
     pub fn contains(&self, p: Vec2) -> bool {
         p.cmpge(self.min).all() && p.cmplt(self.max).all()
     }
+
+    pub fn intersect(&self, other: &Rect) -> Rect {
+        Rect::new(self.min.max(other.min), self.max.min(other.max))
+    }
 }
 
 pub struct Scene {
@@ -44,10 +48,11 @@ impl Scene {
     }
 }
 
-/// Thickness of the always-solid domain border, in mask cells. Two cells, so a particle
-/// that overshoots a wall by up to a cell in one substep is still where the SDF can see
-/// how deep it is (a one-cell wall can only represent half a cell of depth).
-pub const BORDER_CELLS: usize = 2;
+/// Thickness of the always-solid domain border, in mask cells. The SDF can only measure
+/// penetration up to roughly the wall thickness minus half a cell, so this bounds how
+/// far a particle may overshoot in one substep (FLIP moves up to `cfl` grid cells, which
+/// is ~2.5 mask cells at default settings).
+pub const BORDER_CELLS: usize = 4;
 
 /// Obstacles and walls as one occupancy grid with a signed distance field.
 ///
@@ -88,6 +93,14 @@ impl SolidMask {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The open box inside the always-solid border. Clamping particles to it makes
+    /// tunnelling through the domain walls impossible at any speed.
+    pub fn interior(&self) -> Rect {
+        let wall = BORDER_CELLS as f32 * self.cell;
+        let size = Vec2::new(self.occ.nx() as f32, self.occ.ny() as f32) * self.cell;
+        Rect::new(Vec2::splat(wall), size - wall)
     }
 
     /// `(nx, ny, bytes)`, row-major with row 0 at the bottom (y = 0).
@@ -246,10 +259,15 @@ mod tests {
     #[test]
     fn normals_point_into_the_domain() {
         let m = mask();
-        let n = m.normal(Vec2::new(0.05, 0.5));
-        assert!(n.x > 0.9, "left wall normal {n}");
-        let n = m.normal(Vec2::new(1.0, 0.03));
-        assert!(n.y > 0.9, "floor normal {n}");
+        let wall = BORDER_CELLS as f32 * m.cell_size();
+        // Just outside and just inside the wall face.
+        for offset in [1.0, -1.0] {
+            let d = wall + offset * m.cell_size();
+            let n = m.normal(Vec2::new(d, 0.5));
+            assert!(n.x > 0.9, "left wall normal {n} at x = {d}");
+            let n = m.normal(Vec2::new(1.0, d));
+            assert!(n.y > 0.9, "floor normal {n} at y = {d}");
+        }
     }
 
     #[test]

@@ -34,6 +34,10 @@ env_logger = "0.11"
 opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
+# The solvers are the hot path; at opt-level 1 the app drops to ~25 fps with FLIP.
+# Comment this out when you want to step through solver code in a debugger.
+[profile.dev.package.sim]
+opt-level = 3
 
 [profile.release]
 debug = "line-tables-only"

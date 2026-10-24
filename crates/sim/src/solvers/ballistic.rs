@@ -62,24 +62,12 @@ impl Solver for Ballistic {
 
     fn step(&mut self, dt: f32, scene: &Scene, _input: &StepInput) {
         let t0 = Instant::now();
-        let r = self.radius;
         for (p, v) in self.pos.iter_mut().zip(self.vel.iter_mut()) {
             *v += scene.gravity * dt;
             *p += *v * dt;
-
-            let d = scene.solid.distance(*p);
-            if d < r {
-                let n = scene.solid.normal(*p);
-                *p += n * (r - d);
-                let vn = v.dot(n);
-                if vn < 0.0 {
-                    let tangential = *v - n * vn;
-                    *v = tangential * self.friction - n * vn * self.restitution;
-                }
-            }
-            // Last line of defence against escaping the domain entirely.
-            *p = p.clamp(Vec2::ZERO, scene.size);
         }
+        let interior = scene.solid.interior();
+        super::collide_with_solids(scene, interior, self.radius, self.restitution, self.friction, &mut self.pos, &mut self.vel);
         self.stats.phases = vec![("integrate+collide", t0.elapsed())];
     }
 

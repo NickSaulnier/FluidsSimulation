@@ -1,3 +1,5 @@
+pub mod mac;
+
 use std::ops::{Index, IndexMut};
 
 /// Dense row-major 2D array. `j` is the row (y), `i` the column (x).
@@ -15,6 +17,11 @@ impl<T: Copy + Default> Grid2<T> {
 
     pub fn fill(&mut self, v: T) {
         self.data.fill(v);
+    }
+
+    /// Overwrite with another grid of the same size, reusing this allocation.
+    pub fn copy_from(&mut self, other: &Self) {
+        self.data.copy_from_slice(&other.data);
     }
 }
 

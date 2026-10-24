@@ -5,6 +5,7 @@
 
 pub mod grid;
 pub mod invariants;
+pub mod neighbors;
 pub mod presets;
 pub mod registry;
 pub mod rng;
@@ -12,6 +13,7 @@ pub mod scene;
 pub mod solver;
 pub mod solvers;
 pub mod stepper;
+pub mod timing;
 pub mod world;
 
 pub use glam::Vec2;
