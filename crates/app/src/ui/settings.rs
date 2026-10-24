@@ -1,0 +1,140 @@
+//! UI settings remembered between runs: the tool and brush, the look, and the panel.
+//! Saved as JSON on exit, loaded at start. The scene, solver and gravity are not part
+//! of it: a preset brings its own.
+//!
+//! Missing or unknown fields are fine (`#[serde(default)]`), so adding a setting later
+//! doesn't invalidate old files, and out-of-range values are clamped on load.
+
+use super::{BRUSH_RADIUS, Tab, Tool, UiState};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+const FILE: &str = "settings.json";
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub tool: Tool,
+    pub brush_radius: f32,
+    pub push_strength: f32,
+    pub faucet_speed: f32,
+    pub speed: f32,
+    pub keep_particles: bool,
+    pub liquid: bool,
+    pub blob_size: f32,
+    pub surface_threshold: f32,
+    pub show_particles: bool,
+    pub overlay_opacity: f32,
+    pub panel_open: bool,
+    pub tab: Tab,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self::from_state(&UiState::default())
+    }
+}
+
+impl Settings {
+    pub fn from_state(s: &UiState) -> Self {
+        Self {
+            tool: s.tool,
+            brush_radius: s.brush_radius,
+            push_strength: s.push_strength,
+            faucet_speed: s.faucet_speed,
+            speed: s.speed,
+            keep_particles: s.keep_particles,
+            liquid: s.liquid,
+            blob_size: s.blob_size,
+            surface_threshold: s.surface_threshold,
+            show_particles: s.show_particles,
+            overlay_opacity: s.overlay_opacity,
+            panel_open: s.panel_open,
+            tab: s.tab,
+        }
+    }
+
+    /// Copy into `s`, clamping each value to the range its control allows.
+    pub fn apply(&self, s: &mut UiState) {
+        let clamp = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { lo };
+        s.tool = self.tool;
+        s.brush_radius = clamp(self.brush_radius, *BRUSH_RADIUS.start(), *BRUSH_RADIUS.end());
+        s.push_strength = clamp(self.push_strength, 2.0, 80.0);
+        s.faucet_speed = clamp(self.faucet_speed, 0.2, 6.0);
+        s.speed = clamp(self.speed, 0.1, 2.0);
+        s.keep_particles = self.keep_particles;
+        s.liquid = self.liquid;
+        s.blob_size = clamp(self.blob_size, 1.5, 6.0);
+        s.surface_threshold = clamp(self.surface_threshold, 0.15, 0.9);
+        s.show_particles = self.show_particles;
+        s.overlay_opacity = clamp(self.overlay_opacity, 0.1, 1.0);
+        s.panel_open = self.panel_open;
+        s.tab = self.tab;
+    }
+}
+
+/// Where the settings live: `%APPDATA%\fluid-toy` on Windows, `$XDG_CONFIG_HOME/fluid-toy`
+/// or `~/.config/fluid-toy` elsewhere.
+pub fn path() -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let base = if cfg!(windows) {
+        env("APPDATA")
+    } else {
+        env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config")))
+    };
+    Some(base?.join("fluid-toy").join(FILE))
+}
+
+/// The saved settings, if there are any (and they parse; a bad file is ignored).
+pub fn load() -> Option<Settings> {
+    let path = path()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str(&text) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            log::warn!("ignoring unreadable settings file {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+pub fn save(s: &UiState) -> anyhow::Result<()> {
+    let path = path().ok_or_else(|| anyhow::anyhow!("no config directory"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&Settings::from_state(s))?)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_through_json() {
+        let mut state = UiState { tool: Tool::Faucet, brush_radius: 0.15, liquid: false, tab: Tab::Info, ..UiState::default() };
+        state.panel_open = false;
+        let json = serde_json::to_string(&Settings::from_state(&state)).unwrap();
+        let mut back = UiState::default();
+        serde_json::from_str::<Settings>(&json).unwrap().apply(&mut back);
+        assert_eq!(Settings::from_state(&back), Settings::from_state(&state));
+    }
+
+    #[test]
+    fn tolerates_missing_and_unknown_fields() {
+        let s: Settings = serde_json::from_str(r#"{ "tool": "PaintWall", "from_the_future": 3 }"#).unwrap();
+        assert_eq!(s.tool, Tool::PaintWall);
+        assert_eq!(s.brush_radius, UiState::default().brush_radius);
+    }
+
+    #[test]
+    fn clamps_out_of_range_values() {
+        let s = Settings { brush_radius: 50.0, speed: f32::NAN, blob_size: -1.0, ..Settings::default() };
+        let mut state = UiState::default();
+        s.apply(&mut state);
+        assert_eq!(state.brush_radius, *BRUSH_RADIUS.end());
+        assert_eq!(state.speed, 0.1);
+        assert_eq!(state.blob_size, 1.5);
+    }
+}

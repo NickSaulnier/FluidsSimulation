@@ -1,6 +1,7 @@
 //! Info tab: performance, solver metrics, the step breakdown, and the shortcuts.
 
 use crate::ui::health::{self, Health};
+use crate::ui::settings::{self, Settings};
 use crate::ui::{Frame, theme};
 use egui::{Sense, vec2};
 use crate::ui::shortcuts::{Action, MOUSE, SHORTCUTS, tip};
@@ -59,6 +60,16 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         }
         if ui.button(tip("Open the cheat sheet", Action::ToggleCheatSheet)).clicked() {
             f.state.cheat_sheet = true;
+        }
+    });
+
+    widgets::group(ui, "Settings", |ui| {
+        ui.weak("Tool, brush, look and panel settings are remembered between runs.");
+        if let Some(path) = settings::path() {
+            ui.weak(format!("Saved on exit to {}", path.display()));
+        }
+        if ui.button("Reset to defaults").on_hover_text("Restore the default tool, brush, look and panel").clicked() {
+            Settings::default().apply(f.state);
         }
     });
 }

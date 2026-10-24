@@ -4,10 +4,12 @@
 //! is returned so the scene view is fitted into exactly that area.
 
 mod cheat_sheet;
+mod compass;
 mod health;
 mod legend;
 mod panel;
 mod params;
+pub mod settings;
 pub mod shortcuts;
 mod status_bar;
 pub mod theme;
@@ -24,7 +26,7 @@ pub const PANEL_WIDTH: f32 = 320.0;
 pub const BRUSH_RADIUS: std::ops::RangeInclusive<f32> = 0.02..=0.3;
 pub const BRUSH_STEP: f32 = 1.15;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tool {
     Push,
     PaintWall,
@@ -34,7 +36,7 @@ pub enum Tool {
 }
 
 /// Side panel tabs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tab {
     Simulate,
     View,

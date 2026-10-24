@@ -88,6 +88,15 @@ struct State {
 }
 
 impl ApplicationHandler for App {
+    /// Called once on every way out (window closed, Esc): remember the UI settings.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(state) = &self.state
+            && let Err(e) = ui::settings::save(&state.ui)
+        {
+            log::warn!("couldn't save settings: {e:#}");
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -174,7 +183,13 @@ impl State {
             egui_renderer,
             egui_pending_free: Vec::new(),
             world,
-            ui: UiState::default(),
+            ui: {
+                let mut ui = UiState::default();
+                if let Some(saved) = ui::settings::load() {
+                    saved.apply(&mut ui);
+                }
+                ui
+            },
             music,
             field_values: Vec::new(),
             field_range: None,
