@@ -1,0 +1,22 @@
+[package]
+name = "app"
+description = "Windowed fluid toy: winit + wgpu rendering + egui UI. Knows nothing about specific solvers."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "fluid-toy"
+path = "src/main.rs"
+
+[dependencies]
+sim.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true

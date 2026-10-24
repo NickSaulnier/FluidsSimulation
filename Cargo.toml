@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/sim", "crates/app", "crates/bench"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+version = "0.1.0"
+publish = false
+
+# Graphics/UI crates are pinned exactly: wgpu ships a breaking major roughly every
+# quarter, and egui-wgpu / egui-winit must match the wgpu / winit majors below.
+# Everything else is pinned by Cargo.lock.
+[workspace.dependencies]
+sim        = { path = "crates/sim" }
+wgpu       = "=30.0.1"
+winit      = "=0.30.13"
+egui       = "=0.36.2"
+egui-wgpu  = "=0.36.2"
+egui-winit = "=0.36.2"
+rayon      = "1.12"
+glam       = { version = "0.34", features = ["bytemuck"] }
+bytemuck   = { version = "1", features = ["derive"] }
+pollster   = "0.4"
+anyhow     = "1"
+thiserror  = "2"
+clap       = { version = "4", features = ["derive"] }
+log        = "0.4"
+env_logger = "0.11"
+
+# Dev builds: our code lightly optimized, all dependencies fully optimized.
+# Without this a debug-build fluid sim is 10-50x slower.
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = "line-tables-only"

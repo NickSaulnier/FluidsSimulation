@@ -997,6 +997,15 @@ crate is why they can run at all.
   return types, the surface texture acquire result type, and `RenderPassDescriptor`
   fields have all shifted across recent majors.
 - winit 0.31 betas are on crates.io. Stay on 0.30.13 (egui-winit requires it).
+- **wgpu 30 API differences found while building Phase 0** (tutorials won't show these):
+  `Instance::new` takes `InstanceDescriptor` by value (built with
+  `new_with_display_handle_from_env(Box::new(event_loop.owned_display_handle()))`).
+  `get_current_texture()` returns a `CurrentSurfaceTexture` enum (`Success`,
+  `Suboptimal`, `Timeout`, `Occluded`, `Outdated`, `Lost`, `Validation`).
+  Presentation is `queue.present(frame)`. `VertexState::buffers` and
+  `PipelineLayoutDescriptor::bind_group_layouts` take `Option`s. Push constants are now
+  `immediate_size`. Pipelines and passes have `multiview_mask`, and
+  `RequestAdapterOptions` gained fields (use `..Default::default()`).
 
 **Window and surface plumbing**
 - Create the window inside `resumed`, not before `run_app`. Wrap it in `Arc<Window>` and
@@ -1033,6 +1042,12 @@ crate is why they can run at all.
 - Volume loss in FLIP → drift compensation. Clumping → particle separation.
 - Particles inside freshly painted walls: push out along the SDF gradient. Erasing walls
   needs no special case.
+- **The SDF can only measure penetration depth inside a wall up to about half the wall's
+  thickness** (it is sampled at cell centres). Phase 0 hit this: with 1-cell border walls
+  and 1.5 cells of travel per substep, particles that overshot were pushed out only part
+  of the way, and the invariant test caught it. Fix: the border is `BORDER_CELLS = 2`
+  thick, and per-substep travel is capped at one mask cell. Keep both in mind when
+  choosing FLIP's CFL number and the minimum brush size for painted walls.
 - PBF: 2D kernel constants, rest density mismatch, tensile instability (s_corr), and
   neighbor cell size must be ≥ kernel radius.
 - Debug builds are unusably slow without the profile overrides in §2.

@@ -1,0 +1,12 @@
+[package]
+name = "sim"
+description = "Headless 2D fluid solvers. Must never depend on wgpu, winit or egui."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+rayon.workspace = true
+thiserror.workspace = true

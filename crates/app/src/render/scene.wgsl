@@ -1,0 +1,67 @@
+// Shared by the domain backdrop and the particle pipelines.
+struct Globals {
+    scale: vec2f,      // clip = world * scale + offset
+    offset: vec2f,
+    domain: vec2f,     // metres
+    radius: f32,       // particle radius, metres
+    max_speed: f32,    // speed that maps to the top of the colour ramp
+};
+@group(0) @binding(0) var<uniform> g: Globals;
+
+fn to_clip(world: vec2f) -> vec4f {
+    return vec4f(world * g.scale + g.offset, 0.0, 1.0);
+}
+
+// Triangle-strip quad corners in [0,1]^2: (0,0) (1,0) (0,1) (1,1).
+fn corner01(vi: u32) -> vec2f {
+    return vec2f(f32(vi & 1u), f32(vi >> 1u));
+}
+
+// ---- Domain backdrop: one quad covering [0, domain] ------------------------------
+
+@vertex
+fn vs_backdrop(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+    return to_clip(corner01(vi) * g.domain);
+}
+
+@fragment
+fn fs_backdrop() -> @location(0) vec4f {
+    return vec4f(0.012, 0.014, 0.022, 1.0);
+}
+
+// ---- Particles: instanced discs ---------------------------------------------------
+
+struct ParticleOut {
+    @builtin(position) clip: vec4f,
+    @location(0) local: vec2f,   // [-1,1]^2 across the quad
+    @location(1) speed: f32,
+};
+
+@vertex
+fn vs_particle(
+    @builtin(vertex_index) vi: u32,
+    @location(0) pos: vec2f,
+    @location(1) vel: vec2f,
+) -> ParticleOut {
+    let corner = corner01(vi) * 2.0 - 1.0;
+    var o: ParticleOut;
+    o.clip = to_clip(pos + corner * g.radius);
+    o.local = corner;
+    o.speed = length(vel);
+    return o;
+}
+
+@fragment
+fn fs_particle(i: ParticleOut) -> @location(0) vec4f {
+    let d = length(i.local);
+    // One-pixel anti-aliased edge regardless of zoom.
+    let alpha = 1.0 - smoothstep(1.0 - fwidth(d), 1.0, d);
+    if alpha <= 0.0 {
+        discard;
+    }
+    let t = clamp(i.speed / g.max_speed, 0.0, 1.0);
+    // Linear-space colours (the surface is sRGB): deep blue at rest, near-white when fast.
+    let slow = vec3f(0.01, 0.08, 0.6);
+    let fast = vec3f(0.7, 0.9, 1.0);
+    return vec4f(mix(slow, fast, t), alpha);
+}

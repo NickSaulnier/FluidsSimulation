@@ -1,0 +1,134 @@
+//! Frame orchestration: shared uniforms, the domain backdrop, and the particle layer.
+
+mod particles;
+
+use crate::view::View;
+use bytemuck::{Pod, Zeroable};
+use particles::ParticleLayer;
+
+/// Must match `Globals` in scene.wgsl byte for byte (32 bytes, a multiple of 16 as
+/// uniform buffers require).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Globals {
+    scale: [f32; 2],
+    offset: [f32; 2],
+    domain: [f32; 2],
+    radius: f32,
+    max_speed: f32,
+}
+
+pub struct Renderer {
+    globals: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    backdrop: wgpu::RenderPipeline,
+    particles: ParticleLayer,
+}
+
+/// Colour of the letterbox area around the domain; reads as the walls' outer edge.
+const LETTERBOX: wgpu::Color = wgpu::Color { r: 0.06, g: 0.065, b: 0.075, a: 1.0 };
+const MAX_SPEED_COLOUR: f32 = 3.0;
+
+impl Renderer {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scene.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+        });
+
+        let globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("globals"),
+            size: size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("globals"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(size_of::<Globals>() as u64),
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("globals"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("scene"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let backdrop = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("backdrop"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_backdrop"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_backdrop"),
+                compilation_options: Default::default(),
+                targets: &[Some(format.into())],
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let particles = ParticleLayer::new(device, &layout, &shader, format);
+        Self { globals, bind_group, backdrop, particles }
+    }
+
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        view: &View,
+        world: &sim::World,
+    ) {
+        let particles = world.solver.particles();
+        let globals = Globals {
+            scale: view.scale.into(),
+            offset: view.offset.into(),
+            domain: world.scene.size.into(),
+            radius: particles.map_or(0.0, |p| p.radius),
+            max_speed: MAX_SPEED_COLOUR,
+        };
+        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+        if let Some(p) = particles {
+            self.particles.upload(device, queue, p);
+        }
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("scene"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(LETTERBOX), store: wgpu::StoreOp::Store },
+            })],
+            ..Default::default()
+        });
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_pipeline(&self.backdrop);
+        pass.draw(0..4, 0..1);
+        if particles.is_some() {
+            self.particles.draw(&mut pass);
+        }
+    }
+}

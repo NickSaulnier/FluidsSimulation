@@ -1,0 +1,13 @@
+[package]
+name = "bench"
+description = "Headless runs: step timing and invariant checks."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sim.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
