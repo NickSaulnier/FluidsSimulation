@@ -3,8 +3,10 @@
 //! a specific solver. Whatever is left after the bars and panel is the canvas; its rect
 //! is returned so the scene view is fitted into exactly that area.
 
+mod cheat_sheet;
 mod panel;
 mod params;
+pub mod shortcuts;
 mod status_bar;
 pub mod theme;
 mod top_bar;
@@ -15,6 +17,9 @@ use sim::{Vec2, World};
 
 /// Side panel width in points.
 pub const PANEL_WIDTH: f32 = 320.0;
+/// Brush radius limits (m), and the factor `[` and `]` change it by.
+pub const BRUSH_RADIUS: std::ops::RangeInclusive<f32> = 0.02..=0.3;
+pub const BRUSH_STEP: f32 = 1.15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -59,6 +64,7 @@ pub struct UiState {
     pub surface_threshold: f32,
     pub tab: Tab,
     pub panel_open: bool,
+    pub cheat_sheet: bool,
 }
 
 impl Default for UiState {
@@ -82,6 +88,7 @@ impl Default for UiState {
             surface_threshold: 0.5,
             tab: Tab::Simulate,
             panel_open: true,
+            cheat_sheet: false,
         }
     }
 }
@@ -95,6 +102,10 @@ impl UiState {
     pub fn gravity(&self) -> Vec2 {
         let a = self.gravity_deg.to_radians();
         Vec2::new(a.sin(), -a.cos()) * self.gravity_mag
+    }
+
+    pub fn scale_brush(&mut self, factor: f32) {
+        self.brush_radius = (self.brush_radius * factor).clamp(*BRUSH_RADIUS.start(), *BRUSH_RADIUS.end());
     }
 
     /// The inverse of `gravity`: point the sliders at a scene's own gravity.
@@ -141,6 +152,9 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
         egui::Panel::right("side_panel").resizable(false).exact_size(PANEL_WIDTH).show(ui, |ui| panel::show(ui, f));
     }
     let canvas = ui.available_rect_before_wrap();
+    if f.state.cheat_sheet {
+        cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);
+    }
 
     // Brush outline, clipped to the canvas so it never draws over the controls.
     if let Some(c) = cursor {
@@ -186,6 +200,19 @@ mod tests {
         // A key the current solver doesn't have (after switching) restarts the cycle.
         assert_eq!(next_overlay(Some("gone"), &fields), Some("a"));
         assert_eq!(next_overlay(None, &[]), None);
+    }
+
+    #[test]
+    fn brush_keys_stay_within_the_slider_range() {
+        let mut s = UiState::default();
+        for _ in 0..50 {
+            s.scale_brush(BRUSH_STEP);
+        }
+        assert_eq!(s.brush_radius, *BRUSH_RADIUS.end());
+        for _ in 0..50 {
+            s.scale_brush(1.0 / BRUSH_STEP);
+        }
+        assert_eq!(s.brush_radius, *BRUSH_RADIUS.start());
     }
 
     #[test]

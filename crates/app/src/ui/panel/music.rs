@@ -1,6 +1,7 @@
 //! Music tab: the loaded track and how its kicks drive the fluid.
 
 use crate::audio::{KickAction, Music};
+use crate::ui::shortcuts::{Action, tip};
 use crate::ui::theme;
 use crate::ui::widgets::{self, row};
 use std::time::Duration;
@@ -22,7 +23,8 @@ pub fn show(ui: &mut egui::Ui, music: &mut Music) {
         ui.label(&name);
         ui.weak(format!("{}:{:02} / {}:{:02}", pos as u32 / 60, pos as u32 % 60, duration as u32 / 60, duration as u32 % 60));
         ui.horizontal(|ui| {
-            if ui.button(if music.is_playing() { "Pause" } else { "Play" }).on_hover_text("M").clicked() {
+            let label = if music.is_playing() { "Pause" } else { "Play" };
+            if ui.button(label).on_hover_text(tip(label, Action::ToggleMusic)).clicked() {
                 music.toggle_play();
             }
             if ui.button("Restart").clicked() {

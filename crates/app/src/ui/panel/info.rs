@@ -1,6 +1,7 @@
-//! Info tab: performance, solver metrics, the step breakdown, and the controls.
+//! Info tab: performance, solver metrics, the step breakdown, and the shortcuts.
 
 use crate::ui::Frame;
+use crate::ui::shortcuts::{Action, MOUSE, SHORTCUTS, tip};
 use crate::ui::widgets::{self, row};
 
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
@@ -25,23 +26,15 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         });
     });
 
-    widgets::group(ui, "Controls", |ui| {
-        for (keys, action) in [
-            ("Left drag", "selected tool"),
-            ("Right drag", "push"),
-            ("Space", "pause / play"),
-            ("S", "step (while paused)"),
-            ("R", "reset"),
-            ("P / N", "next preset / solver"),
-            ("O", "next overlay"),
-            ("H", "hide / show particles"),
-            ("L", "liquid surface on / off"),
-            ("M", "play / pause music"),
-            ("`", "hide / show this panel"),
-            ("Left / Right", "tilt gravity"),
-            ("Drop a file", "load music"),
-        ] {
-            row(ui, keys, "", |ui| ui.label(action));
+    widgets::group(ui, "Shortcuts", |ui| {
+        for sc in SHORTCUTS {
+            row(ui, sc.keys, "", |ui| ui.label(sc.what));
+        }
+        for (keys, what) in MOUSE {
+            row(ui, keys, "", |ui| ui.label(*what));
+        }
+        if ui.button(tip("Open the cheat sheet", Action::ToggleCheatSheet)).clicked() {
+            f.state.cheat_sheet = true;
         }
     });
 }

@@ -1,7 +1,8 @@
 //! Top bar: run controls, scene and solver choice, and the canvas tools. These are what
 //! you touch every few seconds, so they're always visible.
 
-use super::{Frame, Tool};
+use super::shortcuts::{Action, tip};
+use super::{BRUSH_RADIUS, Frame, Tool};
 use sim::PRESETS;
 
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
@@ -14,8 +15,11 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         tools(ui, f);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = if f.state.panel_open { "Hide panel" } else { "Show panel" };
-            if ui.button(label).on_hover_text("Show or hide the side panel (`)").clicked() {
+            if ui.button(label).on_hover_text(tip("Show or hide the side panel", Action::TogglePanel)).clicked() {
                 f.state.panel_open = !f.state.panel_open;
+            }
+            if ui.button("?").on_hover_text(tip("Keyboard and mouse shortcuts", Action::ToggleCheatSheet)).clicked() {
+                f.state.cheat_sheet = !f.state.cheat_sheet;
             }
         });
     });
@@ -24,13 +28,15 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
 
 fn transport(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     let s = &mut *f.state;
-    if ui.button(if s.paused { "Play" } else { "Pause" }).on_hover_text("Space").clicked() {
+    let play_pause = if s.paused { "Play" } else { "Pause" };
+    if ui.button(play_pause).on_hover_text(tip(play_pause, Action::TogglePause)).clicked() {
         s.paused = !s.paused;
     }
-    if ui.add_enabled(s.paused, egui::Button::new("Step")).on_hover_text("S (while paused)").clicked() {
+    let step = ui.add_enabled(s.paused, egui::Button::new("Step"));
+    if step.on_hover_text(tip("Advance one step", Action::Step)).on_disabled_hover_text("Pause first").clicked() {
         s.step_once = true;
     }
-    if ui.button("Reset").on_hover_text("R").clicked() {
+    if ui.button("Reset").on_hover_text(tip("Reset the scene", Action::Reset)).clicked() {
         f.world.reset();
     }
     ui.add(egui::Slider::new(&mut s.speed, 0.1..=2.0).logarithmic(true).suffix("×").fixed_decimals(1))
@@ -57,8 +63,11 @@ fn scene_and_solver(ui: &mut egui::Ui, f: &mut Frame<'_>) {
             ui.selectable_value(&mut index, k, s.name);
         }
         ui.separator();
-        ui.checkbox(&mut f.state.keep_particles, "Keep particles when switching")
-            .on_hover_text("Hand the current fluid to the new solver instead of restarting the scene.");
+        // Only particles can be handed over; a grid solver's successor starts from the scene.
+        let has_particles = world.solver.particles().is_some();
+        ui.add_enabled(has_particles, egui::Checkbox::new(&mut f.state.keep_particles, "Keep particles when switching"))
+            .on_hover_text("Hand the current fluid to the new solver instead of restarting the scene.")
+            .on_disabled_hover_text("Only a particle solver can hand its fluid over.");
     });
     if index != world.solver_index {
         world.switch_solver(index, f.state.keep_particles);
@@ -73,10 +82,10 @@ fn tools(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         (Tool::EraseWall, "Erase", "Drag to erase walls"),
         (Tool::Faucet, "Faucet", "Hold to pour, along the drag direction"),
     ] {
-        ui.selectable_value(&mut s.tool, tool, label).on_hover_text(help);
+        ui.selectable_value(&mut s.tool, tool, label).on_hover_text(tip(help, Action::SelectTool(tool)));
     }
-    ui.add(egui::Slider::new(&mut s.brush_radius, 0.02..=0.3).logarithmic(true).suffix(" m").fixed_decimals(2))
-        .on_hover_text("Brush radius");
+    ui.add(egui::Slider::new(&mut s.brush_radius, BRUSH_RADIUS).logarithmic(true).suffix(" m").fixed_decimals(2))
+        .on_hover_text("Brush radius ([ and ])");
     match s.tool {
         Tool::Push => {
             ui.add(egui::Slider::new(&mut s.push_strength, 2.0..=80.0).logarithmic(true).fixed_decimals(0))

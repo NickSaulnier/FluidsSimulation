@@ -10,7 +10,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         row(ui, "Gravity", "Strength of gravity", |ui| {
             ui.add(egui::Slider::new(&mut s.gravity_mag, 0.0..=20.0).suffix(" m/s²"));
         });
-        row(ui, "Tilt", "Direction of gravity (Left/Right arrows tilt too)", |ui| {
+        row(ui, "Tilt", "Direction of gravity (the Left and Right arrow keys tilt it too)", |ui| {
             ui.spacing_mut().slider_width = 50.0; // leave room for "Level"
             ui.add(egui::Slider::new(&mut s.gravity_deg, -90.0..=90.0).suffix("°"));
             if ui.small_button("Level").clicked() {

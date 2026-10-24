@@ -1,12 +1,11 @@
 //! Fluid toy: winit event loop, frame loop, egui panel, keyboard shortcuts.
 //!
-//! Keys: Space pause, S single step (while paused), R reset, P next preset,
-//! N next solver, O next overlay, H hide/show particles, L liquid surface on/off,
-//! M play/pause music, `  ` hide/show the side panel, Left/Right tilt gravity, Esc quit.
+//! Keyboard shortcuts are listed in `ui::shortcuts` (F1 shows them in the app); Esc
+//! closes the cheat sheet, or quits. (Not Tab: egui consumes it for keyboard focus
+//! navigation.)
 //!
 //! Usage: `fluid-toy [TRACK] [--mute]`. A track (mp3, ogg, flac, wav) can also be
-//! dropped onto the window; its kick drums then make the water jump. (Not Tab: egui consumes it for
-//! keyboard focus navigation.)
+//! dropped onto the window; its kick drums then make the water jump.
 
 mod audio;
 mod gpu;
@@ -117,6 +116,10 @@ impl ApplicationHandler for App {
                 ..
             } if !egui_took_it && !state.egui_ctx.egui_wants_keyboard_input() => {
                 if key == KeyCode::Escape {
+                    // Esc closes the cheat sheet first, and quits only from the plain view.
+                    if std::mem::take(&mut state.ui.cheat_sheet) {
+                        return;
+                    }
                     event_loop.exit();
                 } else {
                     state.key(key, repeat);
@@ -183,24 +186,30 @@ impl State {
         })
     }
 
+    /// Keyboard shortcuts, as listed in `ui::shortcuts::SHORTCUTS`.
     fn key(&mut self, key: KeyCode, repeat: bool) {
-        match key {
-            KeyCode::ArrowLeft => self.ui.gravity_deg = (self.ui.gravity_deg - TILT_STEP_DEG).max(-90.0),
-            KeyCode::ArrowRight => self.ui.gravity_deg = (self.ui.gravity_deg + TILT_STEP_DEG).min(90.0),
-            _ if repeat => {}
-            KeyCode::Space => self.ui.paused = !self.ui.paused,
-            KeyCode::KeyS => self.ui.step_once = true,
-            KeyCode::KeyR => self.world.reset(),
-            KeyCode::KeyP => self.world.load_preset((self.world.preset_index + 1) % PRESETS.len()),
-            KeyCode::KeyO => self.ui.overlay = ui::next_overlay(self.ui.overlay, self.world.solver.fields()),
-            KeyCode::KeyH => self.ui.show_particles = !self.ui.show_particles,
-            KeyCode::KeyL => self.ui.liquid = !self.ui.liquid,
-            KeyCode::KeyM => self.music.toggle_play(),
-            KeyCode::Backquote => self.ui.panel_open = !self.ui.panel_open,
-            KeyCode::KeyN => {
-                self.world.switch_solver((self.world.solver_index + 1) % self.world.solvers.len(), self.ui.keep_particles);
+        use ui::shortcuts::Action;
+        let Some(action) = ui::shortcuts::lookup(key, repeat) else { return };
+        let ui = &mut self.ui;
+        match action {
+            Action::TogglePause => ui.paused = !ui.paused,
+            Action::Step => ui.step_once = true,
+            Action::Reset => self.world.reset(),
+            Action::NextPreset => self.world.load_preset((self.world.preset_index + 1) % PRESETS.len()),
+            Action::NextSolver => {
+                self.world.switch_solver((self.world.solver_index + 1) % self.world.solvers.len(), ui.keep_particles);
             }
-            _ => {}
+            Action::SelectTool(tool) => ui.tool = tool,
+            Action::BrushSmaller => ui.scale_brush(1.0 / ui::BRUSH_STEP),
+            Action::BrushBigger => ui.scale_brush(ui::BRUSH_STEP),
+            Action::TiltLeft => ui.gravity_deg = (ui.gravity_deg - TILT_STEP_DEG).max(-90.0),
+            Action::TiltRight => ui.gravity_deg = (ui.gravity_deg + TILT_STEP_DEG).min(90.0),
+            Action::NextOverlay => ui.overlay = ui::next_overlay(ui.overlay, self.world.solver.fields()),
+            Action::ToggleParticles => ui.show_particles = !ui.show_particles,
+            Action::ToggleLiquid => ui.liquid = !ui.liquid,
+            Action::ToggleMusic => self.music.toggle_play(),
+            Action::TogglePanel => ui.panel_open = !ui.panel_open,
+            Action::ToggleCheatSheet => ui.cheat_sheet = !ui.cheat_sheet,
         }
     }
 
