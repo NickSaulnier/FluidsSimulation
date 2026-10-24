@@ -32,7 +32,12 @@ struct Args {
     /// Set a solver parameter by its key, e.g. `--set cells_y=140`. Repeatable.
     #[arg(long = "set", value_name = "KEY=VALUE")]
     sets: Vec<String>,
+    /// Write the surge front per frame as CSV (t, T, Z), nondimensionalised for the
+    /// Martin & Moyce column (use with `--preset martin`).
+    #[arg(long, value_name = "PATH")]
+    front_csv: Option<std::path::PathBuf>,
 }
+
 
 /// Applies `--set key=value` pairs through the solver's parameter visitor, the same
 /// interface the UI uses, so the bench needs no knowledge of any particular solver.
@@ -107,6 +112,8 @@ fn apply_sets(world: &mut World, sets: &[String]) -> anyhow::Result<()> {
 /// Results of one run at one thread count.
 struct Run {
     particles: usize,
+    /// Surge front per frame: (t, T, Z), if requested.
+    front: Vec<(f32, f32, f32)>,
     /// (final particles, emitted, drained) at the end of the run.
     end: (usize, usize, usize),
     frame_ms: Vec<f64>,
@@ -148,6 +155,7 @@ fn run_once(args: &Args, solver: usize, preset: usize) -> anyhow::Result<Run> {
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     let mut run = Run {
         particles: world.initial_particles,
+        front: Vec::new(),
         end: (0, 0, 0),
         frame_ms: Vec::with_capacity(args.frames as usize),
         substeps: 0.0,
@@ -157,6 +165,11 @@ fn run_once(args: &Args, solver: usize, preset: usize) -> anyhow::Result<Run> {
     };
     for frame in 0..args.frames {
         let report = world.advance(1.0 / 60.0, &input);
+        if args.front_csv.is_some()
+            && let Some((tt, z)) = sim::analysis::martin_moyce_point(&world)
+        {
+            run.front.push((world.time as f32, tt, z));
+        }
         run.frame_ms.push(ms(report.wall));
         run.substeps += f64::from(report.substeps);
         run.dropped += f64::from(report.time_dropped);
@@ -213,6 +226,14 @@ fn run(args: &Args) -> anyhow::Result<()> {
     }
 
     let (_, first) = &runs[0];
+    if let Some(path) = &args.front_csv {
+        let mut csv = String::from("t,T,Z\n");
+        for (t, tt, z) in &first.front {
+            csv += &format!("{t:.5},{tt:.4},{z:.4}\n");
+        }
+        std::fs::write(path, csv).with_context(|| format!("writing {}", path.display()))?;
+        println!("surge front: {} samples written to {}", first.front.len(), path.display());
+    }
     println!(
         "{} / {}: {} particles, {} frames, {:.2} substeps/frame, {:.3} s of {:.3} s dropped",
         SOLVERS[si].name,

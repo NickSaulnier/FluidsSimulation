@@ -3,6 +3,7 @@
 //! This crate deliberately knows nothing about windows, GPUs or UI. The app and the
 //! bench both drive it through [`World`].
 
+pub mod analysis;
 pub mod grid;
 pub mod invariants;
 pub mod neighbors;

@@ -1102,6 +1102,19 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 6 (stretch 4) validation findings** (full write-up and plot in
+  `docs/validation/README.md`):
+  - **Grid-converged FLIP matches Martin & Moyce's front speed within 3%** and leads in
+    time by a near-constant ΔT ≈ 0.2, consistent with the experiment's gate-opening
+    delay. Coarse FLIP and PBF match within 1–4%, partly because numerical dissipation
+    mimics that delay.
+  - **Verify experimental data rather than relying on memory.** Only three points of
+    the recalled table could be corroborated (against published validations citing
+    the paper's Table 2), so the regression test uses only those. Arrival times get a
+    15% band (allowing the offset); front speed gets 10%.
+  - **Measure the front robustly:** the 99.9th-percentile x in a thin floor band, with
+    the column defined from the actual wall faces (not the domain edge, 3 cm away).
+  - **Plot with Pillow, not matplotlib,** which wasn't installed (`tools/plot_dam_break.py`).
 - **Phase 6 (stretch 3) audio-reactive findings:**
   - **Detect kicks offline, when the track loads.** A background thread decodes, mixes
     to mono, low-passes at 150 Hz, takes frame energy every 512 samples, and builds a

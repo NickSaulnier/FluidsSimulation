@@ -13,7 +13,11 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Double dam break", build: double_dam_break },
     Preset { name: "Tank with obstacle", build: tank_with_obstacle },
     Preset { name: "Fountain", build: fountain },
+    Preset { name: "Martin & Moyce column", build: martin_moyce },
 ];
+
+/// Column width for the Martin & Moyce validation case (height is twice this).
+pub const MARTIN_MOYCE_WIDTH: f32 = 0.25;
 
 const DOMAIN: Vec2 = Vec2::new(2.0, 1.0);
 const MASK_CELLS_Y: usize = 128;
@@ -42,6 +46,16 @@ pub fn fountain() -> Scene {
     for x in [0.03, 1.91] {
         s.drains.push(Rect::new(Vec2::new(x, 0.21), Vec2::new(x + 0.06, 0.6)));
     }
+    s
+}
+
+/// Martin & Moyce (1952) validation case: a column exactly a wide and 2a tall (n² = 2),
+/// measured from the faces of the left wall and the floor, collapsing along the tank.
+pub fn martin_moyce() -> Scene {
+    let mut s = Scene::empty_box(DOMAIN, MASK_CELLS_Y);
+    let corner = s.solid.interior().min;
+    let a = MARTIN_MOYCE_WIDTH;
+    s.fluid_blocks.push(Rect::new(Vec2::ZERO, corner + Vec2::new(a, 2.0 * a)));
     s
 }
 
