@@ -1102,6 +1102,29 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 4 PBF findings:**
+  - **The paper's constants aren't scale-free.** Its k = 0.1 (s_corr) and ε depend on
+    its units and spacing. Used as-is in this normalisation, s_corr was about 100× the
+    constraint multipliers and the first run reached 244,000 m/s. Both are now expressed
+    relative to the rest lattice's Σ|∇C|²: ε as a fraction, s_corr as an equivalent
+    compression. Defaults are 0.01 and 0.01; s_corr = 0.1 destabilises.
+  - **Don't shrink dt by speed.** Position corrections become velocities as Δx/dt, so
+    a CFL-style limit feeds back (smaller dt → bigger velocity → smaller dt) and ran
+    away to 8 substeps. Use a fixed small step (1/240 s; 1/120 jitters at 1–3 m/s) with
+    only a loose travel cap.
+  - **Iterations must scale with depth in particles.** The Jacobi-style solve spreads a
+    correction about one kernel radius per iteration. At 0.005 m spacing the dam-break
+    column is 160 particles deep, and 4–10 iterations blow up. The default is 0.01 m
+    with 6 iterations: about 5k particles, 8.5–11 ms per frame on every preset, at most
+    6% compression. PBF is the coarser solver here.
+  - **Cache neighbour lists per substep** (flat array, 48 per particle, 10% radius
+    margin). This halved the constraint cost compared with walking bins every pass.
+  - **The solvers run at different resolutions, so hand-off resamples.** Finer input is
+    thinned to one particle per cell (averaged); coarser input is split into clusters.
+    All 9 solver pairs switch mid-run with invariants holding.
+  - **The architecture check passed:** adding PBF needed one registry line and no change
+    to `crates/app`. Separately, Phase 2's Tab shortcut never worked, because egui
+    consumes Tab for focus navigation. Next-solver is now N.
 - **Curved obstacles and grid collisions (Phase 2).** Face clamps bound penetration by
   one radius only for axis-aligned walls. Where a curved wall cuts an open cell's corner,
   particles can sit about 0.7 cells deep. FLIP's collision now also caps SDF

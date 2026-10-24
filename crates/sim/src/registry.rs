@@ -3,7 +3,7 @@
 //! the default.
 
 use crate::solver::Solver;
-use crate::solvers::{Ballistic, Flip};
+use crate::solvers::{Ballistic, Flip, Pbf};
 
 pub struct SolverEntry {
     pub name: &'static str,
@@ -13,5 +13,6 @@ pub struct SolverEntry {
 pub static SOLVERS: &[SolverEntry] = &[
     // Non-capturing closures coerce to `fn` pointers, so they can live in a static.
     SolverEntry { name: "FLIP", make: || Box::new(Flip::default()) },
+    SolverEntry { name: "PBF", make: || Box::new(Pbf::default()) },
     SolverEntry { name: "Ballistic (debug)", make: || Box::new(Ballistic::default()) },
 ];

@@ -1,11 +1,14 @@
 pub mod ballistic;
 pub mod flip;
+pub mod pbf;
 
 pub use ballistic::Ballistic;
 pub use flip::{Flip, FlipParams};
+pub use pbf::{Pbf, PbfParams};
 
 use crate::rng::SplitMix64;
 use crate::scene::{ForceBrush, Rect, Scene};
+use crate::solver::ParticleView;
 use glam::Vec2;
 use rayon::prelude::*;
 
@@ -29,6 +32,47 @@ pub(crate) fn seed_particles(scene: &Scene, spacing: f32, jitter: f32, out: &mut
                 }
             }
         }
+    }
+}
+
+/// Adopt another solver's particles at this solver's own `spacing`.
+///
+/// Solvers run at different resolutions (FLIP packs 4 particles per cell, PBF is much
+/// coarser), and a particle set at the wrong density either explodes or collapses.
+/// Finer input is thinned to one particle per `spacing`-sized cell (averaging position
+/// and velocity); coarser input is split into a small square cluster per particle.
+pub(crate) fn resample(view: ParticleView<'_>, spacing: f32, size: Vec2, pos: &mut Vec<Vec2>, vel: &mut Vec<Vec2>) {
+    pos.clear();
+    vel.clear();
+    let source = 2.0 * view.radius;
+    if source < 0.75 * spacing {
+        let nx = (size.x / spacing).ceil() as usize;
+        let ny = (size.y / spacing).ceil() as usize;
+        let mut cells = vec![(Vec2::ZERO, Vec2::ZERO, 0u32); nx * ny];
+        for (&p, &v) in view.pos.iter().zip(view.vel) {
+            let i = ((p.x / spacing) as usize).min(nx - 1);
+            let j = ((p.y / spacing) as usize).min(ny - 1);
+            let cell = &mut cells[j * nx + i];
+            *cell = (cell.0 + p, cell.1 + v, cell.2 + 1);
+        }
+        for (p, v, n) in cells.into_iter().filter(|c| c.2 > 0) {
+            pos.push(p / n as f32);
+            vel.push(v / n as f32);
+        }
+    } else if source > 1.5 * spacing {
+        let m = (source / spacing).round() as usize;
+        for (&p, &v) in view.pos.iter().zip(view.vel) {
+            for sj in 0..m {
+                for si in 0..m {
+                    let offset = (Vec2::new(si as f32, sj as f32) + 0.5) / m as f32 - 0.5;
+                    pos.push(p + offset * source);
+                    vel.push(v);
+                }
+            }
+        }
+    } else {
+        pos.extend_from_slice(view.pos);
+        vel.extend_from_slice(view.vel);
     }
 }
 

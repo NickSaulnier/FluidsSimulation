@@ -269,8 +269,7 @@ impl Solver for Flip {
         match init {
             Init::FromScene => self.seed(scene),
             Init::FromParticles(view) => {
-                self.pos = view.pos.to_vec();
-                self.vel = view.vel.to_vec();
+                super::resample(view, 2.0 * self.radius, scene.size, &mut self.pos, &mut self.vel);
             }
         }
         // Interior density of the seeding lattice, in particles per cell.

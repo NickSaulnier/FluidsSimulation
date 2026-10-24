@@ -25,15 +25,32 @@ fn every_solver_on_every_preset_keeps_invariants() {
     }
 }
 
+/// Switch between every pair of solvers mid-run, keeping particles. Solvers resample
+/// to their own resolution, so counts may change, but the fluid must survive and keep
+/// the invariants.
 #[test]
-fn switching_solvers_keeps_or_reseeds_particles() {
-    let mut world = World::new(0, 0);
-    world.advance(1.0 / 60.0, &StepInput::default());
-    let n = world.solver.particles().unwrap().pos.len();
-    for index in 0..SOLVERS.len() {
-        world.switch_solver(index, true);
-        assert_eq!(world.solver.particles().unwrap().pos.len(), n);
-        world.switch_solver(index, false);
-        assert!(invariants::check(&world).is_empty());
+fn switching_solvers_hands_off_particles() {
+    let input = StepInput::default();
+    for (from, source) in SOLVERS.iter().enumerate() {
+        for (to, target) in SOLVERS.iter().enumerate() {
+            let mut world = World::new(from, 0);
+            for _ in 0..20 {
+                world.advance(1.0 / 60.0, &input);
+            }
+            let before = world.solver.particles().unwrap().pos.len();
+            world.switch_solver(to, true);
+            let after = world.solver.particles().unwrap().pos.len();
+            let (a, b) = (source.name, target.name);
+            // No lower bound beyond "some survive": Ballistic piles non-interacting
+            // particles into a thin strip, which a coarser solver rightly thins ~10x.
+            assert!(after > 0 && after < before * 8, "{a} -> {b}: {before} -> {after} particles");
+            for frame in 0..30 {
+                world.advance(1.0 / 60.0, &input);
+                let violations = invariants::check(&world);
+                assert!(violations.is_empty(), "{a} -> {b}, frame {frame}: {:?}", violations);
+            }
+            world.switch_solver(to, false);
+            assert!(invariants::check(&world).is_empty(), "{a} -> {b}: reseed");
+        }
     }
 }

@@ -205,7 +205,7 @@ fn solver(ui: &mut egui::Ui, world: &mut World, state: &mut UiState) {
 
 fn help(ui: &mut egui::Ui) {
     egui::CollapsingHeader::new("Controls").default_open(false).show(ui, |ui| {
-        ui.label("Left drag: selected tool\nRight drag: push\nSpace: pause   S: step   R: reset\nP: next preset   Tab: next solver\nLeft/Right arrows: tilt gravity");
+        ui.label("Left drag: selected tool\nRight drag: push\nSpace: pause   S: step   R: reset\nP: next preset   N: next solver\nLeft/Right arrows: tilt gravity");
     });
 }
 

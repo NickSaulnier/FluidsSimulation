@@ -1,7 +1,8 @@
 //! Fluid toy: winit event loop, frame loop, egui panel, keyboard shortcuts.
 //!
 //! Keys: Space pause, S single step (while paused), R reset, P next preset,
-//! Tab next solver, Left/Right tilt gravity, Esc quit.
+//! N next solver, Left/Right tilt gravity, Esc quit. (Not Tab: egui consumes it for
+//! keyboard focus navigation.)
 
 mod gpu;
 mod input;
@@ -159,7 +160,7 @@ impl State {
             KeyCode::KeyS => self.ui.step_once = true,
             KeyCode::KeyR => self.world.reset(),
             KeyCode::KeyP => self.world.load_preset((self.world.preset_index + 1) % PRESETS.len()),
-            KeyCode::Tab => {
+            KeyCode::KeyN => {
                 self.world.switch_solver((self.world.solver_index + 1) % SOLVERS.len(), self.ui.keep_particles);
             }
             _ => {}
