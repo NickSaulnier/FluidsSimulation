@@ -1081,6 +1081,27 @@ crate is why they can run at all.
      FLIP loses 60–70% of its volume over 10 s. With it, volume holds within a few
      percent and drift compensation becomes unnecessary. So separation and
      `neighbors.rs` moved from Phases 2 and 4 into Phase 1.
+- **Phase 3 parallelism findings** (16-core / 32-thread machine, 20k-particle dam break):
+  - **Serial → parallel: 16.2 → 5.7 ms per frame (2.8×)**, measured with
+    `bench --sweep-threads`. Per-particle gathers (G2P, advect, collide, brushes) are
+    plain `par_iter`. P2G uses a fixed number of chunks with persistent partial grids
+    and a row-parallel sum. A first try with `fold`/`reduce` allocated fresh grids every
+    substep and was slower than serial. Pressure is red–black Gauss–Seidel via
+    ping-pong buffers, and separation is Jacobi (gather from a snapshot, then apply).
+    None of it needs `unsafe`.
+  - **Scaling stops around 8 threads at this size.** The pressure solve synchronises the
+    pool about 600 times per frame on a 20k-cell grid; at 16–32 threads that overhead
+    exceeds the gain, and coarser tasks made it worse, not better. The app and bench
+    default to `min(cores, 8)` threads (`sim::default_threads`, overridable with
+    `RAYON_NUM_THREADS`). Particle loops also need `with_min_len`, otherwise rayon
+    splits 20k particles 32+ ways. Scaling further would need fewer synchronisation
+    points: persistent per-thread row bands with barriers, or PCG.
+  - **Measure residuals in m/s, not 1/s.** Divergence per second scales with 1/h, so a
+    fixed tolerance broke at high resolution. As an unbalanced flux, the dam break peaks
+    at 0.04–0.12 m/s from 5k to 82k particles (tolerance 0.3). A test proves the check
+    fires when the projection is switched off.
+  - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
+    240 fps) roughly quadrupled one P2G timing.
 - **Curved obstacles and grid collisions (Phase 2).** Face clamps bound penetration by
   one radius only for axis-aligned walls. Where a curved wall cuts an open cell's corner,
   particles can sit about 0.7 cells deep. FLIP's collision now also caps SDF

@@ -33,6 +33,9 @@ const TILT_STEP_DEG: f32 = 5.0;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,fluid_toy=info")).init();
+    let threads = sim::default_threads();
+    rayon::ThreadPoolBuilder::new().num_threads(threads).build_global()?;
+    log::info!("{threads} simulation threads");
     let event_loop = EventLoop::new()?;
     // Continuous animation: redraw as fast as vsync allows.
     event_loop.set_control_flow(ControlFlow::Poll);

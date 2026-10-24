@@ -7,7 +7,9 @@
 
 use crate::grid::Grid2;
 use crate::scene::Scene;
+use crate::solvers::PAR_CHUNK;
 use glam::Vec2;
+use rayon::prelude::*;
 
 pub(super) fn collide(solid: &Grid2<bool>, h: f32, radius: f32, scene: &Scene, pos: &mut [Vec2], vel: &mut [Vec2]) {
     let (nx, ny) = (solid.nx() as isize, solid.ny() as isize);
@@ -15,7 +17,7 @@ pub(super) fn collide(solid: &Grid2<bool>, h: f32, radius: f32, scene: &Scene, p
     let r = radius;
     let grid_max = Vec2::new(nx as f32, ny as f32) * h;
 
-    for (p, v) in pos.iter_mut().zip(vel.iter_mut()) {
+    pos.par_iter_mut().zip(vel.par_iter_mut()).with_min_len(PAR_CHUNK).for_each(|(p, v)| {
         // Deep inside an obstacle (painted over the fluid, or a fast particle overshot):
         // let the SDF carry it back to the surface first.
         let d = scene.solid.distance(*p);
@@ -77,5 +79,5 @@ pub(super) fn collide(solid: &Grid2<bool>, h: f32, radius: f32, scene: &Scene, p
                 *v -= n * vn;
             }
         }
-    }
+    });
 }

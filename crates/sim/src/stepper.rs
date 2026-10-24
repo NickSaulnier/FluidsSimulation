@@ -15,13 +15,15 @@ impl Default for Stepper {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct FrameReport {
     pub substeps: u32,
     pub dt: f32,
     /// Simulated time skipped because the substep cap was hit (the sim ran in slow motion).
     pub time_dropped: f32,
     pub wall: Duration,
+    /// The solver's phase timings summed over all substeps of the frame.
+    pub phases: Vec<(&'static str, Duration)>,
 }
 
 impl Stepper {
@@ -33,9 +35,16 @@ impl Stepper {
         let wanted = (target / max_dt).ceil() as u32;
         let n = wanted.clamp(self.min_substeps.max(1), self.max_substeps);
         let dt = (target / n as f32).min(max_dt);
+        let mut phases: Vec<(&'static str, Duration)> = Vec::new();
         for _ in 0..n {
             solver.step(dt, scene, input);
+            for &(name, d) in &solver.stats().phases {
+                match phases.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, total)) => *total += d,
+                    None => phases.push((name, d)),
+                }
+            }
         }
-        FrameReport { substeps: n, dt, time_dropped: target - dt * n as f32, wall: t0.elapsed() }
+        FrameReport { substeps: n, dt, time_dropped: target - dt * n as f32, wall: t0.elapsed(), phases }
     }
 }

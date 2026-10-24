@@ -1,6 +1,7 @@
 pub mod mac;
 
-use std::ops::{Index, IndexMut};
+use rayon::prelude::*;
+use std::ops::{AddAssign, Index, IndexMut};
 
 /// Dense row-major 2D array. `j` is the row (y), `i` the column (x).
 #[derive(Clone, Debug)]
@@ -51,6 +52,26 @@ impl<T> Grid2<T> {
     /// Rows as disjoint mutable slices, the basis of safe row-parallel loops.
     pub fn rows_mut(&mut self) -> std::slice::ChunksExactMut<'_, T> {
         self.data.chunks_exact_mut(self.nx)
+    }
+}
+
+impl<T: Send> Grid2<T> {
+    /// Rows as disjoint mutable slices, in parallel. Each closure owns its row
+    /// exclusively, which is what lets the compiler accept the loop.
+    ///
+    /// (Forcing several rows per task was measured to be slower: the cost in the
+    /// pressure solver is synchronising the pool ~600 times a frame, not task count.)
+    pub fn par_rows_mut(&mut self) -> rayon::slice::ChunksExactMut<'_, T> {
+        self.data.par_chunks_exact_mut(self.nx)
+    }
+}
+
+impl<T: Copy + AddAssign> AddAssign<&Grid2<T>> for Grid2<T> {
+    fn add_assign(&mut self, other: &Grid2<T>) {
+        debug_assert_eq!((self.nx, self.ny), (other.nx, other.ny));
+        for (a, &b) in self.data.iter_mut().zip(&other.data) {
+            *a += b;
+        }
     }
 }
 

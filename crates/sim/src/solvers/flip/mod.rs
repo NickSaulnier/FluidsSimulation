@@ -22,8 +22,9 @@ use crate::scene::{Scene, StepInput};
 use crate::solver::{Init, Metric, ParticleView, Solver, Stats};
 use crate::timing::PhaseTimer;
 use glam::Vec2;
-use pressure::Drift;
-use transfer::Weights;
+use pressure::{Drift, PressureSolver};
+use transfer::P2gScratch;
+use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct FlipParams {
@@ -124,6 +125,11 @@ const DRIFT_STIFFNESS: FloatSpec = FloatSpec {
     help: "Fraction of excess density removed per substep.",
 };
 
+/// Invariant bound on the pressure residual (unbalanced flux, m/s). Normal runs peak
+/// around 0.1 at the default 50 iterations, at any resolution; a skipped or broken
+/// projection gives metres per second in any splash.
+const MAX_PRESSURE_RESIDUAL: f32 = 0.3;
+
 /// Particles are seeded on a jittered 2x2 sub-lattice per cell, aligned with the grid.
 /// A lattice whose spacing doesn't divide the cell size aliases against it, and the
 /// resulting beat pattern in the density field looks like compression to the drift
@@ -138,9 +144,12 @@ pub struct Flip {
     grid: MacGrid,
     u_prev: Grid2<f32>,
     v_prev: Grid2<f32>,
-    weights: Weights,
     /// Persistent pressure (per unit time) for warm-starting the solver.
     pressure: Grid2<f32>,
+    pressure_solver: PressureSolver,
+    p2g: P2gScratch,
+    /// Separation scratch: per-particle displacement.
+    shift: Vec<Vec2>,
     density: Grid2<f32>,
     /// Scene solids resampled to this grid; rebuilt when the mask's generation changes.
     solid: Grid2<bool>,
@@ -169,8 +178,10 @@ impl Flip {
             params,
             u_prev: Grid2::new(3, 2),
             v_prev: Grid2::new(2, 3),
-            weights: Weights::for_grid(&grid),
             pressure: Grid2::new(2, 2),
+            pressure_solver: PressureSolver::new(2, 2),
+            p2g: P2gScratch::default(),
+            shift: Vec::new(),
             density: Grid2::new(2, 2),
             solid: Grid2::new(2, 2),
             grid,
@@ -192,8 +203,8 @@ impl Flip {
         self.grid = MacGrid::new(nx, ny, h);
         self.u_prev = Grid2::new(nx + 1, ny);
         self.v_prev = Grid2::new(nx, ny + 1);
-        self.weights = Weights::for_grid(&self.grid);
         self.pressure = Grid2::new(nx, ny);
+        self.pressure_solver = PressureSolver::new(nx, ny);
         self.density = Grid2::new(nx, ny);
         self.solid = Grid2::new(nx, ny);
         self.solid_generation = None;
@@ -279,7 +290,8 @@ impl Solver for Flip {
         super::apply_brushes(&input.brushes, dt, &self.pos, &mut self.vel);
 
         transfer::mark_cells(&mut self.grid, &self.solid, &self.pos);
-        transfer::particles_to_grid(&mut self.grid, &mut self.weights, &self.pos, &self.vel);
+        timer.lap("classify");
+        transfer::particles_to_grid(&mut self.grid, &mut self.p2g, &self.pos, &self.vel);
         transfer::enforce_solid_boundaries(&mut self.grid);
         self.u_prev.copy_from(&self.grid.u);
         self.v_prev.copy_from(&self.grid.v);
@@ -295,6 +307,7 @@ impl Solver for Flip {
 
         pressure::project(
             &mut self.grid,
+            &mut self.pressure_solver,
             &mut self.pressure,
             &self.density,
             dt,
@@ -316,13 +329,18 @@ impl Solver for Flip {
         );
         timer.lap("g2p");
 
-        for (p, a) in self.pos.iter_mut().zip(&self.advect) {
-            *p += *a * dt;
-        }
+        self.pos.par_iter_mut().zip(&self.advect).with_min_len(super::PAR_CHUNK).for_each(|(p, a)| *p += *a * dt);
         timer.lap("advect");
 
         if self.params.separate_particles {
-            separate::push_apart(&mut self.bins, &mut self.pos, self.radius, self.params.separation_iters, scene.size);
+            separate::push_apart(
+                &mut self.bins,
+                &mut self.pos,
+                &mut self.shift,
+                self.radius,
+                self.params.separation_iters,
+                scene.size,
+            );
         }
         timer.lap("separate");
 
@@ -330,7 +348,11 @@ impl Solver for Flip {
         timer.lap("collide");
 
         self.stats.phases = timer.finish();
-        self.stats.metrics = vec![Metric { name: "pressure residual (1/s)", value: residual, tolerance: None }];
+        self.stats.metrics = vec![Metric {
+            name: "pressure residual (m/s)",
+            value: residual,
+            tolerance: Some(MAX_PRESSURE_RESIDUAL),
+        }];
     }
 
     fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
@@ -397,9 +419,8 @@ mod tests {
         let original: Vec<Vec2> = pos.iter().map(|&p| field(p)).collect();
         let mut vel = original.clone();
 
-        let mut weights = Weights::for_grid(&grid);
         transfer::mark_cells(&mut grid, &solid, &pos);
-        transfer::particles_to_grid(&mut grid, &mut weights, &pos, &vel);
+        transfer::particles_to_grid(&mut grid, &mut P2gScratch::default(), &pos, &vel);
         let (u_prev, v_prev) = (grid.u.clone(), grid.v.clone());
         let mut advect = vec![Vec2::ZERO; pos.len()];
         transfer::grid_to_particles(&grid, &u_prev, &v_prev, &pos, &mut vel, &mut advect, 0.0);
@@ -429,7 +450,7 @@ mod tests {
 
         let mut p = Grid2::new(nx, ny);
         let before = pressure::max_residual(&grid, &p);
-        pressure::project(&mut grid, &mut p, &Grid2::new(nx, ny), 1.0, 300, 1.9, None);
+        pressure::project(&mut grid, &mut PressureSolver::new(nx, ny), &mut p, &Grid2::new(nx, ny), 1.0, 300, 1.9, None);
         let after = pressure::max_residual(&grid, &p);
         assert!(after < before * 1e-3, "residual {before} -> {after}");
     }
@@ -453,6 +474,41 @@ mod tests {
         let y1 = mean_y(&flip);
         assert!(max_speed < 0.1, "max speed {max_speed} m/s after 2 s at rest");
         assert!((y1 - y0).abs() / y0 < 0.02, "mean height {y0} -> {y1}");
+    }
+
+    /// The parallel P2G must agree with a plain serial splat (to rounding), with enough
+    /// particles and threads that it really runs as several chunks.
+    #[test]
+    fn parallel_p2g_matches_serial() {
+        let (nx, ny, h) = (60, 40, 0.025);
+        let mut rng = SplitMix64::new(11);
+        let n = 50_000;
+        let pos: Vec<Vec2> = (0..n).map(|_| Vec2::new(0.03 + rng.next_f32() * 1.4, 0.03 + rng.next_f32() * 0.9)).collect();
+        let vel: Vec<Vec2> = (0..n).map(|_| Vec2::new(rng.signed(), rng.signed())).collect();
+        let mut serial = MacGrid::new(nx, ny, h);
+        transfer::particles_to_grid_serial(&mut serial, &pos, &vel);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+        let mut parallel = MacGrid::new(nx, ny, h);
+        pool.install(|| transfer::particles_to_grid(&mut parallel, &mut P2gScratch::default(), &pos, &vel));
+        for (a, b) in serial.u.as_slice().iter().chain(serial.v.as_slice()).zip(parallel.u.as_slice().iter().chain(parallel.v.as_slice())) {
+            assert!((a - b).abs() <= 1e-5 * a.abs().max(1.0), "serial {a} vs parallel {b}");
+        }
+    }
+
+    /// The residual invariant must actually catch a broken solver: with the projection
+    /// switched off, a dam break exceeds the tolerance within a few frames.
+    #[test]
+    fn residual_tolerance_flags_a_missing_projection() {
+        let scene = crate::presets::dam_break();
+        let mut flip = Flip::with_params(FlipParams { cells_y: 50, pressure_iters: 0, ..FlipParams::default() });
+        flip.reset(&scene, Init::FromScene);
+        let stepper = Stepper::default();
+        let mut worst = 0.0f32;
+        for _ in 0..30 {
+            stepper.advance(&mut flip, &scene, 1.0 / 60.0, &StepInput::default());
+            worst = worst.max(flip.stats.metrics[0].value);
+        }
+        assert!(worst > MAX_PRESSURE_RESIDUAL, "residual only reached {worst} without projection");
     }
 
     fn calm_tank() -> (Scene, Flip) {

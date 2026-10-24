@@ -7,6 +7,12 @@ pub use flip::{Flip, FlipParams};
 use crate::rng::SplitMix64;
 use crate::scene::{ForceBrush, Rect, Scene};
 use glam::Vec2;
+use rayon::prelude::*;
+
+/// Minimum particles per rayon task in particle loops. Without it rayon splits a 20k
+/// particle loop 32+ ways and the per-task overhead outweighs the work (measured: loops
+/// got slower beyond 8 threads).
+pub(crate) const PAR_CHUNK: usize = 1024;
 
 /// Seed particles on a jittered lattice inside the scene's fluid blocks, skipping solids.
 pub(crate) fn seed_particles(scene: &Scene, spacing: f32, jitter: f32, out: &mut Vec<Vec2>) {
@@ -30,14 +36,14 @@ pub(crate) fn seed_particles(scene: &Scene, spacing: f32, jitter: f32, out: &mut
 pub(crate) fn apply_brushes(brushes: &[ForceBrush], dt: f32, pos: &[Vec2], vel: &mut [Vec2]) {
     for b in brushes {
         let r2 = b.radius * b.radius;
-        for (p, v) in pos.iter().zip(vel.iter_mut()) {
+        pos.par_iter().zip(vel.par_iter_mut()).with_min_len(PAR_CHUNK).for_each(|(p, v)| {
             let d2 = p.distance_squared(b.pos);
             if d2 < r2 {
                 let falloff = 1.0 - d2.sqrt() / b.radius;
                 let blend = (b.strength * falloff * dt).min(1.0);
                 *v += (b.velocity - *v) * blend;
             }
-        }
+        });
     }
 }
 

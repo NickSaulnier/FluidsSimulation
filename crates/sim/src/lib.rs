@@ -17,6 +17,15 @@ pub mod stepper;
 pub mod timing;
 pub mod world;
 
+/// Default rayon thread count: all cores, capped at 8, unless `RAYON_NUM_THREADS` says
+/// otherwise. The solvers synchronise hundreds of times per frame on small grids, and
+/// beyond ~8 threads that costs more than the extra cores bring (see the bench's
+/// `--sweep-threads`). Larger grids would scale further.
+pub fn default_threads() -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::env::var("RAYON_NUM_THREADS").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(cores.min(8))
+}
+
 pub use glam::Vec2;
 pub use params::{FloatSpec, IntSpec, ParamVisitor, ToggleSpec};
 pub use presets::{PRESETS, Preset};
