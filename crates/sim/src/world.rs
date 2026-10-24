@@ -1,7 +1,7 @@
 //! `World` = scene + active solver + stepper. The one entry point the app and bench use.
 
 use crate::presets::PRESETS;
-use crate::registry::SOLVERS;
+use crate::registry::{SOLVERS, SolverEntry};
 use crate::scene::{Scene, StepInput};
 use crate::solver::{Init, Solver};
 use crate::stepper::{FrameReport, Stepper};
@@ -9,6 +9,9 @@ use crate::stepper::{FrameReport, Stepper};
 pub struct World {
     pub scene: Scene,
     pub solver: Box<dyn Solver>,
+    /// The solvers available to switch between (`sim::SOLVERS`, or a longer list that
+    /// adds solvers from other crates).
+    pub solvers: &'static [SolverEntry],
     pub solver_index: usize,
     pub preset_index: usize,
     pub stepper: Stepper,
@@ -20,11 +23,16 @@ pub struct World {
 
 impl World {
     pub fn new(solver_index: usize, preset_index: usize) -> Self {
+        Self::with_solvers(SOLVERS, solver_index, preset_index)
+    }
+
+    pub fn with_solvers(solvers: &'static [SolverEntry], solver_index: usize, preset_index: usize) -> Self {
         let scene = (PRESETS[preset_index].build)();
-        let solver = (SOLVERS[solver_index].make)();
+        let solver = (solvers[solver_index].make)();
         let mut world = Self {
             scene,
             solver,
+            solvers,
             solver_index,
             preset_index,
             stepper: Stepper::default(),
@@ -50,7 +58,7 @@ impl World {
     }
 
     pub fn switch_solver(&mut self, index: usize, keep_particles: bool) {
-        let mut next = (SOLVERS[index].make)();
+        let mut next = (self.solvers[index].make)();
         match self.solver.particles().filter(|_| keep_particles) {
             Some(view) => next.reset(&self.scene, Init::FromParticles(view)),
             None => next.reset(&self.scene, Init::FromScene),

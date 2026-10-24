@@ -111,6 +111,12 @@ impl SolidMask {
         Rect::new(Vec2::splat(wall), size - wall)
     }
 
+    /// The signed distance field: `(nx, ny, cell size, values)`, sampled at cell centres,
+    /// row-major with row 0 at the bottom. For solvers that sample it elsewhere (a GPU).
+    pub fn sdf_grid(&self) -> (usize, usize, f32, &[f32]) {
+        (self.sdf.nx(), self.sdf.ny(), self.cell, self.sdf.as_slice())
+    }
+
     /// `(nx, ny, bytes)`, row-major with row 0 at the bottom (y = 0).
     pub fn occupancy(&self) -> (usize, usize, &[u8]) {
         (self.occ.nx(), self.occ.ny(), self.occ.as_slice())

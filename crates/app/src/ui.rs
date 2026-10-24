@@ -2,7 +2,7 @@
 //! file never names a specific solver.
 
 use crate::audio::{KickAction, Music};
-use sim::{PRESETS, SOLVERS, Vec2, World};
+use sim::{PRESETS, Vec2, World};
 use std::time::Duration;
 
 /// Panel width in points; the scene view is fitted into the rest of the window.
@@ -324,10 +324,10 @@ fn overlay(ui: &mut egui::Ui, world: &World, state: &mut UiState, range: Option<
 fn solver(ui: &mut egui::Ui, world: &mut World, state: &mut UiState) {
     let mut index = world.solver_index;
     egui::ComboBox::from_id_salt("solver")
-        .selected_text(SOLVERS[index].name)
+        .selected_text(world.solvers[index].name)
         .width(180.0)
         .show_ui(ui, |ui| {
-            for (k, s) in SOLVERS.iter().enumerate() {
+            for (k, s) in world.solvers.iter().enumerate() {
                 ui.selectable_value(&mut index, k, s.name);
             }
         });

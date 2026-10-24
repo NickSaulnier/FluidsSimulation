@@ -189,6 +189,7 @@ dependencies = [
  "rayon",
  "rodio",
  "sim",
+ "sim-gpu",
  "wgpu",
  "winit",
 ]
@@ -260,6 +261,7 @@ dependencies = [
  "clap",
  "rayon",
  "sim",
+ "sim-gpu",
 ]
 
 [[package]]
@@ -2763,6 +2765,18 @@ dependencies = [
  "glam",
  "rayon",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sim-gpu"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "log",
+ "pollster",
+ "sim",
+ "wgpu",
 ]
 
 [[package]]

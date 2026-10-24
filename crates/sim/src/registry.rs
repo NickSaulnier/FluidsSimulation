@@ -5,6 +5,7 @@
 use crate::solver::Solver;
 use crate::solvers::{Ballistic, Flip, Pbf, StableFluids};
 
+#[derive(Clone, Copy)]
 pub struct SolverEntry {
     pub name: &'static str,
     pub make: fn() -> Box<dyn Solver>,

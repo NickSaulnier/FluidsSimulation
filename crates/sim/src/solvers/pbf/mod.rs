@@ -115,6 +115,58 @@ const MAX_DT: FloatSpec = FloatSpec {
     help: "Upper bound on the substep; smaller = more substeps, more stable.",
 };
 
+/// Quantities derived from the parameters, shared by every PBF implementation (CPU and
+/// GPU) so they are tuned identically.
+#[derive(Clone, Copy, Debug)]
+pub struct PbfConstants {
+    pub kernel_radius: f32,
+    /// Density of an interior particle of the rest lattice (kernel units, mass 1).
+    pub rest_density: f32,
+    /// Σ|∇C|² for an interior lattice particle; the scale for ε and s_corr.
+    pub lattice_stiffness: f32,
+    /// W(Δq) for the s_corr ratio.
+    pub w_dq: f32,
+    /// 2D kernel coefficients: poly6 = 4/(π h⁸), spiky gradient = -30/(π h⁵).
+    pub poly6: f32,
+    pub spiky_grad: f32,
+    pub tensile_n: i32,
+}
+
+impl PbfParams {
+    pub fn constants(&self) -> PbfConstants {
+        let h = KERNEL_PER_SPACING * self.spacing;
+        let kernels = Kernels::new(h);
+        let rest_density = Pbf::lattice_density(&kernels, self.spacing);
+        PbfConstants {
+            kernel_radius: h,
+            rest_density,
+            lattice_stiffness: Pbf::lattice_stiffness(&kernels, self.spacing, rest_density),
+            w_dq: kernels.w((TENSILE_DQ * h).powi(2)),
+            poly6: 4.0 / (std::f32::consts::PI * h.powi(8)),
+            spiky_grad: -30.0 / (std::f32::consts::PI * h.powi(5)),
+            tensile_n: TENSILE_N,
+        }
+    }
+
+    /// Walk the parameters (the same list for every PBF implementation).
+    pub fn visit(&mut self, v: &mut dyn ParamVisitor) {
+        v.section("Solver");
+        v.int(&ITERATIONS, &mut self.iterations);
+        v.float(&RELAXATION, &mut self.relaxation);
+        v.float(&MAX_DT, &mut self.max_dt);
+        v.section("Fluid");
+        v.float(&TENSILE_K, &mut self.tensile_k);
+        v.float(&VISCOSITY, &mut self.viscosity);
+        v.section("Resolution");
+        v.float(&SPACING, &mut self.spacing);
+    }
+
+    /// Largest stable substep for the given peak particle speed.
+    pub fn max_dt(&self, max_speed: f32) -> f32 {
+        self.max_dt.min(self.cfl * KERNEL_PER_SPACING * self.spacing / max_speed.max(1e-3))
+    }
+}
+
 pub struct Pbf {
     pub params: PbfParams,
     kernels: Kernels,
@@ -250,7 +302,7 @@ impl Solver for Pbf {
 
     fn max_dt(&self, _scene: &Scene) -> f32 {
         let max_speed = self.vel.iter().map(|v| v.length_squared()).fold(0.0, f32::max).sqrt();
-        self.params.max_dt.min(self.params.cfl * self.kernels.radius() / max_speed.max(1e-3))
+        self.params.max_dt(max_speed)
     }
 
     fn step(&mut self, dt: f32, scene: &Scene, input: &StepInput) {
@@ -362,16 +414,7 @@ impl Solver for Pbf {
     }
 
     fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
-        let p = &mut self.params;
-        v.section("Solver");
-        v.int(&ITERATIONS, &mut p.iterations);
-        v.float(&RELAXATION, &mut p.relaxation);
-        v.float(&MAX_DT, &mut p.max_dt);
-        v.section("Fluid");
-        v.float(&TENSILE_K, &mut p.tensile_k);
-        v.float(&VISCOSITY, &mut p.viscosity);
-        v.section("Resolution");
-        v.float(&SPACING, &mut p.spacing);
+        self.params.visit(v);
     }
 
     fn particles(&self) -> Option<ParticleView<'_>> {

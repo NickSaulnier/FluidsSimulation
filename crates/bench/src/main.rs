@@ -6,9 +6,14 @@
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use sim::{PRESETS, SOLVERS, StepInput, World, invariants};
+use sim::{PRESETS, SolverEntry, StepInput, World, invariants};
+use std::sync::LazyLock;
 use std::process::ExitCode;
 use std::time::Duration;
+
+/// Every solver: the CPU ones from `sim`, plus the GPU ones from `sim-gpu`.
+static SOLVERS: LazyLock<Vec<SolverEntry>> =
+    LazyLock::new(|| sim::SOLVERS.iter().chain(sim_gpu::SOLVERS).copied().collect());
 
 #[derive(Parser)]
 struct Args {
@@ -149,7 +154,7 @@ fn find<T>(items: &[T], name: impl Fn(&T) -> &str, query: &str) -> anyhow::Resul
 }
 
 fn run_once(args: &Args, solver: usize, preset: usize) -> anyhow::Result<Run> {
-    let mut world = World::new(solver, preset);
+    let mut world = World::with_solvers(&SOLVERS, solver, preset);
     apply_sets(&mut world, &args.sets)?;
     let input = StepInput::default();
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
@@ -207,7 +212,7 @@ fn run_once(args: &Args, solver: usize, preset: usize) -> anyhow::Result<Run> {
 }
 
 fn run(args: &Args) -> anyhow::Result<()> {
-    let si = find(SOLVERS, |s| s.name, &args.solver)?;
+    let si = find(&SOLVERS, |s| s.name, &args.solver)?;
     let pi = find(PRESETS, |p| p.name, &args.preset)?;
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let thread_counts: Vec<usize> = if args.sweep_threads {

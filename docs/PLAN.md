@@ -1102,6 +1102,33 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 6 (stretch 6) GPU compute findings:**
+  - **Port PBF first, not FLIP.** Every PBF pass is a neighbour gather. Cell lists with
+    `atomic<u32>` counters and fixed capacity (32 per cell) need no GPU prefix sum.
+    FLIP's scatter would need fixed-point integer atomics (WGSL has no float atomics)
+    and a GPU pressure solve.
+  - **Architecture:** a `sim-gpu` crate (sim + wgpu) implements the same `Solver`
+    trait, reusing PBF's parameters and derived constants via
+    `PbfParams::{constants, visit, max_dt}` and the now-public solver toolkit
+    (`Emission`, `apply_brushes`, `seed_particles`, `resample`). `sim` can't name a
+    solver in a crate that depends on it, so `World::with_solvers` takes a composed
+    list (`sim::SOLVERS` + `sim_gpu::SOLVERS`). Without an adapter, the entry falls back
+    to CPU PBF with a warning.
+  - **Each substep:** CPU-side emission, drains and brushes; upload; one compute pass
+    (wgpu inserts the barriers between dispatches); copy to staging, map, read back.
+    The readback keeps `particles()`, and so the renderer, bench and invariants,
+    unchanged.
+  - **Stay within WebGPU's default of 8 storage buffers per stage** by packing λ and
+    density into one `vec2` array, so it runs on any adapter.
+  - **Parity and speed:** one substep on the GPU matches the CPU within 0.1 mm, and the
+    dam break's compression statistics are identical. 4× faster at the CPU defaults
+    (5k particles: 9.1 → 2.25 ms per frame); 11× at FLIP's resolution (20k particles, 20
+    iterations: 133 → 11.7 ms). Since the CPU solver was limited to coarse resolution,
+    the GPU version defaults to 20k particles and 20 iterations, 93 fps in the app
+    mid-splash. Fixed overhead is about 0.5 ms per substep (submit, map, readback); a
+    zero-copy path sharing the renderer's device would remove the readback.
+  - **wgpu 30:** `get_mapped_range` returns a `Result`; blocking waits are
+    `device.poll(PollType::wait_indefinitely())`.
 - **Phase 6 (stretch 5) stable fluids findings:**
   - **A full domain needs buoyancy, not gravity.** In a closed, all-fluid domain,
     gravity is a pure gradient that the projection removes, so the dye carries density

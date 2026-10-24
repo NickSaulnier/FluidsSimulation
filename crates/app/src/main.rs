@@ -19,7 +19,8 @@ use audio::Music;
 use gpu::Gpu;
 use input::Input;
 use render::Renderer;
-use sim::{PRESETS, SOLVERS, World};
+use sim::{PRESETS, SolverEntry, World};
+use std::sync::LazyLock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use ui::{Perf, UiState};
@@ -29,6 +30,10 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
+
+/// Every solver: the CPU ones from `sim`, plus the GPU ones from `sim-gpu`.
+static SOLVERS: LazyLock<Vec<SolverEntry>> =
+    LazyLock::new(|| sim::SOLVERS.iter().chain(sim_gpu::SOLVERS).copied().collect());
 
 /// Longest simulated time per rendered frame. Below 60 fps the sim runs in slow motion
 /// instead of asking for more simulated time per frame, which costs more substeps, which
@@ -144,7 +149,7 @@ impl State {
         );
         let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.ui_format, Default::default());
 
-        let world = World::new(0, 0);
+        let world = World::with_solvers(&SOLVERS, 0, 0);
         log::info!("{} particles", world.initial_particles);
         let mut music = Music::default();
         let args: Vec<String> = std::env::args().skip(1).collect();
@@ -185,7 +190,7 @@ impl State {
             KeyCode::KeyL => self.ui.liquid = !self.ui.liquid,
             KeyCode::KeyM => self.music.toggle_play(),
             KeyCode::KeyN => {
-                self.world.switch_solver((self.world.solver_index + 1) % SOLVERS.len(), self.ui.keep_particles);
+                self.world.switch_solver((self.world.solver_index + 1) % self.world.solvers.len(), self.ui.keep_particles);
             }
             _ => {}
         }
@@ -334,7 +339,7 @@ impl State {
     fn update_title(&self) {
         let title = format!(
             "fluid toy | {} | {} | {:.0} fps",
-            SOLVERS[self.world.solver_index].name,
+            self.world.solvers[self.world.solver_index].name,
             PRESETS[self.world.preset_index].name,
             self.perf.latest().fps
         );

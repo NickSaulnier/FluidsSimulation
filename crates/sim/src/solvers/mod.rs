@@ -1,3 +1,6 @@
+//! Solver implementations, plus the toolkit they share. The toolkit is public so that
+//! solvers in other crates (e.g. `sim-gpu`, which needs wgpu) can reuse it.
+
 pub mod ballistic;
 pub mod flip;
 pub mod pbf;
@@ -24,7 +27,7 @@ pub(crate) const PAR_CHUNK: usize = 1024;
 /// Resample the scene's solids onto a grid of cell size `h`: a cell is solid if its
 /// centre is inside a scene solid. The outer ring is always solid so the domain stays
 /// closed even where the scene's walls are thinner than a cell.
-pub(crate) fn resample_solids(scene: &Scene, h: f32, out: &mut Grid2<bool>) {
+pub fn resample_solids(scene: &Scene, h: f32, out: &mut Grid2<bool>) {
     let (nx, ny) = (out.nx(), out.ny());
     for j in 0..ny {
         for i in 0..nx {
@@ -36,7 +39,7 @@ pub(crate) fn resample_solids(scene: &Scene, h: f32, out: &mut Grid2<bool>) {
 }
 
 /// Seed particles on a jittered lattice inside the scene's fluid blocks, skipping solids.
-pub(crate) fn seed_particles(scene: &Scene, spacing: f32, jitter: f32, out: &mut Vec<Vec2>) {
+pub fn seed_particles(scene: &Scene, spacing: f32, jitter: f32, out: &mut Vec<Vec2>) {
     let mut rng = SplitMix64::new(0x5EED);
     out.clear();
     for block in &scene.fluid_blocks {
@@ -59,7 +62,7 @@ pub(crate) fn seed_particles(scene: &Scene, spacing: f32, jitter: f32, out: &mut
 /// coarser), and a particle set at the wrong density either explodes or collapses.
 /// Finer input is thinned to one particle per `spacing`-sized cell (averaging position
 /// and velocity); coarser input is split into a small square cluster per particle.
-pub(crate) fn resample(view: ParticleView<'_>, spacing: f32, size: Vec2, pos: &mut Vec<Vec2>, vel: &mut Vec<Vec2>) {
+pub fn resample(view: ParticleView<'_>, spacing: f32, size: Vec2, pos: &mut Vec<Vec2>, vel: &mut Vec<Vec2>) {
     pos.clear();
     vel.clear();
     let source = 2.0 * view.radius;
@@ -95,7 +98,7 @@ pub(crate) fn resample(view: ParticleView<'_>, spacing: f32, size: Vec2, pos: &m
 }
 
 /// Emitter and drain bookkeeping shared by the particle solvers.
-pub(crate) struct Emission {
+pub struct Emission {
     /// Fractional particles owed per emitter (scene emitters first, then input's).
     owed: Vec<f32>,
     rng: SplitMix64,
@@ -164,7 +167,7 @@ impl Emission {
 }
 
 /// Blend particle velocities toward each brush's velocity, with linear falloff.
-pub(crate) fn apply_brushes(brushes: &[ForceBrush], dt: f32, pos: &[Vec2], vel: &mut [Vec2]) {
+pub fn apply_brushes(brushes: &[ForceBrush], dt: f32, pos: &[Vec2], vel: &mut [Vec2]) {
     for b in brushes {
         let r2 = b.radius * b.radius;
         pos.par_iter().zip(vel.par_iter_mut()).with_min_len(PAR_CHUNK).for_each(|(p, v)| {
@@ -182,7 +185,7 @@ pub(crate) fn apply_brushes(brushes: &[ForceBrush], dt: f32, pos: &[Vec2], vel: 
 /// On contact the normal velocity is reflected scaled by `restitution` (0 = stick to
 /// the surface) and the tangential velocity scaled by `friction` (1 = free slip).
 /// Particle centres are also clamped to `interior` shrunk by `radius`.
-pub(crate) fn collide_with_solids(
+pub fn collide_with_solids(
     scene: &Scene,
     interior: Rect,
     radius: f32,
