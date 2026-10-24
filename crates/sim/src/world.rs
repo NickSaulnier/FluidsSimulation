@@ -19,6 +19,9 @@ pub struct World {
     pub time: f64,
     /// Particle count right after the last reset, for the conservation invariant.
     pub initial_particles: usize,
+    /// Bumped by every `load_preset`, so the app can pick up the new scene's settings
+    /// (e.g. its gravity) without polling the preset index.
+    pub scene_generation: u64,
 }
 
 impl World {
@@ -38,6 +41,7 @@ impl World {
             stepper: Stepper::default(),
             time: 0.0,
             initial_particles: 0,
+            scene_generation: 0,
         };
         world.reset();
         world
@@ -54,6 +58,7 @@ impl World {
     pub fn load_preset(&mut self, index: usize) {
         self.preset_index = index;
         self.scene = (PRESETS[index].build)();
+        self.scene_generation += 1;
         self.reset();
     }
 

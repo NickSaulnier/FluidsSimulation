@@ -75,6 +75,12 @@ impl UiState {
         let a = self.gravity_deg.to_radians();
         Vec2::new(a.sin(), -a.cos()) * self.gravity_mag
     }
+
+    /// The inverse of `gravity`: point the sliders at a scene's own gravity.
+    pub fn set_gravity(&mut self, g: Vec2) {
+        self.gravity_mag = g.length();
+        self.gravity_deg = if g == Vec2::ZERO { 0.0 } else { g.x.atan2(-g.y).to_degrees().clamp(-90.0, 90.0) };
+    }
 }
 
 /// Frame-rate numbers averaged over a short window.

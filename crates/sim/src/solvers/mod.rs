@@ -3,12 +3,14 @@
 
 pub mod ballistic;
 pub mod flip;
+pub mod lbm;
 pub mod pbf;
 mod pressure;
 pub mod stable;
 
 pub use ballistic::Ballistic;
 pub use flip::{Flip, FlipParams};
+pub use lbm::{Lbm, LbmParams};
 pub use pbf::{Pbf, PbfParams};
 pub use stable::{StableFluids, StableParams};
 

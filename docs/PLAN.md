@@ -1102,6 +1102,36 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 6 (stretch 8) Lattice Boltzmann findings:**
+  - **Model.** D2Q9 BGK with a Smagorinsky subgrid term, fused pull-stream + collide
+    into a second buffer. Each row writes only its own cells, so rayon parallelises it
+    with no `unsafe`. Walls use half-way bounce-back on the resampled `SolidMask`, and
+    forces use the exact-difference method. There's no pressure solve: about 9 ms/frame
+    at 256×128 and 43 lattice steps (~150 M cell updates/s on 8 threads).
+  - **Units.** One m/s = 0.05 lattice units (Mach ≤ 0.1 for normal flow), so a frame
+    sub-cycles `dt / (0.05 h)` lattice steps. The solver returns `max_dt = 1` and
+    sub-cycles itself. τ = 0.52 gives ν ≈ 10⁻³ m²/s (about 1000× water). That's syrup
+    in physical terms, but Re ≈ 100 for the wind tunnel's cylinder, which is what sheds.
+  - **Open boundaries.** Emitters are velocity inlets and drains are ρ = 1 outlets,
+    which makes a new **Wind tunnel** preset possible. The first inlet let density
+    float, and the cells behind it were sucked to ρ ≈ 0.55. It now fixes density and
+    velocity (full equilibrium), and the worst |ρ − 1| fell from 0.47 to 0.08.
+    - Without any outlet (the faucet in a closed box), mass is renormalised to unit
+      mean density every frame, a sink spread over every cell.
+  - **Validation.** The wake behind the cylinder oscillates at Strouhal 0.18 at Re ≈ 86.
+    Williamson's measurements give 0.16–0.17, and the test asserts 0.13–0.21. A box at
+    rest stays at rest with mass conserved to 10⁻⁴.
+  - **The dye needed MacCormack advection.** Plain semi-Lagrangian advection blurred the
+    inlet's streaklines into uniform blue within half the tunnel. MacCormack (forward,
+    back, add half the error, clamp to the source cell's min/max) keeps a sharp
+    vortex street for two extra cheap passes. Stable fluids would benefit too.
+  - **Presets bring their gravity.** The wind tunnel is weightless, but the app
+    overwrote the scene's gravity from the UI sliders every frame. `World` now bumps a
+    `scene_generation` on preset load, and the app copies that scene's gravity into
+    the sliders once.
+  - **Speed guard.** Velocities are clamped at 0.3 lattice units. The reported metric's
+    tolerance is 0.25, and inlets and brushes drive at most 0.2. The fountain jet
+    (3.2 m/s → 0.16) peaks at 0.215, the closest any preset gets.
 - **Phase 6 (stretch 6) GPU compute findings:**
   - **Port PBF first, not FLIP.** Every PBF pass is a neighbour gather. Cell lists with
     `atomic<u32>` counters and fixed capacity (32 per cell) need no GPU prefix sum.

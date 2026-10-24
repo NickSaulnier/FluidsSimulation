@@ -9,8 +9,9 @@ fn every_solver_on_every_preset_keeps_invariants() {
     for (si, solver) in SOLVERS.iter().enumerate() {
         for (pi, preset) in PRESETS.iter().enumerate() {
             let mut world = World::new(si, pi);
-            let has_particles = world.solver.particles().is_some();
-            assert!(!has_particles || world.initial_particles > 0, "{} / {}: no particles seeded", solver.name, preset.name);
+            // Presets that start empty (the wind tunnel) fill from their emitters.
+            let should_seed = world.solver.particles().is_some() && !world.scene.fluid_blocks.is_empty();
+            assert!(!should_seed || world.initial_particles > 0, "{} / {}: no particles seeded", solver.name, preset.name);
             for frame in 0..120 {
                 world.advance(1.0 / 60.0, &input);
                 let violations = invariants::check(&world);

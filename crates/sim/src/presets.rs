@@ -14,6 +14,7 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Tank with obstacle", build: tank_with_obstacle },
     Preset { name: "Fountain", build: fountain },
     Preset { name: "Martin & Moyce column", build: martin_moyce },
+    Preset { name: "Wind tunnel", build: wind_tunnel },
 ];
 
 /// Column width for the Martin & Moyce validation case (height is twice this).
@@ -56,6 +57,22 @@ pub fn martin_moyce() -> Scene {
     let corner = s.solid.interior().min;
     let a = MARTIN_MOYCE_WIDTH;
     s.fluid_blocks.push(Rect::new(Vec2::ZERO, corner + Vec2::new(a, 2.0 * a)));
+    s
+}
+
+/// Weightless flow past a cylinder: an inlet filling the left end, an outlet at the
+/// right. Grid solvers with open boundaries (Lattice Boltzmann) shed a von Karman
+/// vortex street behind the cylinder; particle solvers fire a slab of fluid through.
+/// The cylinder sits slightly off the centreline so the wake's symmetry breaks quickly.
+pub fn wind_tunnel() -> Scene {
+    let mut s = Scene::empty_box(DOMAIN, MASK_CELLS_Y);
+    s.gravity = Vec2::ZERO;
+    let inner = s.solid.interior();
+    let height = inner.size().y - 0.01;
+    s.emitters.push(Emitter { pos: Vec2::new(inner.min.x + 0.01, 0.5), dir: Vec2::X, speed: 1.0, width: height });
+    s.drains.push(Rect::new(Vec2::new(inner.max.x - 0.12, inner.min.y), inner.max));
+    s.solid.paint_disc(Vec2::new(0.5, 0.52), 0.06, true);
+    s.solid.update_derived();
     s
 }
 

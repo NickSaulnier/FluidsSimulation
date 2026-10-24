@@ -80,6 +80,8 @@ struct State {
     field_values: Vec<f32>,
     field_range: Option<(f32, f32)>,
     input: Input,
+    /// The `World::scene_generation` whose gravity the UI last took on.
+    gravity_synced: u64,
     last_frame: Instant,
     perf: PerfCounter,
 }
@@ -171,6 +173,7 @@ impl State {
             field_values: Vec::new(),
             field_range: None,
             input: Input::default(),
+            gravity_synced: u64::MAX, // take the first scene's gravity too
             last_frame: Instant::now(),
             perf: PerfCounter::new(),
         })
@@ -221,7 +224,12 @@ impl State {
         self.egui_winit.handle_platform_output(&self.window, std::mem::take(&mut egui_out.platform_output));
         self.apply_egui_textures(std::mem::take(&mut egui_out.textures_delta));
 
-        // Tools and gravity, then the simulation step.
+        // Tools and gravity, then the simulation step. A freshly loaded preset brings
+        // its own gravity (the wind tunnel has none); after that the sliders own it.
+        if self.gravity_synced != self.world.scene_generation {
+            self.gravity_synced = self.world.scene_generation;
+            self.ui.set_gravity(self.world.scene.gravity);
+        }
         self.world.scene.gravity = self.ui.gravity();
         let mut step_input = self.input.apply(&view, &self.ui, &mut self.world, real_dt);
         let (brushes, emitters) = self.music.pulse_input(self.world.scene.size);
