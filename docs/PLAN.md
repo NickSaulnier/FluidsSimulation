@@ -1102,6 +1102,25 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Phase 6 (stretch 5) stable fluids findings:**
+  - **A full domain needs buoyancy, not gravity.** In a closed, all-fluid domain,
+    gravity is a pure gradient that the projection removes, so the dye carries density
+    instead (Boussinesq). Heavy dye turns the dam-break presets into gravity currents,
+    complete with Kelvin–Helmholtz billows on the upper edge; negative buoyancy gives
+    rising smoke.
+  - **The p ≥ 0 constraint must be optional.** It's right for a free surface but wrong
+    for a closed domain, where pressure is only defined up to a constant. The pressure
+    solver moved to the shared `solvers/pressure.rs` and gained a `non_negative` flag,
+    as did the residual metric. A closed domain suits Gauss–Seidel: worst residuals
+    were 0.007–0.046 m/s, at 2.7–8 ms per frame.
+  - **Semi-Lagrangian dye isn't conservative.** The total drifts by about 7% over a
+    10 s dam break. Fine for a toy; a conservative scheme (e.g. MacCormack with limiting,
+    or flux-form) would fix it.
+  - **The particle-free path needed two app changes, both generic and with no
+    solver-specific code.** A `FieldKind::Concentration` colour map (fades to
+    transparent, sampled linearly), and a rule that a solver without particles is drawn
+    through its first field. Registration was still one line. Hand-off splats incoming
+    particles into dye; leaving the dye solver reseeds from the scene.
 - **Phase 6 (stretch 4) validation findings** (full write-up and plot in
   `docs/validation/README.md`):
   - **Grid-converged FLIP matches Martin & Moyce's front speed within 3%** and leads in

@@ -24,14 +24,16 @@ pub(super) struct Drift {
     pub rest: f32,
 }
 
-/// How to solve the pressure system.
+/// How to solve the pressure system. `non_negative` enforces p >= 0 (no suction): right
+/// with a free surface, where fluid may separate from walls; wrong in a closed, all-fluid
+/// domain, where pressure is only defined up to a constant.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Method {
     /// Red-black Gauss-Seidel with SOR, a fixed number of iterations.
-    GaussSeidel { iterations: u32, over_relax: f32 },
+    GaussSeidel { iterations: u32, over_relax: f32, non_negative: bool },
     /// Jacobi-preconditioned conjugate gradients until the max residual (m/s) is below
-    /// `tolerance`, inside an active-set loop that enforces p >= 0.
-    Pcg { max_iterations: u32, tolerance: f32 },
+    /// `tolerance`, inside an active-set loop when p >= 0 is enforced.
+    Pcg { max_iterations: u32, tolerance: f32, non_negative: bool },
 }
 
 /// Plain CG can't express p >= 0 (no suction). Clamping its answer afterwards breaks the
@@ -124,14 +126,15 @@ pub(super) fn project(
     }
 
     let iterations = match method {
-        Method::GaussSeidel { iterations, over_relax } => {
+        Method::GaussSeidel { iterations, over_relax, non_negative } => {
             for _ in 0..iterations {
-                half_sweep(solver, 0, over_relax);
-                half_sweep(solver, 1, over_relax);
+                half_sweep(solver, 0, over_relax, non_negative);
+                half_sweep(solver, 1, over_relax, non_negative);
             }
             iterations
         }
-        Method::Pcg { max_iterations, tolerance } => {
+        Method::Pcg { max_iterations, tolerance, non_negative: false } => pcg(solver, max_iterations, tolerance).0,
+        Method::Pcg { max_iterations, tolerance, non_negative: true } => {
             // One iteration budget shared by all rounds. Cells are only released after a
             // converged solve: an unconverged iterate has spurious negative values.
             // Never finish on an active-set change without re-solving: that leaves exactly
@@ -369,7 +372,7 @@ fn pcg(solver: &mut PressureSolver, max_iterations: u32, tolerance: f32) -> (u32
 }
 
 /// Update every cell of one colour (`(i + j) % 2 == colour`) from its neighbours.
-fn half_sweep(solver: &mut PressureSolver, colour: usize, over_relax: f32) {
+fn half_sweep(solver: &mut PressureSolver, colour: usize, over_relax: f32, non_negative: bool) {
     let PressureSolver { p, next, rhs, diag, .. } = solver;
     let (nx, ny) = (p.nx(), p.ny());
     let (p_ro, rhs, diag) = (&*p, &*rhs, &*diag);
@@ -393,7 +396,8 @@ fn half_sweep(solver: &mut PressureSolver, colour: usize, over_relax: f32) {
                 }
                 let gauss_seidel = (sum + rhs[(i, j)]) / s;
                 // SOR, then the non-negativity constraint (projected Gauss-Seidel).
-                (old + over_relax * (gauss_seidel - old)).max(0.0)
+                let p = old + over_relax * (gauss_seidel - old);
+                if non_negative { p.max(0.0) } else { p }
             } else {
                 old
             };
@@ -416,16 +420,16 @@ fn open_sides(grid: &MacGrid, i: usize, j: usize) -> [f32; 4] {
 }
 
 /// Largest constraint violation over fluid cells, as an unbalanced flux in m/s: |net
-/// outflow| where pressure is active, and only inflow where pressure is zero (fluid is
-/// free to separate there). In m/s rather than 1/s (divergence) so one tolerance works
-/// at every grid resolution.
-pub(super) fn max_residual(grid: &MacGrid, pressure: &Grid2<f32>) -> f32 {
+/// outflow|, except that with `non_negative` only inflow counts where pressure is zero
+/// (fluid is free to separate there). In m/s rather than 1/s (divergence) so one
+/// tolerance works at every grid resolution.
+pub(super) fn max_residual(grid: &MacGrid, pressure: &Grid2<f32>, non_negative: bool) -> f32 {
     let mut max = 0.0f32;
     for j in 0..grid.ny {
         for i in 0..grid.nx {
             if grid.cell[(i, j)] == CellType::Fluid {
                 let div = grid.net_outflow(i, j);
-                let r = if pressure[(i, j)] > 0.0 { div.abs() } else { (-div).max(0.0) };
+                let r = if !non_negative || pressure[(i, j)] > 0.0 { div.abs() } else { (-div).max(0.0) };
                 max = max.max(r);
             }
         }

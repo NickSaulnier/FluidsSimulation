@@ -26,9 +26,11 @@ pub struct FieldFrame<'a> {
 pub struct OverlayLayer {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
+    nearest: wgpu::Sampler,
+    linear: wgpu::Sampler,
     params: wgpu::Buffer,
-    texture: Option<(wgpu::Texture, wgpu::BindGroup)>,
+    /// The field texture and its bind group, plus whether that bind group samples linearly.
+    texture: Option<(wgpu::Texture, wgpu::BindGroup, bool)>,
     rgba: Vec<u8>,
     visible: bool,
 }
@@ -94,15 +96,22 @@ impl OverlayLayer {
             multiview_mask: None,
             cache: None,
         });
-        // Nearest: one texel per cell, so what you see is what the solver computed.
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("overlay"), ..Default::default() });
+        // Nearest for diagnostic fields (one texel per cell: what you see is what the
+        // solver computed); linear for concentrations such as dye, which are the picture.
+        let nearest = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("overlay nearest"), ..Default::default() });
+        let linear = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("overlay linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("overlay params"),
             size: size_of::<Params>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self { pipeline, layout, sampler, params, texture: None, rgba: Vec::new(), visible: false }
+        Self { pipeline, layout, nearest, linear, params, texture: None, rgba: Vec::new(), visible: false }
     }
 
     /// Upload this frame's field, or hide the overlay with `None`. Returns the value
@@ -116,7 +125,8 @@ impl OverlayLayer {
         colormap::colourise(f.values, f.kind, range, &mut self.rgba);
 
         let size = wgpu::Extent3d { width: f.layout.nx as u32, height: f.layout.ny as u32, depth_or_array_layers: 1 };
-        if self.texture.as_ref().is_none_or(|(t, _)| t.size() != size) {
+        let smooth = f.kind == FieldKind::Concentration;
+        if self.texture.as_ref().is_none_or(|(t, _, linear)| t.size() != size || *linear != smooth) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("overlay"),
                 size,
@@ -134,13 +144,16 @@ impl OverlayLayer {
                 layout: &self.layout,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(if smooth { &self.linear } else { &self.nearest }),
+                    },
                     wgpu::BindGroupEntry { binding: 2, resource: self.params.as_entire_binding() },
                 ],
             });
-            self.texture = Some((texture, bind_group));
+            self.texture = Some((texture, bind_group, smooth));
         }
-        let (texture, _) = self.texture.as_ref().expect("created above");
+        let (texture, _, _) = self.texture.as_ref().expect("created above");
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
@@ -165,7 +178,7 @@ impl OverlayLayer {
 
     /// Expects the globals bind group at index 0 to be set already.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        if let (true, Some((_, bind_group))) = (self.visible, &self.texture) {
+        if let (true, Some((_, bind_group, _))) = (self.visible, &self.texture) {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(1, bind_group, &[]);
             pass.draw(0..4, 0..1);

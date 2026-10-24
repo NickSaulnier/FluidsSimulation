@@ -1,11 +1,15 @@
 pub mod ballistic;
 pub mod flip;
 pub mod pbf;
+mod pressure;
+pub mod stable;
 
 pub use ballistic::Ballistic;
 pub use flip::{Flip, FlipParams};
 pub use pbf::{Pbf, PbfParams};
+pub use stable::{StableFluids, StableParams};
 
+use crate::grid::Grid2;
 use crate::rng::SplitMix64;
 use crate::scene::{ForceBrush, Rect, Scene, StepInput};
 use crate::solver::ParticleView;
@@ -16,6 +20,20 @@ use rayon::prelude::*;
 /// particle loop 32+ ways and the per-task overhead outweighs the work (measured: loops
 /// got slower beyond 8 threads).
 pub(crate) const PAR_CHUNK: usize = 1024;
+
+/// Resample the scene's solids onto a grid of cell size `h`: a cell is solid if its
+/// centre is inside a scene solid. The outer ring is always solid so the domain stays
+/// closed even where the scene's walls are thinner than a cell.
+pub(crate) fn resample_solids(scene: &Scene, h: f32, out: &mut Grid2<bool>) {
+    let (nx, ny) = (out.nx(), out.ny());
+    for j in 0..ny {
+        for i in 0..nx {
+            let centre = (Vec2::new(i as f32, j as f32) + 0.5) * h;
+            let border = i == 0 || j == 0 || i == nx - 1 || j == ny - 1;
+            out[(i, j)] = border || scene.solid.distance(centre) < 0.0;
+        }
+    }
+}
 
 /// Seed particles on a jittered lattice inside the scene's fluid blocks, skipping solids.
 pub(crate) fn seed_particles(scene: &Scene, spacing: f32, jitter: f32, out: &mut Vec<Vec2>) {

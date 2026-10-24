@@ -306,11 +306,14 @@ fn overlay(ui: &mut egui::Ui, world: &World, state: &mut UiState, range: Option<
         });
     if fields.is_empty() {
         ui.weak(format!("{} has no grid fields", world.solver.name()));
+    } else if state.overlay.is_none() && world.solver.particles().is_none() {
+        ui.weak(format!("Showing {}: {} has no particles", fields[0].label.to_lowercase(), world.solver.name()));
     }
     if let (Some(field), Some((lo, hi))) = (current, range) {
         ui.add(egui::Slider::new(&mut state.overlay_opacity, 0.1..=1.0).text("Opacity"));
         let legend = match field.kind {
             sim::FieldKind::Categorical => "grey: air   blue: fluid   dark: solid".to_string(),
+            sim::FieldKind::Concentration => "transparent: none   white: full".to_string(),
             _ => format!("{lo:.3} .. {hi:.3} {}", field.unit),
         };
         ui.label(legend);

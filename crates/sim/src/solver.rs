@@ -24,6 +24,8 @@ pub enum FieldKind {
     NonNegative,
     /// Small integer categories (e.g. cell type).
     Categorical,
+    /// An amount from 0 to 1 (e.g. dye): drawn fading to transparent where it's zero.
+    Concentration,
 }
 
 #[derive(Clone, Copy, Debug)]

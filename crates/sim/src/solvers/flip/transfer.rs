@@ -132,25 +132,6 @@ pub(super) fn particles_to_grid_serial(grid: &mut MacGrid, pos: &[Vec2], vel: &[
     }
 }
 
-/// Static solids: zero the velocity on every face touching a solid cell.
-pub(super) fn enforce_solid_boundaries(grid: &mut MacGrid) {
-    let (nx, ny) = (grid.nx as isize, grid.ny as isize);
-    for j in 0..ny {
-        for i in 0..=nx {
-            if grid.cell_type(i - 1, j) == CellType::Solid || grid.cell_type(i, j) == CellType::Solid {
-                grid.u[(i as usize, j as usize)] = 0.0;
-            }
-        }
-    }
-    for j in 0..=ny {
-        for i in 0..nx {
-            if grid.cell_type(i, j - 1) == CellType::Solid || grid.cell_type(i, j) == CellType::Solid {
-                grid.v[(i as usize, j as usize)] = 0.0;
-            }
-        }
-    }
-}
-
 /// PIC/FLIP blend back onto the particles. `u_prev`/`v_prev` are the grid velocities
 /// right after P2G; FLIP adds only the change forces and projection made since.
 ///

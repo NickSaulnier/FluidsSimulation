@@ -46,6 +46,25 @@ impl MacGrid {
         }
     }
 
+    /// Static solids: zero the velocity on every face touching a solid cell.
+    pub fn zero_solid_faces(&mut self) {
+        let (nx, ny) = (self.nx as isize, self.ny as isize);
+        for j in 0..ny {
+            for i in 0..=nx {
+                if self.cell_type(i - 1, j) == CellType::Solid || self.cell_type(i, j) == CellType::Solid {
+                    self.u[(i as usize, j as usize)] = 0.0;
+                }
+            }
+        }
+        for j in 0..=ny {
+            for i in 0..nx {
+                if self.cell_type(i, j - 1) == CellType::Solid || self.cell_type(i, j) == CellType::Solid {
+                    self.v[(i as usize, j as usize)] = 0.0;
+                }
+            }
+        }
+    }
+
     /// Net outflow of cell (i, j) in m/s (divide by h for the true divergence in 1/s).
     #[inline]
     pub fn net_outflow(&self, i: usize, j: usize) -> f32 {

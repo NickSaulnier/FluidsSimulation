@@ -6,6 +6,8 @@ use sim::FieldKind;
 const DIVERGING: [[u8; 3]; 3] = [[59, 76, 192], [235, 235, 235], [180, 4, 38]];
 /// Sequential, viridis-like, from 0 to 1.
 const SEQUENTIAL: [[u8; 3]; 5] = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+/// Concentration (dye), from 0 to 1, with alpha rising alongside.
+const INK: [[u8; 3]; 3] = [[30, 100, 240], [90, 195, 255], [235, 248, 255]];
 /// Cell types: air, fluid, solid.
 const CATEGORIES: [[u8; 4]; 3] = [[200, 200, 210, 60], [70, 130, 230, 255], [110, 110, 120, 255]];
 
@@ -20,6 +22,7 @@ pub fn range(values: &[f32], kind: FieldKind) -> (f32, f32) {
         }
         FieldKind::NonNegative => (0.0, finite.fold(0.0, f32::max).max(1e-6)),
         FieldKind::Categorical => (0.0, (CATEGORIES.len() - 1) as f32),
+        FieldKind::Concentration => (0.0, 1.0),
     }
 }
 
@@ -33,6 +36,12 @@ pub fn colourise(values: &[f32], kind: FieldKind, (lo, hi): (f32, f32), out: &mu
         } else {
             match kind {
                 FieldKind::Categorical => CATEGORIES[(v.round().max(0.0) as usize).min(CATEGORIES.len() - 1)],
+                FieldKind::Concentration => {
+                    let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+                    let [r, g, b] = ramp(&INK, t);
+                    // Fade out where there's little dye, so the background shows through.
+                    [r, g, b, (255.0 * t.powf(0.6)).round() as u8]
+                }
                 _ => {
                     let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
                     let [r, g, b] = if kind == FieldKind::Signed { ramp(&DIVERGING, t) } else { ramp(&SEQUENTIAL, t) };
@@ -57,6 +66,15 @@ fn ramp(stops: &[[u8; 3]], t: f32) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concentration_fades_to_transparent() {
+        let mut out = Vec::new();
+        colourise(&[0.0, 1.0, 2.0], FieldKind::Concentration, (0.0, 1.0), &mut out);
+        assert_eq!(out[3], 0, "no dye is transparent");
+        assert_eq!(out[7], 255, "full dye is opaque");
+        assert_eq!(&out[4..8], &out[8..12], "over-full dye clamps");
+    }
 
     #[test]
     fn ranges_ignore_nan_and_are_symmetric_for_signed_fields() {

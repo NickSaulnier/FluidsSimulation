@@ -262,17 +262,18 @@ impl State {
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        // The selected overlay field, looked up by key in whatever the solver offers.
-        let field = self.ui.overlay.and_then(|key| {
-            let fields = self.world.solver.fields();
+        // The selected overlay field, looked up by key in whatever the solver offers. A
+        // solver without particles (pure grid) is drawn through its first field.
+        let fields = self.world.solver.fields();
+        let (key, opacity) = match self.ui.overlay {
+            Some(key) => (Some(key), self.ui.overlay_opacity),
+            None if self.world.solver.particles().is_none() => (fields.first().map(|f| f.key), 1.0),
+            None => (None, 0.0),
+        };
+        let field = key.and_then(|key| {
             let index = fields.iter().position(|f| f.key == key)?;
             let layout = self.world.solver.fill_field(index, &mut self.field_values)?;
-            Some(render::FieldFrame {
-                layout,
-                values: &self.field_values,
-                kind: fields[index].kind,
-                opacity: self.ui.overlay_opacity,
-            })
+            Some(render::FieldFrame { layout, values: &self.field_values, kind: fields[index].kind, opacity })
         });
         let options = render::DrawOptions {
             view,

@@ -10,7 +10,6 @@
 //! substep; TMP hides that with particle separation and drift compensation.
 
 mod collide;
-mod pressure;
 mod separate;
 mod transfer;
 
@@ -23,7 +22,7 @@ use crate::grid::mac::CellType;
 use crate::solver::{FieldInfo, FieldKind, FieldLayout, Init, Metric, ParticleView, Solver, Stats};
 use crate::timing::PhaseTimer;
 use glam::Vec2;
-use pressure::{Drift, Method, PressureSolver};
+use super::pressure::{self, Drift, Method, PressureSolver};
 use transfer::P2gScratch;
 use rayon::prelude::*;
 
@@ -254,14 +253,7 @@ impl Flip {
         if self.solid_generation == Some(scene.solid.generation()) {
             return;
         }
-        let (nx, ny, h) = (self.grid.nx, self.grid.ny, self.grid.h);
-        for j in 0..ny {
-            for i in 0..nx {
-                let centre = (Vec2::new(i as f32, j as f32) + 0.5) * h;
-                let border = i == 0 || j == 0 || i == nx - 1 || j == ny - 1;
-                self.solid[(i, j)] = border || scene.solid.distance(centre) < 0.0;
-            }
-        }
+        super::resample_solids(scene, self.grid.h, &mut self.solid);
         self.solid_generation = Some(scene.solid.generation());
     }
 
@@ -333,13 +325,13 @@ impl Solver for Flip {
         transfer::mark_cells(&mut self.grid, &self.solid, &self.pos);
         timer.lap("classify");
         transfer::particles_to_grid(&mut self.grid, &mut self.p2g, &self.pos, &self.vel);
-        transfer::enforce_solid_boundaries(&mut self.grid);
+        self.grid.zero_solid_faces();
         self.u_prev.copy_from(&self.grid.u);
         self.v_prev.copy_from(&self.grid.v);
         timer.lap("p2g");
 
         transfer::apply_gravity(&mut self.grid, scene.gravity, dt);
-        transfer::enforce_solid_boundaries(&mut self.grid);
+        self.grid.zero_solid_faces();
         let drift = self.params.compensate_drift.then(|| {
             transfer::particle_density(&mut self.density, self.grid.h, &self.pos);
             Drift { gain: self.params.drift_stiffness * self.grid.h / dt, rest: self.rest_density }
@@ -348,13 +340,13 @@ impl Solver for Flip {
 
         let p = &self.params;
         let method = if p.use_pcg {
-            Method::Pcg { max_iterations: p.pressure_iters, tolerance: p.pcg_tolerance }
+            Method::Pcg { max_iterations: p.pressure_iters, tolerance: p.pcg_tolerance, non_negative: true }
         } else {
-            Method::GaussSeidel { iterations: p.pressure_iters, over_relax: p.over_relax }
+            Method::GaussSeidel { iterations: p.pressure_iters, over_relax: p.over_relax, non_negative: true }
         };
         let pressure_iterations =
             pressure::project(&mut self.grid, &mut self.pressure_solver, &mut self.pressure, &self.density, dt, method, drift);
-        let residual = pressure::max_residual(&self.grid, &self.pressure);
+        let residual = pressure::max_residual(&self.grid, &self.pressure, true);
         timer.lap("pressure");
 
         transfer::grid_to_particles(
@@ -535,13 +527,13 @@ mod tests {
         let mut rng = SplitMix64::new(7);
         grid.u.as_mut_slice().iter_mut().for_each(|x| *x = rng.signed());
         grid.v.as_mut_slice().iter_mut().for_each(|x| *x = rng.signed());
-        transfer::enforce_solid_boundaries(&mut grid);
+        grid.zero_solid_faces();
 
         let mut p = Grid2::new(nx, ny);
-        let before = pressure::max_residual(&grid, &p);
-        let method = Method::GaussSeidel { iterations: 300, over_relax: 1.9 };
+        let before = pressure::max_residual(&grid, &p, true);
+        let method = Method::GaussSeidel { iterations: 300, over_relax: 1.9, non_negative: true };
         pressure::project(&mut grid, &mut PressureSolver::new(nx, ny), &mut p, &Grid2::new(nx, ny), 1.0, method, None);
-        let after = pressure::max_residual(&grid, &p);
+        let after = pressure::max_residual(&grid, &p, true);
         assert!(after < before * 1e-3, "residual {before} -> {after}");
     }
 
@@ -636,7 +628,7 @@ mod tests {
         let mut rng = SplitMix64::new(5);
         grid.u.as_mut_slice().iter_mut().for_each(|x| *x = 0.2 * rng.signed());
         grid.v.as_mut_slice().iter_mut().for_each(|x| *x = -1.0 + 0.2 * rng.signed());
-        transfer::enforce_solid_boundaries(&mut grid);
+        grid.zero_solid_faces();
         grid
     }
 
@@ -644,13 +636,13 @@ mod tests {
         let (nx, ny) = (grid.nx, grid.ny);
         let mut p = Grid2::new(nx, ny);
         let used = pressure::project(grid, &mut PressureSolver::new(nx, ny), &mut p, &Grid2::new(nx, ny), 1.0 / 60.0, method, None);
-        (used, pressure::max_residual(grid, &p))
+        (used, pressure::max_residual(grid, &p, true))
     }
 
     #[test]
     fn pcg_converges_to_its_tolerance() {
         let mut grid = falling_tank_grid();
-        let (used, residual) = solve(&mut grid, Method::Pcg { max_iterations: 1000, tolerance: 1e-4 });
+        let (used, residual) = solve(&mut grid, Method::Pcg { max_iterations: 1000, tolerance: 1e-4, non_negative: true });
         assert!(used < 1000, "PCG didn't converge in 1000 iterations");
         // f32 bottoms out around 2e-4 m/s for velocities of order 1 m/s (see the
         // convergence table: 200 and 400 iterations both stall there).
@@ -666,9 +658,9 @@ mod tests {
     /// GS 0.011 m/s at 400; CG 0.005 at 100).
     #[test]
     fn pcg_needs_far_fewer_iterations_than_gauss_seidel() {
-        let (_, gs_residual) = solve(&mut falling_tank_grid(), Method::GaussSeidel { iterations: 400, over_relax: 1.9 });
+        let (_, gs_residual) = solve(&mut falling_tank_grid(), Method::GaussSeidel { iterations: 400, over_relax: 1.9, non_negative: true });
         let (cg_iterations, cg_residual) =
-            solve(&mut falling_tank_grid(), Method::Pcg { max_iterations: 400, tolerance: gs_residual });
+            solve(&mut falling_tank_grid(), Method::Pcg { max_iterations: 400, tolerance: gs_residual, non_negative: true });
         assert!(cg_residual <= gs_residual * 1.01, "CG residual {cg_residual} vs GS {gs_residual}");
         assert!(cg_iterations < 200, "CG took {cg_iterations} iterations to match 400 of Gauss-Seidel ({gs_residual} m/s)");
     }
