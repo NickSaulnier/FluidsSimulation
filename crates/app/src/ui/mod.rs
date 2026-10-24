@@ -6,13 +6,15 @@
 mod panel;
 mod params;
 mod status_bar;
+pub mod theme;
 mod top_bar;
+mod widgets;
 
 use crate::audio::Music;
 use sim::{Vec2, World};
 
 /// Side panel width in points.
-pub const PANEL_WIDTH: f32 = 300.0;
+pub const PANEL_WIDTH: f32 = 320.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {

@@ -1,6 +1,6 @@
 //! Status bar: a one-line summary under the canvas. The details live in the Info tab.
 
-use super::Frame;
+use super::{Frame, theme};
 
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     let (perf, world) = (f.perf, &*f.world);
@@ -19,7 +19,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         if perf.slow_motion > 0.05 {
             ui.weak("·");
             ui.colored_label(
-                egui::Color32::from_rgb(255, 190, 90),
+                theme::WARN,
                 format!("slow motion {:.0}%", 100.0 * (1.0 - perf.slow_motion)),
             )
             .on_hover_text("The simulation can't keep up with real time at these settings.");

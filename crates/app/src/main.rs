@@ -143,6 +143,7 @@ impl State {
         let renderer = Renderer::new(&gpu.device, gpu.config.format);
 
         let egui_ctx = egui::Context::default();
+        ui::theme::apply(&egui_ctx);
         let egui_winit = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -289,9 +290,12 @@ impl State {
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         // The selected overlay field, looked up by key in whatever the solver offers. A
-        // solver without particles (pure grid) is drawn through its first field.
+        // solver without particles (pure grid) is drawn through its first field. A key
+        // this solver doesn't have (picked under another solver) counts as no overlay;
+        // otherwise a grid solver would draw nothing at all.
         let fields = self.world.solver.fields();
-        let (key, opacity) = match self.ui.overlay {
+        let selected = self.ui.overlay.filter(|key| fields.iter().any(|f| f.key == *key));
+        let (key, opacity) = match selected {
             Some(key) => (Some(key), self.ui.overlay_opacity),
             None if self.world.solver.particles().is_none() => (fields.first().map(|f| f.key), 1.0),
             None => (None, 0.0),
