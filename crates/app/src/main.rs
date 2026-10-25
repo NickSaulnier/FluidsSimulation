@@ -93,6 +93,11 @@ struct State {
     /// The scene texture, bloom and composite, and the GPU time of each stage.
     post: render::post::PostProcess,
     timer: Option<render::timer::GpuTimer>,
+    /// The feedback layer, and the 2D flow's velocity grid (reused).
+    feedback: render::feedback::FeedbackLayer,
+    velocity: Vec<sim::Vec2>,
+    /// This frame's time for the feedback (0 while paused, which holds the picture).
+    frame_dt: f32,
     ui: UiState,
     music: Music,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
@@ -192,6 +197,7 @@ impl State {
         let renderer3d = Renderer3d::new(&gpu.device, render::post::SCENE_FORMAT);
         let post = render::post::PostProcess::new(&gpu.device, gpu.config.format);
         let timer = render::timer::GpuTimer::new(&gpu.device, &gpu.queue);
+        let feedback = render::feedback::FeedbackLayer::new(&gpu.device);
 
         let egui_ctx = egui::Context::default();
         ui::theme::apply(&egui_ctx);
@@ -232,6 +238,9 @@ impl State {
             renderer3d,
             post,
             timer,
+            feedback,
+            velocity: Vec::new(),
+            frame_dt: 0.0,
             ui: {
                 let mut ui = UiState::default();
                 if let Some(saved) = ui::settings::load() {
@@ -415,6 +424,7 @@ impl State {
         let now = Instant::now();
         let real_dt = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
+        self.frame_dt = if self.ui.paused { 0.0 } else { real_dt.min(0.1) };
         let view = self.view();
 
         // UI first, so changes made in the panel apply to this frame's step.
@@ -590,8 +600,9 @@ impl State {
         [x, y, (r.width() * ppp).min(w - x).max(0.0), (r.height() * ppp).min(h - y).max(0.0)]
     }
 
-    /// The frame: the scene into the HDR scene texture (at the render scale), then the
-    /// glow and the composite onto the surface, then the interface.
+    /// The frame: the scene into the HDR scene texture (at the render scale), the
+    /// feedback over it, then the glow and the composite onto the surface, then the
+    /// interface.
     fn render(&mut self, frame: wgpu::SurfaceTexture, view: &View, egui_out: egui::FullOutput) {
         use render::timer::Stage;
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -606,17 +617,46 @@ impl State {
             }
         };
         mark(&self.timer, &mut encoder, Stage::Scene);
+        let feedback = self.ui.feedback;
+        let flow = self.feedback.flow_target(&self.gpu.device, scene_size);
         if let Some(world) = &self.world3d {
             let viewport = self.viewport_3d().map(|v| v * scale);
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
             let volume = world.solver.volume();
-            self.renderer3d.render(device, queue, &mut encoder, &scene, scene_size, viewport, &self.camera, &world.scene, volume, &self.palette_now);
+            // Feedback would smear the box's lines into streaks: leave them out.
+            let lines = !feedback.enabled;
+            self.renderer3d.render(
+                device,
+                queue,
+                &mut encoder,
+                &scene,
+                &flow,
+                scene_size,
+                viewport,
+                &self.camera,
+                &world.scene,
+                volume,
+                &self.palette_now,
+                lines,
+            );
             self.field_range = None;
         } else {
             self.render_2d(&mut encoder, &scene, view, scene_size, scale);
+            if feedback.enabled {
+                self.draw_flow_2d(&mut encoder, view, scene_size);
+            }
         }
+        mark(&self.timer, &mut encoder, Stage::Feedback);
+        let picture = if feedback.enabled {
+            let bass = self.music.features().map_or(0.0, |f| f.bands[1]);
+            let (device, queue) = (&self.gpu.device, &self.gpu.queue);
+            self.feedback.run(device, queue, &mut encoder, &scene, scene_size, &feedback, self.frame_dt, bass)
+        } else {
+            self.feedback.pause();
+            scene.clone()
+        };
         mark(&self.timer, &mut encoder, Stage::Glow);
-        self.post.run(&self.gpu.queue, &mut encoder, &target, self.ui.glow, self.timer.as_ref());
+        self.post.run(&self.gpu.device, &self.gpu.queue, &mut encoder, &picture, &target, self.ui.glow, feedback.echo(), self.timer.as_ref());
         mark(&self.timer, &mut encoder, Stage::Interface);
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
 
@@ -659,6 +699,18 @@ impl State {
         queue.present(frame);
     }
 
+    /// The 2D flow for the feedback: the solver's velocity grid, or its particles'
+    /// velocities splatted onto one.
+    fn draw_flow_2d(&mut self, encoder: &mut wgpu::CommandEncoder, view: &View, size: [u32; 2]) {
+        let world = &self.world;
+        let layout = match world.solver.velocity_field(&mut self.velocity) {
+            Some(layout) => Some(layout),
+            None => world.solver.particles().map(|p| render::feedback::splat_velocity(&p, world.scene.size, &mut self.velocity)),
+        };
+        let grid = layout.map(|l| (self.velocity.as_slice(), l));
+        self.feedback.draw_flow_2d(&self.gpu.device, &self.gpu.queue, encoder, size, view, grid);
+    }
+
     /// The 2D scene into `target`, `size` pixels, `scale` of the window's.
     fn render_2d(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, view: &View, size: [u32; 2], scale: f32) {
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
@@ -686,6 +738,7 @@ impl State {
             liquid: self.ui.liquid_style(),
             target_size: (size[0], size[1]),
             pixel_scale: scale,
+            black_letterbox: self.ui.feedback.enabled,
             palette: self.palette_now,
         };
         self.field_range = self.renderer.render(device, queue, encoder, target, options);

@@ -499,6 +499,16 @@ impl Solver for Lbm {
         FIELDS
     }
 
+    fn velocity_field(&self, out: &mut Vec<Vec2>) -> Option<FieldLayout> {
+        let (nx, ny) = (self.nx, self.ny);
+        let scale = 1.0 / self.params.lattice_per_mps;
+        out.clear();
+        out.extend((0..ny).flat_map(|j| (0..nx).map(move |i| (i, j))).map(|(i, j)| {
+            if self.solid[(i, j)] { Vec2::ZERO } else { self.vel[(i, j)] * scale }
+        }));
+        Some(FieldLayout { nx, ny, origin: Vec2::ZERO, cell: self.h })
+    }
+
     fn fill_field(&self, index: usize, out: &mut Vec<f32>) -> Option<FieldLayout> {
         let (nx, ny) = (self.nx, self.ny);
         out.clear();

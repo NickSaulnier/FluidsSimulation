@@ -1,6 +1,8 @@
-//! View tab: how the fluid is drawn, the picture as a whole, and the field overlay.
+//! View tab: how the fluid is drawn, the picture as a whole (glow, feedback), and the
+//! field overlay.
 
 use crate::render::Palette;
+use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
 use crate::render::palette::PALETTES;
 use crate::ui::Frame;
 use crate::ui::shortcuts::{Action, tip};
@@ -39,8 +41,67 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         widgets::toggle(ui, &mut s.show_particles, &tip("Show particles", Action::ToggleParticles), "");
     });
     widgets::group(ui, "Picture", |ui| picture(ui, f.state));
+    widgets::group(ui, "Feedback", |ui| feedback(ui, &mut f.state.feedback));
     if !in_3d {
         widgets::group(ui, "Overlay", |ui| overlay(ui, f));
+    }
+}
+
+/// MilkDrop-style feedback: each frame built on the last, warped and faded.
+fn feedback(ui: &mut egui::Ui, s: &mut FeedbackSettings) {
+    widgets::toggle(ui, &mut s.enabled, "Feedback", "Build each frame on the last one, warped and faded: trails, tunnels and smears.");
+    if !s.enabled {
+        return;
+    }
+    let slider = |ui: &mut egui::Ui, label: &str, help: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>| {
+        row(ui, label, help, |ui| {
+            ui.add(egui::Slider::new(value, range));
+        });
+    };
+    row(ui, "Mode", "How the new picture combines with the old one.", |ui| {
+        egui::ComboBox::from_id_salt("feedback_mode").selected_text(mode_label(s.mode)).width(150.0).show_ui(ui, |ui| {
+            for mode in [FeedbackMode::Smear, FeedbackMode::Brightest] {
+                ui.selectable_value(&mut s.mode, mode, mode_label(mode));
+            }
+        });
+    });
+    slider(ui, "Trail", "How much of the picture is left after a second.", &mut s.trail, 0.0..=0.98);
+    slider(ui, "Flow", "How strongly the fluid's motion carries the picture (1: exactly with it).", &mut s.flow, 0.0..=3.0);
+    row(ui, "Zoom", "Growth per second from the centre: above 1 a tunnel outward, below 1 inward.", |ui| {
+        ui.add(egui::Slider::new(&mut s.zoom, 0.5..=2.0).logarithmic(true));
+    });
+    slider(ui, "Turn", "Rotation, radians per second.", &mut s.rotation, -1.5..=1.5);
+    slider(ui, "Drift up", "Upward shift, screen heights per second.", &mut s.drift[1], -0.5..=0.5);
+    slider(ui, "Drift right", "Sideways shift, screen heights per second.", &mut s.drift[0], -0.5..=0.5);
+    slider(ui, "Wobble", "Slow waves bending the motion.", &mut s.warp, 0.0..=0.05);
+    slider(ui, "Wobble speed", "", &mut s.warp_speed, 0.0..=4.0);
+    slider(ui, "Bass zoom", "Extra zoom while the bass is loud.", &mut s.bass_zoom, 0.0..=1.0);
+    slider(ui, "Echo", "A zoomed copy shown over the picture.", &mut s.echo, 0.0..=1.0);
+    if s.echo > 0.0 {
+        slider(ui, "Echo zoom", "", &mut s.echo_zoom, 0.5..=3.0);
+        row(ui, "Echo flip", "", |ui| {
+            egui::ComboBox::from_id_salt("echo_flip").selected_text(flip_label(s.echo_flip)).width(150.0).show_ui(ui, |ui| {
+                for flip in [EchoFlip::None, EchoFlip::Horizontal, EchoFlip::Vertical, EchoFlip::Both] {
+                    ui.selectable_value(&mut s.echo_flip, flip, flip_label(flip));
+                }
+            });
+        });
+    }
+}
+
+fn mode_label(mode: FeedbackMode) -> &'static str {
+    match mode {
+        FeedbackMode::Smear => "Smear",
+        FeedbackMode::Brightest => "Brightest",
+    }
+}
+
+fn flip_label(flip: EchoFlip) -> &'static str {
+    match flip {
+        EchoFlip::None => "None",
+        EchoFlip::Horizontal => "Left-right",
+        EchoFlip::Vertical => "Upside down",
+        EchoFlip::Both => "Both",
     }
 }
 

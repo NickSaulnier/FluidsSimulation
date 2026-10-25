@@ -10,7 +10,12 @@ struct Post {
     knee: f32,
     // Bloom added in the composite.
     strength: f32,
+    // Echo: how much of a zoomed copy shows over the picture, its zoom, and its flip
+    // (a sign per axis).
+    echo: f32,
+    echo_zoom: f32,
     _pad: f32,
+    echo_flip: vec2f,
 };
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -99,10 +104,15 @@ fn tone(x: f32) -> f32 {
     return TONE_KNEE + over / (1.0 + over / room);
 }
 
-/// Scene plus bloom, tone-mapped per channel (bright fire goes white, as it should).
+/// The picture (with its echo) plus bloom, tone-mapped per channel (bright fire goes
+/// white, as it should).
 @fragment
 fn fs_composite(in: VOut) -> @location(0) vec4f {
-    let scene = textureSampleLevel(src, linear_clamp, in.uv, 0.0).rgb;
+    var scene = textureSampleLevel(src, linear_clamp, in.uv, 0.0).rgb;
+    if post.echo > 0.0 {
+        let echo_uv = 0.5 + (in.uv - 0.5) * post.echo_flip / post.echo_zoom;
+        scene = mix(scene, textureSampleLevel(src, linear_clamp, echo_uv, 0.0).rgb, post.echo);
+    }
     let glow = textureSampleLevel(bloom, linear_clamp, in.uv, 0.0).rgb;
     let c = max(scene + post.strength * glow, vec3f(0.0));
     return vec4f(tone(c.r), tone(c.g), tone(c.b), 1.0);

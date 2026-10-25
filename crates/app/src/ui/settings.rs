@@ -35,6 +35,7 @@ pub struct Settings {
     pub look_interval_s: f32,
     pub glow: f32,
     pub render_scale: f32,
+    pub feedback: crate::render::feedback::FeedbackSettings,
 }
 
 impl Default for Settings {
@@ -65,6 +66,7 @@ impl Settings {
             look_interval_s: s.director.interval_s,
             glow: s.glow,
             render_scale: s.render_scale,
+            feedback: s.feedback,
         }
     }
 
@@ -90,6 +92,20 @@ impl Settings {
         s.director.interval_s = clamp(self.look_interval_s, 30.0, 300.0);
         s.glow = clamp(self.glow, 0.0, 1.0);
         s.render_scale = if self.render_scale > 0.0 { clamp(self.render_scale, 0.5, 1.0) } else { 0.0 };
+        let f = &self.feedback;
+        s.feedback = crate::render::feedback::FeedbackSettings {
+            trail: clamp(f.trail, 0.0, 0.98),
+            zoom: clamp(f.zoom, 0.5, 2.0),
+            rotation: clamp(f.rotation, -1.5, 1.5),
+            drift: f.drift.map(|d| clamp(d, -0.5, 0.5)),
+            warp: clamp(f.warp, 0.0, 0.05),
+            warp_speed: clamp(f.warp_speed, 0.0, 4.0),
+            flow: clamp(f.flow, 0.0, 3.0),
+            bass_zoom: clamp(f.bass_zoom, 0.0, 1.0),
+            echo: clamp(f.echo, 0.0, 1.0),
+            echo_zoom: clamp(f.echo_zoom, 0.5, 3.0),
+            ..*f
+        };
         for r in &mut s.reactions {
             r.gain = clamp(r.gain, 0.0, 3.0);
         }

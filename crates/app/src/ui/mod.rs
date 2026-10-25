@@ -93,6 +93,8 @@ pub struct UiState {
     pub cheat_sheet: bool,
     /// The fluid's colours.
     pub palette: crate::render::Palette,
+    /// How each frame carries the last one (trails, tunnels, echo).
+    pub feedback: crate::render::feedback::FeedbackSettings,
     /// How the music drives the fluid.
     pub reactions: Vec<crate::audio::reactions::Reaction>,
     /// The full-screen visualizer: no controls, the scene filling the screen.
@@ -133,6 +135,7 @@ impl Default for UiState {
             panel_open: true,
             cheat_sheet: false,
             palette: crate::render::Palette::default(),
+            feedback: crate::render::feedback::FeedbackSettings::OFF,
             reactions: crate::audio::reactions::default_reactions(),
             presenting: false,
             reveal_until: None,

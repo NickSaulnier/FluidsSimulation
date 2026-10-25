@@ -1,4 +1,5 @@
-//! GPU time per stage of a frame (the scene, the glow, the composite, the interface),
+//! GPU time per stage of a frame (the scene, the feedback, the glow, the composite, the
+//! interface),
 //! from timestamp queries. A marker (an empty compute pass that writes a timestamp) goes
 //! between stages, so the renderers themselves need no timing code. The results are
 //! read back a frame or two late, without stalling; without `TIMESTAMP_QUERY` there are
@@ -12,13 +13,20 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Scene,
+    Feedback,
     Glow,
     Composite,
     Interface,
     End,
 }
 
-const STAGES: [(Stage, &str); 4] = [(Stage::Scene, "scene"), (Stage::Glow, "glow"), (Stage::Composite, "composite"), (Stage::Interface, "interface")];
+const STAGES: [(Stage, &str); 5] = [
+    (Stage::Scene, "scene"),
+    (Stage::Feedback, "feedback"),
+    (Stage::Glow, "glow"),
+    (Stage::Composite, "composite"),
+    (Stage::Interface, "interface"),
+];
 const MARKERS: u32 = STAGES.len() as u32 + 1;
 
 enum State {
@@ -140,6 +148,6 @@ mod tests {
             gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         }
         let names: Vec<_> = timer.latest().iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, ["scene", "glow", "composite", "interface"]);
+        assert_eq!(names, ["scene", "feedback", "glow", "composite", "interface"]);
     }
 }

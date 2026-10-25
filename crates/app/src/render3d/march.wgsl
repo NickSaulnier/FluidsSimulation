@@ -1,10 +1,12 @@
 // The gas volume, raymarched front to back over the lines already drawn, with the
 // scene's solids shaded where the rays hit them. Smoke absorbs and scatters light; hot
 // gas glows (fire). Output is premultiplied: colour added over the target, alpha the
-// light that still comes through from behind.
+// light that still comes through from behind. A second output is the screen-space flow
+// for the feedback layer: the visible gas's velocity, as uv per second.
 
 struct March {
     inv_view_proj: mat4x4f,
+    view_proj: mat4x4f,
     // xyz: the camera; w: glow per metre of full flame (0: no fire).
     eye: vec4f,
     // xyz: the domain; w: the march step (m).
@@ -28,6 +30,13 @@ struct March {
 @group(0) @binding(1) var volume: texture_3d<f32>;
 @group(0) @binding(2) var linear: sampler;
 @group(0) @binding(3) var depth: texture_depth_2d;
+// The gas velocity (m/s), on the volume's grid.
+@group(0) @binding(4) var velocity: texture_3d<f32>;
+
+struct Out {
+    @location(0) colour: vec4f,
+    @location(1) flow: vec4f,
+};
 
 const SOLID: vec3f = vec3f(0.42, 0.44, 0.48);
 /// Temperatures drawn as the faintest and the fullest flame, as in 2D: warm gas below
@@ -101,7 +110,7 @@ fn occluder_at(p: vec3f) -> f32 {
 }
 
 @fragment
-fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+fn fs(@builtin(position) pos: vec4f) -> Out {
     let uv = (pos.xy - m.viewport.xy) / m.viewport.zw;
     let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let eye = m.eye.xyz;
@@ -141,6 +150,10 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     var glow = vec3f(0.0);
     var through = 1.0;
     let glow_k = m.eye.w;
+    // For the flow: velocity and position, weighted by how much each sample shows.
+    var seen = 0.0;
+    var seen_velocity = vec3f(0.0);
+    var seen_at = vec3f(0.0);
     let span = slab(eye, dir, vec3f(0.0), m.size.xyz);
     if m.counts.y == 1u && span.x < span.y {
         let step = m.size.w;
@@ -155,9 +168,12 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             let p = eye + dir * t;
             let v = textureSampleLevel(volume, linear, p / m.size.xyz, 0.0);
             let s = v.r;
+            var shows = 0.0;
             if glow_k > 0.0 {
                 let flame = clamp((v.g - FLAME_FAINT) / (FLAME_FULL - FLAME_FAINT), 0.0, 1.0);
                 glow += through * flame_colour(flame) * (glow_k * flame * step);
+                // A full flame counts about as much as opaque smoke over 25 steps.
+                shows = through * 0.04 * flame;
             }
             if s > 1e-4 {
                 let alpha = 1.0 - exp(-s * sigma_k * step);
@@ -166,7 +182,13 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 let depth_to_light = probe * (occluder_at(p + m.light.xyz * probe) + 2.0 * occluder_at(p + m.light.xyz * 3.0 * probe));
                 let lit = exp(-m.light.w * depth_to_light);
                 colour += through * alpha * mix(m.shade.rgb, m.lit.rgb, lit);
+                shows += through * alpha;
                 through *= 1.0 - alpha;
+            }
+            if shows > 0.0 {
+                seen += shows;
+                seen_velocity += shows * textureSampleLevel(velocity, linear, p / m.size.xyz, 0.0).xyz;
+                seen_at += shows * p;
             }
             t += step;
         }
@@ -176,6 +198,18 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         colour += through * SOLID * (0.25 + 0.75 * diffuse);
         through = 0.0;
     }
+    var out: Out;
     // Flames are brighter than white: the composite blooms them and rolls them off.
-    return vec4f(colour + glow, through);
+    out.colour = vec4f(colour + glow, through);
+    out.flow = vec4f(0.0);
+    if seen > 1e-4 {
+        // Where the seen gas moves on screen: project a short step along its velocity.
+        let at = seen_at / seen;
+        let moved = at + 0.01 * seen_velocity / seen;
+        let a = m.view_proj * vec4f(at, 1.0);
+        let b = m.view_proj * vec4f(moved, 1.0);
+        let d_ndc = (b.xy / b.w - a.xy / a.w) / 0.01;
+        out.flow = vec4f(0.5 * d_ndc.x, -0.5 * d_ndc.y, 0.0, 0.0) * min(seen, 1.0);
+    }
+    return out;
 }

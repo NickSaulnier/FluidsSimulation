@@ -387,8 +387,10 @@ struct Fields {
     scal_tmp: wgpu::Buffer,
     pd: wgpu::Buffer,
     flags: wgpu::Buffer,
-    /// (smoke, temperature) as a filterable texture, for drawing.
+    /// (smoke, temperature, solid, fuel) and the velocity as filterable textures, for
+    /// drawing.
     volume: wgpu::TextureView,
+    velocity: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
 }
 
@@ -470,8 +472,8 @@ impl Smoke3d {
         }];
         entries.extend((1..=7).map(|b| storage(b, false)));
         entries.push(storage(8, true));
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: 9,
+        entries.extend([9, 10].map(|binding| wgpu::BindGroupLayoutEntry {
+            binding,
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::StorageTexture {
                 access: wgpu::StorageTextureAccess::WriteOnly,
@@ -479,7 +481,7 @@ impl Smoke3d {
                 view_dimension: wgpu::TextureViewDimension::D3,
             },
             count: None,
-        });
+        }));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("smoke3d"), entries: &entries });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("smoke3d"),
@@ -558,18 +560,22 @@ impl Smoke3d {
         let scal_tmp = buffer("smoke, temperature, fuel (corrected)", cells * 16);
         let pd = buffer("pressure, divergence", cells * 8);
         let flags = buffer("cell types", cells * 4);
-        let volume = device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("smoke volume"),
-                size: wgpu::Extent3d { width: n.x, height: n.y, depth_or_array_layers: n.z },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D3,
-                format: VOLUME_FORMAT,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&Default::default());
+        let volume_texture = |label| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d { width: n.x, height: n.y, depth_or_array_layers: n.z },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D3,
+                    format: VOLUME_FORMAT,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let volume = volume_texture("smoke volume");
+        let velocity = volume_texture("velocity volume");
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("smoke3d"),
             layout: &self.layout,
@@ -584,9 +590,10 @@ impl Smoke3d {
                 wgpu::BindGroupEntry { binding: 7, resource: flags.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: self.geom.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&volume) },
+                wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&velocity) },
             ],
         });
-        self.fields = Some(Fields { n, h, nu, nv, vel, vel_tmp, scal, _scal_hat: scal_hat, scal_tmp, pd, flags, volume, bind_group });
+        self.fields = Some(Fields { n, h, nu, nv, vel, vel_tmp, scal, _scal_hat: scal_hat, scal_tmp, pd, flags, volume, velocity, bind_group });
     }
 
     /// The scene's shapes, vents and burners (plus the frame's extra burners and its
@@ -890,7 +897,7 @@ impl Solver3d for Smoke3d {
     }
 
     fn volume(&self) -> Option<Volume<'_>> {
-        self.fields.as_ref().map(|f| Volume { view: &f.volume, cells: f.n, fire: self.params.is_fire() })
+        self.fields.as_ref().map(|f| Volume { view: &f.volume, velocity: &f.velocity, cells: f.n, fire: self.params.is_fire() })
     }
 
     fn stats(&self) -> &Stats {

@@ -4,6 +4,7 @@
 
 pub mod colormap;
 mod liquid;
+pub mod feedback;
 pub mod palette;
 mod overlay;
 mod particles;
@@ -47,6 +48,9 @@ pub struct DrawOptions<'a> {
     pub target_size: (u32, u32),
     /// Target pixels per window pixel (the render scale), for sizes set in pixels.
     pub pixel_scale: f32,
+    /// Black around the domain instead of the walls' grey (under feedback, which would
+    /// carry the grey into the picture).
+    pub black_letterbox: bool,
     /// The fluid's colours (particles, liquid surface, dye).
     pub palette: Palette,
 }
@@ -139,7 +143,7 @@ impl Renderer {
         target: &wgpu::TextureView,
         options: DrawOptions<'_>,
     ) -> Option<(f32, f32)> {
-        let DrawOptions { view, world, field, show_particles, liquid, target_size, pixel_scale, palette } = options;
+        let DrawOptions { view, world, field, show_particles, liquid, target_size, pixel_scale, black_letterbox, palette } = options;
         let particles = world.solver.particles();
         let globals = Globals {
             scale: view.scale.into(),
@@ -168,7 +172,10 @@ impl Renderer {
                 view: target,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(LETTERBOX), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(if black_letterbox { wgpu::Color::BLACK } else { LETTERBOX }),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             ..Default::default()
         });

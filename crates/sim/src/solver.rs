@@ -106,5 +106,11 @@ pub trait Solver: Send {
         None
     }
 
+    /// The flow's velocity at cell centres (m/s; zero in solids), for effects that
+    /// follow it, from grid solvers. Particle solvers needn't: their particles carry it.
+    fn velocity_field(&self, _out: &mut Vec<Vec2>) -> Option<FieldLayout> {
+        None
+    }
+
     fn stats(&self) -> &Stats;
 }

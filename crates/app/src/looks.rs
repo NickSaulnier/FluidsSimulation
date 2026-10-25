@@ -5,6 +5,7 @@
 //! look: its scene is a 3D preset, and the camera orbits at its `orbit` speed.
 
 use crate::audio::reactions::{Effect, Reaction, Trigger};
+use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
 use crate::render::palette::PALETTES;
 use crate::ui::{UiState, params};
 use sim::{PRESETS, World};
@@ -28,6 +29,8 @@ pub struct Look {
     pub liquid: bool,
     /// 3D looks: how fast the camera circles the scene, rad/s.
     pub orbit: f32,
+    /// How each frame carries the last one.
+    pub feedback: FeedbackSettings,
     pub energy: Energy,
     /// Solver parameters, by key (ints are rounded).
     pub params: &'static [(&'static str, f32)],
@@ -53,6 +56,11 @@ fn r(trigger: Trigger, effect: Effect, gain: f32) -> Reaction {
     Reaction::new(trigger, effect, gain, true)
 }
 
+/// Feedback on, in `mode`, with `trail` left after a second; the motion added per look.
+const fn fb(mode: FeedbackMode, trail: f32) -> FeedbackSettings {
+    FeedbackSettings { enabled: true, mode, trail, ..FeedbackSettings::OFF }
+}
+
 fn param(trigger: Trigger, gain: f32, key: &str) -> Reaction {
     Reaction { param: Some(key.to_string()), ..r(trigger, Effect::Param, gain) }
 }
@@ -65,6 +73,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Ocean",
         liquid: true,
         orbit: 0.0,
+        feedback: FeedbackSettings { flow: 1.0, ..fb(FeedbackMode::Smear, 0.5) },
         energy: Energy::Any,
         params: &[],
         reactions: || {
@@ -84,6 +93,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Ink",
         liquid: false,
         orbit: 0.0,
+        feedback: FeedbackSettings { flow: 1.5, rotation: 0.15, ..fb(FeedbackMode::Brightest, 0.5) },
         energy: Energy::Energetic,
         params: &[("buoyancy", 0.2), ("vorticity", 0.3)],
         reactions: || {
@@ -103,6 +113,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Lava",
         liquid: false,
         orbit: 0.0,
+        feedback: FeedbackSettings { zoom: 1.25, drift: [0.0, 0.12], bass_zoom: 0.4, ..fb(FeedbackMode::Brightest, 0.55) },
         energy: Energy::Energetic,
         params: &[],
         reactions: || {
@@ -121,6 +132,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Slime",
         liquid: false,
         orbit: 0.0,
+        feedback: FeedbackSettings { flow: 2.0, ..fb(FeedbackMode::Smear, 0.6) },
         energy: Energy::Any,
         params: &[],
         reactions: || {
@@ -139,6 +151,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Lava",
         liquid: false,
         orbit: 0.0,
+        feedback: FeedbackSettings { flow: 1.0, warp: 0.01, warp_speed: 0.5, ..fb(FeedbackMode::Smear, 0.85) },
         energy: Energy::Calm,
         params: &[("buoyancy", 0.4), ("vorticity", 0.05)],
         reactions: || {
@@ -157,6 +170,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Mercury",
         liquid: false,
         orbit: 0.0,
+        feedback: FeedbackSettings { echo: 0.35, echo_zoom: 1.6, echo_flip: EchoFlip::Horizontal, ..fb(FeedbackMode::Smear, 0.4) },
         energy: Energy::Any,
         params: &[],
         reactions: || {
@@ -175,6 +189,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Lava",
         liquid: false,
         orbit: 0.12,
+        feedback: FeedbackSettings { flow: 1.2, drift: [0.0, 0.05], bass_zoom: 0.3, ..fb(FeedbackMode::Brightest, 0.5) },
         energy: Energy::Any,
         params: &[],
         reactions: || {
@@ -194,6 +209,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Lava",
         liquid: false,
         orbit: 0.25,
+        feedback: FeedbackSettings { zoom: 1.15, rotation: 0.25, warp: 0.006, bass_zoom: 0.5, ..fb(FeedbackMode::Brightest, 0.55) },
         energy: Energy::Energetic,
         params: &[("vorticity", 0.8)],
         reactions: || {
@@ -213,6 +229,7 @@ pub static LOOKS: &[Look] = &[
         palette: "Ink",
         liquid: false,
         orbit: 0.08,
+        feedback: FeedbackSettings { flow: 1.0, echo: 0.25, echo_zoom: 1.3, echo_flip: EchoFlip::Both, ..fb(FeedbackMode::Smear, 0.7) },
         energy: Energy::Calm,
         params: &[],
         reactions: || {
@@ -272,6 +289,7 @@ fn apply_ui(look: &Look, ui: &mut UiState) {
         ui.palette = *palette;
     }
     ui.reactions = (look.reactions)();
+    ui.feedback = look.feedback;
 }
 
 #[cfg(test)]

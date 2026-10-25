@@ -618,6 +618,20 @@ impl Solver for StableFluids {
         if self.fire.is_some() { FIRE_FIELDS } else { FIELDS }
     }
 
+    fn velocity_field(&self, out: &mut Vec<Vec2>) -> Option<FieldLayout> {
+        let g = &self.grid;
+        let (nx, ny) = (g.nx, g.ny);
+        out.clear();
+        out.extend((0..ny).flat_map(|j| (0..nx).map(move |i| (i, j))).map(|(i, j)| {
+            if self.solid[(i, j)] {
+                Vec2::ZERO
+            } else {
+                Vec2::new(0.5 * (g.u[(i, j)] + g.u[(i + 1, j)]), 0.5 * (g.v[(i, j)] + g.v[(i, j + 1)]))
+            }
+        }));
+        Some(FieldLayout { nx, ny, origin: Vec2::ZERO, cell: g.h })
+    }
+
     fn fill_field(&self, index: usize, out: &mut Vec<f32>) -> Option<FieldLayout> {
         let g = &self.grid;
         let (nx, ny, h) = (g.nx, g.ny, g.h);

@@ -20,14 +20,29 @@ const MIN_LEVEL: u32 = 8;
 const AUTO_FULL_PIXELS: u32 = 2560 * 1440;
 const AUTO_SCALE: f32 = 0.75;
 
-/// Must match `Post` in post.wgsl.
+/// Must match `Post` in post.wgsl (32 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
     threshold: f32,
     knee: f32,
     strength: f32,
+    echo: f32,
+    echo_zoom: f32,
     _pad: f32,
+    echo_flip: [f32; 2],
+}
+
+/// The echo the composite draws: how much (0 for none), its zoom, its flip as signs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Echo {
+    pub amount: f32,
+    pub zoom: f32,
+    pub flip: [f32; 2],
+}
+
+impl Echo {
+    pub const NONE: Self = Self { amount: 0.0, zoom: 1.0, flip: [1.0, 1.0] };
 }
 
 /// The render scale to draw the scene at for a `size` surface: `setting` if it's
@@ -52,13 +67,11 @@ struct Targets {
     scene: wgpu::TextureView,
     /// Half size, quarter size... The first holds the finished bloom.
     levels: Vec<wgpu::TextureView>,
-    /// Bind groups: the prefilter reads the scene; `down[i]` reads level i (writing
-    /// i + 1); `up[i]` reads level i + 1 (adding onto i); the composite reads the
-    /// scene and level 0.
-    prefilter: wgpu::BindGroup,
+    /// Bind groups: `down[i]` reads level i (writing i + 1); `up[i]` reads level i + 1
+    /// (adding onto i). The prefilter's and composite's are made each frame, since
+    /// their source changes (the scene, or the feedback's latest frame).
     down: Vec<wgpu::BindGroup>,
     up: Vec<wgpu::BindGroup>,
-    composite: wgpu::BindGroup,
 }
 
 pub struct PostProcess {
@@ -183,32 +196,45 @@ impl PostProcess {
         if levels.is_empty() {
             levels.push(texture_2d(device, "bloom level", size.map(|v| (v / 2).max(1))));
         }
-        let group = |src: &wgpu::TextureView, bloom: &wgpu::TextureView| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("post"),
-                layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(bloom) },
-                ],
-            })
-        };
-        let prefilter = group(&scene, &self.blank);
-        let down = levels.windows(2).map(|w| group(&w[0], &self.blank)).collect();
-        let up = levels.windows(2).map(|w| group(&w[1], &self.blank)).collect();
-        let composite = group(&scene, &levels[0]);
-        Targets { size, scene, levels, prefilter, down, up, composite }
+        let down = levels.windows(2).map(|w| self.group(device, &w[0], &self.blank)).collect();
+        let up = levels.windows(2).map(|w| self.group(device, &w[1], &self.blank)).collect();
+        Targets { size, scene, levels, down, up }
     }
 
-    /// Record the bloom (skipped at `strength` 0) and the composite into `output`.
-    /// Call after drawing the scene into `scene_target`.
-    pub fn run(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, output: &wgpu::TextureView, strength: f32, timer: Option<&GpuTimer>) {
+    fn group(&self, device: &wgpu::Device, src: &wgpu::TextureView, bloom: &wgpu::TextureView) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("post"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(bloom) },
+            ],
+        })
+    }
+
+    /// Record the bloom of `source` (skipped at `strength` 0) and the composite of it,
+    /// with `echo`, into `output`. `source` is the scene texture (after drawing into
+    /// `scene_target`), or the feedback's latest frame, at the same size.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        output: &wgpu::TextureView,
+        strength: f32,
+        echo: Echo,
+        timer: Option<&GpuTimer>,
+    ) {
         let t = self.targets.as_ref().expect("scene_target first");
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&Uniforms { threshold: THRESHOLD, knee: KNEE, strength, _pad: 0.0 }));
+        let uniforms = Uniforms { threshold: THRESHOLD, knee: KNEE, strength, echo: echo.amount, echo_zoom: echo.zoom, _pad: 0.0, echo_flip: echo.flip };
+        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         if strength > 0.0 {
-            fullscreen(encoder, "bloom prefilter", &t.levels[0], false, &self.prefilter, &t.prefilter);
+            let prefilter = self.group(device, source, &self.blank);
+            fullscreen(encoder, "bloom prefilter", &t.levels[0], false, &self.prefilter, &prefilter);
             for (k, group) in t.down.iter().enumerate() {
                 fullscreen(encoder, "bloom down", &t.levels[k + 1], false, &self.down, group);
             }
@@ -219,7 +245,8 @@ impl PostProcess {
         if let Some(timer) = timer {
             timer.mark(encoder, Stage::Composite);
         }
-        fullscreen(encoder, "composite", output, false, &self.composite, &t.composite);
+        let composite = self.group(device, source, &t.levels[0]);
+        fullscreen(encoder, "composite", output, false, &self.composite, &composite);
     }
 }
 
@@ -259,8 +286,13 @@ fn fullscreen(encoder: &mut wgpu::CommandEncoder, label: &str, target: &wgpu::Te
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The red channel of an `Rgba16Float` texture, read back (for render tests).
+    pub fn read_red(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, size: [u32; 2]) -> Vec<f32> {
+        half_float::read(device, queue, texture, size).iter().map(|p| p[0]).collect()
+    }
 
     #[test]
     fn the_automatic_scale_draws_4k_smaller() {
@@ -294,7 +326,7 @@ mod tests {
             );
             let output = texture_2d(device, "output", size);
             let mut encoder = device.create_command_encoder(&Default::default());
-            post.run(queue, &mut encoder, &output, strength, None);
+            post.run(device, queue, &mut encoder, &scene, &output, strength, Echo::NONE, None);
             queue.submit([encoder.finish()]);
             half_float::read(device, queue, output.texture(), size)
         };

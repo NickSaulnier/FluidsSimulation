@@ -23,6 +23,8 @@ pub struct Brush3d {
 /// solid: 1 in solid cells, fuel) with one texel per cell, spanning the scene's domain.
 pub struct Volume<'a> {
     pub view: &'a wgpu::TextureView,
+    /// The velocity (m/s) at cell centres, an `Rgba16Float` texture of the same size.
+    pub velocity: &'a wgpu::TextureView,
     pub cells: UVec3,
     /// Burning: draw hot gas as flame, and the smoke as soot rather than tinted.
     pub fire: bool,

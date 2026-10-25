@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phase A done.** Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A and B done.** Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -361,3 +361,40 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
   - Found while checking: the 3D fire went wrong after a minute or so, which the
     shorter tests never saw. Fixed in the solver (see the 3D plan's Phase E notes): open
     walls, heat and stray fuel.
+- **Phase B (done):** feedback and warp (`app/src/render/feedback.rs`,
+  `feedback.wgsl`, `flow2d.wgsl`).
+  - Each frame samples the last one through the warp, fades it, and combines the new
+    scene over it, in ping-pong `Rgba16Float` textures at the scene's size. Two modes:
+    smear (a blend toward the scene: still things stay put, moving ones trail) and
+    brightest (the brighter of old and new: bright things streak over dark ones). The
+    glow and composite then work on the result.
+  - The warp: zoom from the centre, rotation, drift, a wave wobble, extra zoom with
+    the bass, and the fluid's flow. Samples from outside the frame are black (clamping
+    smeared the edge pixels into streaks).
+  - Rates are per second, scaled by the frame time (zoom and persistence as powers of
+    it), so a look moves the same at 60 and 240 fps; paused, the picture holds.
+  - The flow: a screen-space texture of uv per second. 2D grid solvers provide their
+    velocity (new `Solver::velocity_field`, stable fluids and LBM); particle solvers'
+    velocities are averaged onto a 48-cell-high grid; a pass maps either through the
+    view. In 3D the raymarch writes it as a second output: the visible gas's velocity
+    (smoke by opacity, flames by brightness), averaged along the ray, projected onto the
+    screen and scaled by the pixel's coverage. The solver now exports its velocity to a
+    3D texture alongside the smoke.
+  - Echo: the composite mixes in a zoomed, optionally flipped copy of the picture
+    (not fed back).
+  - Settings: a Feedback group in the View tab (mode, trail, flow, zoom, turn, drift,
+    wobble, bass zoom, echo), saved with the others; every look carries its own (Ink
+    storm swirls and smears with the flow, Firestorm and Bonfire 3D trail upward,
+    Inferno turns its torch into a spiral tunnel, Mercury rain and Smoke dance echo,
+    Lava lamp wobbles). With feedback on, the 2D letterbox is black and the 3D box's
+    lines are hidden, since feedback would carry them into the picture.
+  - Measured at 2160×1140 with Inferno: feedback 0.03 ms of GPU time per frame.
+  - Tests: rates are frame-rate independent and a paused frame holds; the bass adds
+    zoom; particle velocities average per cell; on a headless GPU, brightest mode keeps
+    a dot that left the scene while smear fades it, and zoom streaks a dot outward.
+  - Checked in the app, full screen: the looks above. The 2D looks still carry a little
+    of their grey walls into the picture where the flow or drift crosses them; tuning
+    per look belongs with the presets (phase D).
+  - Not yet: the trails' character depends on the scene's brightness against its
+    background; brightest mode with long trails lets dim smoke pile up (the looks use
+    0.5–0.6 left per second, close to MilkDrop's usual fade).

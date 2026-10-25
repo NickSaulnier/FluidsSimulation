@@ -53,6 +53,8 @@ struct Params {
 // (smoke, temperature, solid, fuel) for drawing: a filterable copy of `scal`, with
 // solid cells marked so the renderer can shadow with them.
 @group(0) @binding(9) var volume: texture_storage_3d<rgba16float, write>;
+// The cell-centred velocity (m/s) for drawing, so effects can follow the gas.
+@group(0) @binding(10) var velocity_out: texture_storage_3d<rgba16float, write>;
 
 // Red-black Gauss-Seidel colour, set per pipeline.
 override PARITY: u32 = 0u;
@@ -589,4 +591,5 @@ fn export_volume(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let s = scal[cell_index(c)];
     textureStore(volume, c, vec4<f32>(s.xy, select(0.0, 1.0, cell_type(c) == SOLID), s.z));
+    textureStore(velocity_out, c, vec4<f32>(cell_velocity(c), 0.0));
 }
