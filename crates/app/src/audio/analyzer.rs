@@ -340,6 +340,7 @@ fn push_capped(q: &mut VecDeque<f32>, v: f32, cap: usize) {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use utils::rng::SplitMix64;
     use std::f32::consts::PI;
 
     /// A synthetic beat: kick drums (pitch-swept sine, 150 -> 50 Hz, fast decay) on every
@@ -350,15 +351,9 @@ pub mod tests {
         let n = (seconds * rate) as usize;
         let beat = 60.0 / bpm;
         let mut out = vec![0.0f32; n];
-        let mut seed = 0x1234_5678u32;
-        let mut noise = || {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            seed as f32 / u32::MAX as f32 * 2.0 - 1.0
-        };
+        let mut rng = SplitMix64::new(0x1234_5678);
         for s in out.iter_mut() {
-            *s = 0.02 * noise();
+            *s = 0.02 * rng.signed();
         }
         let (mut kicks, mut hats) = (Vec::new(), Vec::new());
         let mut t = 0.25;
@@ -377,7 +372,7 @@ pub mod tests {
             let hat = (hat_t * rate) as usize;
             let mut prev = 0.0;
             for k in 0..(0.05 * rate) as usize {
-                let white = noise();
+                let white = rng.signed();
                 out[hat + k] += 0.4 * (white - prev) * (-(k as f32) / (0.01 * rate)).exp();
                 prev = white;
             }
@@ -470,15 +465,8 @@ pub mod tests {
     #[test]
     fn a_quiet_noise_bed_fires_nothing() {
         let rate = 48_000;
-        let mut seed = 0x9E37_79B9u32;
-        let bed: Vec<f32> = (0..5 * rate)
-            .map(|_| {
-                seed ^= seed << 13;
-                seed ^= seed >> 17;
-                seed ^= seed << 5;
-                0.02 * (seed as f32 / u32::MAX as f32 * 2.0 - 1.0)
-            })
-            .collect();
+        let mut rng = SplitMix64::new(0x9E37_79B9);
+        let bed: Vec<f32> = (0..5 * rate).map(|_| 0.02 * rng.signed()).collect();
         let (_, onsets) = analyse(&bed, rate, 1000);
         assert!(onsets.is_empty(), "{} hits in a noise bed: {onsets:?}", onsets.len());
     }

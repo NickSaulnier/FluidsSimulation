@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sim", "crates/sim-gpu", "crates/sim3d", "crates/app", "crates/bench"]
+members = ["crates/utils", "crates/sim", "crates/sim-gpu", "crates/sim3d", "crates/app", "crates/bench"]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +12,7 @@ publish = false
 # quarter, and egui-wgpu / egui-winit must match the wgpu / winit majors below.
 # Everything else is pinned by Cargo.lock.
 [workspace.dependencies]
+utils      = { path = "crates/utils" }
 sim        = { path = "crates/sim" }
 sim-gpu    = { path = "crates/sim-gpu" }
 sim3d      = { path = "crates/sim3d" }

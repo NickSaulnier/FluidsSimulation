@@ -79,7 +79,7 @@ impl CellBins {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rng::SplitMix64;
+    use utils::rng::SplitMix64;
 
     #[test]
     fn candidates_cover_all_neighbours_like_brute_force() {

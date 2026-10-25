@@ -70,7 +70,7 @@ impl Solver for Ballistic {
             Init::FromScene => {
                 super::seed_particles(scene, 2.0 * self.radius, 0.3, &mut self.pos);
                 // A little random sideways kick so the block breaks up as it bounces.
-                let mut rng = crate::rng::SplitMix64::new(0xBA11);
+                let mut rng = utils::rng::SplitMix64::new(0xBA11);
                 self.vel = (0..self.pos.len()).map(|_| Vec2::new(rng.signed(), rng.signed()) * 0.3).collect();
             }
             Init::FromParticles(view) => {

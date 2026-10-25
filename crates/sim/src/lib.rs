@@ -10,7 +10,6 @@ pub mod neighbors;
 pub mod params;
 pub mod presets;
 pub mod registry;
-pub mod rng;
 pub mod scene;
 pub mod solver;
 pub mod solvers;

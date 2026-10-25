@@ -269,7 +269,7 @@ impl Flip {
     /// Fill the scene's fluid blocks with `PARTICLES_PER_AXIS^2` jittered particles per
     /// open cell. Must run after `refresh_solids`.
     fn seed(&mut self, scene: &Scene) {
-        let mut rng = crate::rng::SplitMix64::new(0xF1F0);
+        let mut rng = utils::rng::SplitMix64::new(0xF1F0);
         let (nx, ny, h) = (self.grid.nx, self.grid.ny, self.grid.h);
         let sub = h / PARTICLES_PER_AXIS as f32;
         self.pos.clear();
@@ -481,7 +481,7 @@ impl Solver for Flip {
 mod tests {
     use super::*;
     use crate::grid::mac::CellType;
-    use crate::rng::SplitMix64;
+    use utils::rng::SplitMix64;
     use crate::scene::Rect;
     use crate::stepper::Stepper;
 

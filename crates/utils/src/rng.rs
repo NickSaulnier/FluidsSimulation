@@ -1,6 +1,9 @@
-//! Tiny deterministic RNG (SplitMix64). Enough for jittering particle seeds without
-//! pulling in a dependency, and deterministic so tests and benches are repeatable.
+//! Tiny deterministic RNG (SplitMix64), shared by the whole workspace: particle seeding,
+//! the music reactions' placements, test data. Enough for all of those without pulling
+//! in a dependency, and deterministic so tests and benches are repeatable. Any seed
+//! works, zero included.
 
+#[derive(Clone, Debug, Default)]
 pub struct SplitMix64(u64);
 
 impl SplitMix64 {

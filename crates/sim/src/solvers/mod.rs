@@ -18,7 +18,7 @@ pub use stable::{StableFluids, StableParams};
 
 use crate::grid::Grid2;
 use crate::grid::mac::{CENTRE_OFFSET, Stencil};
-use crate::rng::SplitMix64;
+use utils::rng::SplitMix64;
 use crate::scene::{Emitter, ForceBrush, Rect, Scene, StepInput};
 use crate::solver::ParticleView;
 use glam::Vec2;

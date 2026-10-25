@@ -1,0 +1,9 @@
+[package]
+name = "utils"
+description = "Small helpers shared across the workspace, with no dependencies (the deterministic RNG)."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]

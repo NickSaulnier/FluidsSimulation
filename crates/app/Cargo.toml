@@ -11,6 +11,7 @@ name = "fluid-toy"
 path = "src/main.rs"
 
 [dependencies]
+utils.workspace = true
 sim.workspace = true
 sim-gpu.workspace = true
 sim3d.workspace = true

@@ -33,16 +33,10 @@ fn run(s: &mut Smoke3d, gpu: &GpuContext, scene: &Scene3d, seconds: f32) {
     }
 }
 
-/// Uniform random numbers in [-1, 1) (xorshift).
-fn noise(len: usize, mut seed: u32) -> Vec<f32> {
-    (0..len)
-        .map(|_| {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            seed as f32 / u32::MAX as f32 * 2.0 - 1.0
-        })
-        .collect()
+/// Uniform random numbers in [-1, 1).
+fn noise(len: usize, seed: u64) -> Vec<f32> {
+    let mut rng = utils::rng::SplitMix64::new(seed);
+    (0..len).map(|_| rng.signed()).collect()
 }
 
 fn index(n: UVec3, i: u32, j: u32, k: u32) -> usize {

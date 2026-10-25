@@ -116,7 +116,7 @@ impl Stencil {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rng::SplitMix64;
+    use utils::rng::SplitMix64;
 
     #[test]
     fn weights_sum_to_one_everywhere() {

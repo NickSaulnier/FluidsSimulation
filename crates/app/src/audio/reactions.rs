@@ -16,6 +16,7 @@
 
 use super::analyzer::{AudioFeatures, Onset, OnsetKind};
 use serde::{Deserialize, Serialize};
+use utils::rng::SplitMix64;
 use sim::{Emitter, ForceBrush, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,7 +240,7 @@ pub struct ReactionEngine {
     armed: Vec<bool>,
     lane: usize,
     spin_sign: f32,
-    seed: u32,
+    rng: SplitMix64,
 }
 
 impl ReactionEngine {
@@ -384,24 +385,13 @@ impl ReactionEngine {
             }
             Effect::Vortex => {
                 self.spin_sign = if self.spin_sign > 0.0 { -1.0 } else { 1.0 };
-                let pos = Vec2::new((0.2 + 0.6 * self.random()) * domain.x, (0.25 + 0.5 * self.random()) * domain.y);
+                let pos = Vec2::new((0.2 + 0.6 * self.rng.next_f32()) * domain.x, (0.25 + 0.5 * self.rng.next_f32()) * domain.y);
                 let spin = self.spin_sign * (6.0 + 10.0 * strength);
                 self.impulses.push(Impulse { effect, age: 0.0, strength, pos, spin });
             }
             Effect::Flash => self.flash = self.flash.max(strength),
             _ => {}
         }
-    }
-
-    /// 0..1, deterministic (xorshift).
-    fn random(&mut self) -> f32 {
-        if self.seed == 0 {
-            self.seed = 0x2545_F491;
-        }
-        self.seed ^= self.seed << 13;
-        self.seed ^= self.seed >> 17;
-        self.seed ^= self.seed << 5;
-        self.seed as f32 / u32::MAX as f32
     }
 }
 
