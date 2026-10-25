@@ -1,18 +1,29 @@
-//! Smoke in 3D, all on the GPU: stable fluids on a MAC grid in compute shaders
-//! (`smoke.wgsl`), the 3D counterpart of the 2D `StableFluids` in smoke mode.
+//! Smoke and fire in 3D, all on the GPU: stable fluids on a MAC grid in compute
+//! shaders (`smoke.wgsl`), the 3D counterpart of the 2D `StableFluids` in its smoke and
+//! fire modes. The two solvers differ only in parameters ([`SmokeParams::smoke`],
+//! [`SmokeParams::fire`]): smoke burners release smoke; fire burners release lit fuel,
+//! which burns into heat and soot.
 //!
 //! Each substep, in five timed passes:
 //! 1. **Sources and forces:** cell types from the scene (solids, vents, burners);
 //!    prescribed faces (zero at walls and solids, the exit velocity at burners); the
-//!    burners' gas in their cells; Boussinesq buoyancy (heat rises, smoke is a little
-//!    heavy).
+//!    burners' gas in their cells, flickering; Boussinesq buoyancy (heat rises, smoke
+//!    is a little heavy); vorticity confinement (ε·h·N×ω, which spins the small swirls
+//!    back up).
 //! 2. **Advect velocity:** semi-Lagrangian with an RK2 backtrace.
 //! 3. **Pressure:** divergence, then warm-started red-black SOR for ∇²φ = ∇·u. Where
 //!    a vent touches the domain's wall the wall is open, with φ = 0 beyond it; other
 //!    walls, solids and burners are Neumann.
 //! 4. **Project:** u -= ∇φ on the free faces.
-//! 5. **Advect smoke and heat:** MacCormack with the min/max limiter, then cooling
-//!    (dT/dt = -k·T², implicit) and fading. Gas leaves through the open walls.
+//! 5. **Advect smoke, heat and fuel:** MacCormack with the min/max limiter, then
+//!    combustion as in 2D (fuel burns at `burn_rate` where the gas is at least
+//!    `ignition` hot, releasing `heat` and `soot`), cooling (dT/dt = -k·T², implicit)
+//!    and fading. Gas leaves through the open walls.
+//!
+//! Temperature is above ambient and dimensionless, as in 2D: ignition at 0.3, a
+//! visible flame from about 1, burning gas up to about 5. There's only gas fuel here
+//! (no solid piles), so the 2D model's heat diffusion, which lets a flame creep into
+//! still fuel, isn't needed.
 //!
 //! Burners are inflow cells: every face of theirs carries the exit velocity, so a
 //! burner off the floor pushes gas through (as much in as out) and one on the floor
@@ -62,12 +73,34 @@ pub struct SmokeParams {
     pub cooling: f32,
     /// Fraction of the smoke lost per second.
     pub fade: f32,
+    /// Vorticity confinement strength.
+    pub vorticity: f32,
     /// Temperature of the gas leaving a burner.
     pub burner_temp: f32,
+    /// Smoke and fuel in the gas leaving a burner.
+    pub burner_smoke: f32,
+    pub burner_fuel: f32,
+    /// Burner output varies by up to this fraction, cell to cell and over time.
+    pub flicker: f32,
+    /// Temperature at which fuel burns.
+    pub ignition: f32,
+    /// Fraction of the fuel at a burning point consumed per second (exponential).
+    pub burn_rate: f32,
+    /// Temperature released per unit of fuel burned.
+    pub heat: f32,
+    /// Smoke released per unit of fuel burned.
+    pub soot: f32,
 }
 
 impl Default for SmokeParams {
     fn default() -> Self {
+        Self::smoke()
+    }
+}
+
+impl SmokeParams {
+    /// Burners release warm smoke.
+    pub fn smoke() -> Self {
         Self {
             cells_y: 160,
             pressure_iters: 40,
@@ -76,8 +109,26 @@ impl Default for SmokeParams {
             heaviness: 0.02,
             cooling: 0.6,
             fade: 0.0,
+            vorticity: 0.3,
             burner_temp: 1.0,
+            burner_smoke: 1.0,
+            burner_fuel: 0.0,
+            flicker: 0.0,
+            ignition: 0.3,
+            burn_rate: 3.0,
+            heat: 6.0,
+            soot: 0.3,
         }
+    }
+
+    /// Burners release lit fuel: flames, then smoke from the soot. The 2D fire's
+    /// model and values, with a flickering burner.
+    pub fn fire() -> Self {
+        Self { rise: 0.12, cooling: 1.5, vorticity: 0.5, burner_smoke: 0.0, burner_fuel: 1.0, flicker: 0.4, ..Self::smoke() }
+    }
+
+    fn is_fire(&self) -> bool {
+        self.burner_fuel > 0.0
     }
 }
 
@@ -143,6 +194,62 @@ const BURNER_TEMP: FloatSpec = FloatSpec {
     restart: false,
     help: "Temperature of the gas leaving the burners.",
 };
+const VORTICITY: FloatSpec = FloatSpec {
+    key: "vorticity",
+    label: "Vorticity confinement",
+    range: 0.0..=2.0,
+    log: false,
+    restart: false,
+    help: "Spins up the small swirls that advection smears out. Too much and the gas boils.",
+};
+const BURNER_FUEL: FloatSpec = FloatSpec {
+    key: "burner_fuel",
+    label: "Burner fuel",
+    range: 0.0..=2.0,
+    log: false,
+    restart: false,
+    help: "Fuel in the gas leaving the burners: 0 makes smoke only.",
+};
+const FLICKER: FloatSpec = FloatSpec {
+    key: "flicker",
+    label: "Burner flicker",
+    range: 0.0..=1.0,
+    log: false,
+    restart: false,
+    help: "How much the burners' output wavers, which sets flames flickering.",
+};
+const IGNITION: FloatSpec = FloatSpec {
+    key: "ignition",
+    label: "Ignition temperature",
+    range: 0.05..=1.0,
+    log: true,
+    restart: false,
+    help: "Fuel burns where the gas is at least this hot.",
+};
+const BURN_RATE: FloatSpec = FloatSpec {
+    key: "burn_rate",
+    label: "Burn rate (1/s)",
+    range: 0.2..=20.0,
+    log: true,
+    restart: false,
+    help: "How fast burning fuel is consumed. Faster: short, hot flames.",
+};
+const HEAT: FloatSpec = FloatSpec {
+    key: "heat",
+    label: "Heat per fuel",
+    range: 0.5..=20.0,
+    log: true,
+    restart: false,
+    help: "Temperature released by burning a unit of fuel.",
+};
+const SOOT: FloatSpec = FloatSpec {
+    key: "soot",
+    label: "Soot per fuel",
+    range: 0.0..=2.0,
+    log: false,
+    restart: false,
+    help: "Smoke released by burning a unit of fuel. 0 burns clean.",
+};
 
 impl SmokeParams {
     pub fn visit(&mut self, v: &mut dyn ParamVisitor) {
@@ -150,12 +257,22 @@ impl SmokeParams {
         v.int(&CELLS_Y, &mut self.cells_y);
         v.int(&PRESSURE_ITERS, &mut self.pressure_iters);
         v.float(&OVER_RELAX, &mut self.over_relax);
-        v.section("Smoke");
+        v.section(if self.is_fire() { "Fire" } else { "Smoke" });
+        if self.is_fire() {
+            v.float(&BURN_RATE, &mut self.burn_rate);
+            v.float(&HEAT, &mut self.heat);
+            v.float(&SOOT, &mut self.soot);
+        }
         v.float(&RISE, &mut self.rise);
         v.float(&HEAVINESS, &mut self.heaviness);
         v.float(&COOLING, &mut self.cooling);
         v.float(&FADE, &mut self.fade);
+        v.float(&VORTICITY, &mut self.vorticity);
+        v.advanced_section("Burners");
         v.float(&BURNER_TEMP, &mut self.burner_temp);
+        v.float(&BURNER_FUEL, &mut self.burner_fuel);
+        v.float(&FLICKER, &mut self.flicker);
+        v.float(&IGNITION, &mut self.ignition);
     }
 }
 
@@ -165,7 +282,7 @@ pub fn grid(size: Vec3, cells_y: u32) -> (UVec3, f32) {
     ((size / h).round().as_uvec3().max(UVec3::splat(2)), h)
 }
 
-/// Must match `Params` in smoke.wgsl (80 bytes).
+/// Must match `Params` in smoke.wgsl (112 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -184,7 +301,15 @@ struct Uniforms {
     n_burners: u32,
     nu: u32,
     nv: u32,
-    _pad: u32,
+    time: f32,
+    ignition: f32,
+    burn_rate: f32,
+    heat: f32,
+    soot: f32,
+    vorticity: f32,
+    burner_fuel: f32,
+    burner_smoke: f32,
+    flicker: f32,
 }
 
 struct Pipelines {
@@ -199,6 +324,8 @@ struct Pipelines {
     advect_forward: wgpu::ComputePipeline,
     advect_correct: wgpu::ComputePipeline,
     export_volume: wgpu::ComputePipeline,
+    curl: wgpu::ComputePipeline,
+    confine: wgpu::ComputePipeline,
 }
 
 /// The grid's GPU buffers.
@@ -256,6 +383,9 @@ struct Timing {
 
 pub struct Smoke3d {
     pub params: SmokeParams,
+    name: &'static str,
+    /// Simulated seconds since reset (the burners' flicker follows it).
+    time: f32,
     layout: wgpu::BindGroupLayout,
     pipelines: Pipelines,
     uniform: wgpu::Buffer,
@@ -266,7 +396,7 @@ pub struct Smoke3d {
 }
 
 impl Smoke3d {
-    pub fn new(gpu: &GpuContext, params: SmokeParams) -> Self {
+    pub fn new(gpu: &GpuContext, name: &'static str, params: SmokeParams) -> Self {
         let device = &gpu.device;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("smoke.wgsl"),
@@ -332,6 +462,8 @@ impl Smoke3d {
             advect_forward: pipeline("advect_forward", &[]),
             advect_correct: pipeline("advect_correct", &[]),
             export_volume: pipeline("export_volume", &[]),
+            curl: pipeline("curl", &[]),
+            confine: pipeline("confine", &[]),
         };
         let buffer = |label: &str, size: u64, usage: wgpu::BufferUsages| {
             device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
@@ -353,7 +485,7 @@ impl Smoke3d {
                 period_ns: gpu.queue.get_timestamp_period(),
             }
         });
-        Self { params, layout, pipelines, uniform, geom, fields: None, timing, stats: Stats::default() }
+        Self { params, name, time: 0.0, layout, pipelines, uniform, geom, fields: None, timing, stats: Stats::default() }
     }
 
     /// The grid's cell counts and cell size, once reset.
@@ -374,9 +506,9 @@ impl Smoke3d {
         };
         let vel = buffer("velocity", vel_len * 4);
         let vel_tmp = buffer("velocity (advected)", vel_len * 4);
-        let scal = buffer("smoke, temperature", cells * 8);
-        let scal_hat = buffer("smoke, temperature (forward)", cells * 8);
-        let scal_tmp = buffer("smoke, temperature (corrected)", cells * 8);
+        let scal = buffer("smoke, temperature, fuel", cells * 16);
+        let scal_hat = buffer("smoke, temperature, fuel (forward)", cells * 16);
+        let scal_tmp = buffer("smoke, temperature, fuel (corrected)", cells * 16);
         let pd = buffer("pressure, divergence", cells * 8);
         let flags = buffer("cell types", cells * 4);
         let volume = device
@@ -447,7 +579,15 @@ impl Smoke3d {
             n_burners: burners.len() as u32,
             nu: f.nu,
             nv: f.nv,
-            _pad: 0,
+            time: self.time,
+            ignition: p.ignition,
+            burn_rate: p.burn_rate,
+            heat: p.heat,
+            soot: p.soot,
+            vorticity: p.vorticity,
+            burner_fuel: p.burner_fuel,
+            burner_smoke: p.burner_smoke,
+            flicker: p.flicker,
         };
         gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniforms));
         if !geom.is_empty() {
@@ -469,11 +609,16 @@ impl Smoke3d {
     }
 
     fn record_sources(&self, encoder: &mut wgpu::CommandEncoder, forces: bool) {
+        let confine = forces && self.params.vorticity > 0.0;
         self.pass(encoder, 0, |pass, p, f| {
             dispatch(pass, &p.classify, f.cell_groups());
             dispatch(pass, &p.boundaries, f.face_groups());
             if forces {
                 dispatch(pass, &p.forces, f.face_groups());
+            }
+            if confine {
+                dispatch(pass, &p.curl, f.cell_groups());
+                dispatch(pass, &p.confine, f.face_groups());
             }
         });
     }
@@ -500,7 +645,7 @@ impl Smoke3d {
             dispatch(pass, &p.advect_forward, f.cell_groups());
             dispatch(pass, &p.advect_correct, f.cell_groups());
         });
-        encoder.copy_buffer_to_buffer(&f.scal_tmp, 0, &f.scal, 0, u64::from(f.cells()) * 8);
+        encoder.copy_buffer_to_buffer(&f.scal_tmp, 0, &f.scal, 0, u64::from(f.cells()) * 16);
     }
 
     /// Take the timings of an earlier step if they've arrived; queue the latest ones if
@@ -561,8 +706,8 @@ impl Smoke3d {
         bytemuck::cast_slice(&read(gpu, &self.fields.as_ref().expect("reset ran").vel)).to_vec()
     }
 
-    /// (smoke, temperature) per cell, x fastest, then y, then z.
-    pub fn read_scalars(&self, gpu: &GpuContext) -> Vec<[f32; 2]> {
+    /// (smoke, temperature, fuel, unused) per cell, x fastest, then y, then z.
+    pub fn read_scalars(&self, gpu: &GpuContext) -> Vec<[f32; 4]> {
         bytemuck::cast_slice(&read(gpu, &self.fields.as_ref().expect("reset ran").scal)).to_vec()
     }
 
@@ -581,7 +726,7 @@ impl Smoke3d {
         gpu.queue.write_buffer(&self.fields.as_ref().expect("reset ran").vel, 0, bytemuck::cast_slice(vel));
     }
 
-    pub fn write_scalars(&self, gpu: &GpuContext, scal: &[[f32; 2]]) {
+    pub fn write_scalars(&self, gpu: &GpuContext, scal: &[[f32; 4]]) {
         gpu.queue.write_buffer(&self.fields.as_ref().expect("reset ran").scal, 0, bytemuck::cast_slice(scal));
     }
 }
@@ -616,11 +761,12 @@ fn read(gpu: &GpuContext, buffer: &wgpu::Buffer) -> Vec<u8> {
 
 impl Solver3d for Smoke3d {
     fn name(&self) -> &'static str {
-        "Smoke (3D GPU)"
+        self.name
     }
 
     fn reset(&mut self, gpu: &GpuContext, scene: &Scene3d) {
         self.allocate(gpu, scene);
+        self.time = 0.0;
         let cells = self.fields.as_ref().map_or(0, Fields::cells);
         self.stats = Stats {
             metrics: vec![Metric { name: "grid cells (thousands)", value: cells as f32 / 1000.0, tolerance: None }],
@@ -634,6 +780,7 @@ impl Solver3d for Smoke3d {
         }
         let substeps = (dt / MAX_SUBSTEP).ceil().max(1.0) as u32;
         self.upload(gpu, scene, input, dt / substeps as f32);
+        self.time += dt;
         for _ in 0..substeps {
             self.record_substep(encoder);
         }
@@ -657,7 +804,7 @@ impl Solver3d for Smoke3d {
     }
 
     fn volume(&self) -> Option<Volume<'_>> {
-        self.fields.as_ref().map(|f| Volume { view: &f.volume, cells: f.n })
+        self.fields.as_ref().map(|f| Volume { view: &f.volume, cells: f.n, fire: self.params.is_fire() })
     }
 
     fn stats(&self) -> &Stats {

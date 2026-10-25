@@ -15,7 +15,7 @@ fn gpu() -> Option<GpuContext> {
 }
 
 fn solver(gpu: &GpuContext, scene: &Scene3d, params: SmokeParams) -> Smoke3d {
-    let mut s = Smoke3d::new(gpu, params);
+    let mut s = Smoke3d::new(gpu, "test", params);
     s.reset(gpu, scene);
     s
 }
@@ -63,12 +63,12 @@ fn vented_box() -> Scene3d {
 /// A hot, smoky ball low in the domain.
 fn blob(s: &Smoke3d, gpu: &GpuContext) {
     let (n, h) = s.dims().unwrap();
-    let mut scal = vec![[0.0f32; 2]; n.element_product() as usize];
+    let mut scal = vec![[0.0f32; 4]; n.element_product() as usize];
     for k in 0..n.z {
         for j in 0..n.y {
             for i in 0..n.x {
                 if centre(h, i, j, k).distance(Vec3::new(0.5, 0.35, 0.5)) < 0.15 {
-                    scal[index(n, i, j, k)] = [1.0, 1.0];
+                    scal[index(n, i, j, k)] = [1.0, 1.0, 0.0, 0.0];
                 }
             }
         }
@@ -126,17 +126,69 @@ fn under_tilted_gravity_a_hot_blob_leans() {
     assert!(d.x < -0.03, "didn't lean away from gravity: {d}");
 }
 
-/// MacCormack's limiter isn't exactly conservative, but close.
+/// MacCormack's limiter isn't exactly conservative, but close. (Without confinement:
+/// this checks the advection, and the finer swirls confinement adds cost a little more.)
 #[test]
 fn smoke_is_conserved_in_a_closed_box() {
     let Some(gpu) = gpu() else { return };
     let scene = Scene3d::empty_box(Vec3::new(1.0, 1.5, 1.0));
-    let mut s = solver(&gpu, &scene, at(32));
+    let mut s = solver(&gpu, &scene, SmokeParams { vorticity: 0.0, ..at(32) });
     blob(&s, &gpu);
     let (before, _) = smoke_mass_and_centroid(&s, &gpu);
     run(&mut s, &gpu, &scene, 1.0);
     let (after, _) = smoke_mass_and_centroid(&s, &gpu);
     assert!((after / before - 1.0).abs() < 0.03, "smoke went from {before} to {after}");
+}
+
+/// Vorticity confinement feeds the swirls: a rising blob ends up with more of them.
+#[test]
+fn confinement_adds_swirl() {
+    let Some(gpu) = gpu() else { return };
+    let scene = vented_box();
+    let swirl = |vorticity| {
+        let mut s = solver(&gpu, &scene, SmokeParams { vorticity, ..at(32) });
+        blob(&s, &gpu);
+        run(&mut s, &gpu, &scene, 1.0);
+        s.read_velocity(&gpu).iter().map(|v| v * v).sum::<f32>()
+    };
+    let (plain, confined) = (swirl(0.0), swirl(1.0));
+    assert!(confined > 1.05 * plain, "kinetic energy {plain} without confinement, {confined} with");
+}
+
+/// A fire burner keeps a flame going: hot gas above the visible threshold, soot from
+/// the burning, and the fuel mostly used up within a metre (the burner's is 1).
+#[test]
+fn a_fire_burner_keeps_burning() {
+    let Some(gpu) = gpu() else { return };
+    let scene = scene::campfire();
+    let mut s = solver(&gpu, &scene, SmokeParams { cells_y: 48, ..SmokeParams::fire() });
+    run(&mut s, &gpu, &scene, 3.0);
+    let scal = s.read_scalars(&gpu);
+    let hottest = scal.iter().map(|c| c[1]).fold(0.0, f32::max);
+    let soot: f32 = scal.iter().map(|c| c[0]).sum();
+    let (n, h) = s.dims().unwrap();
+    // Fuel left high up: mostly burned before it gets there.
+    let high_fuel = (0..n.z).flat_map(|k| (0..n.x).map(move |i| (i, k))).map(|(i, k)| scal[index(n, i, (1.0 / h) as u32, k)][2]).fold(0.0, f32::max);
+    assert!(hottest > 2.0, "hottest gas {hottest}: no visible flame");
+    assert!(soot > 1.0, "no soot ({soot})");
+    assert!(high_fuel < 0.15, "fuel reached 1 m up unburned ({high_fuel})");
+}
+
+/// With no fuel nothing burns: the gas never gets hotter than the burner, and makes
+/// no soot.
+#[test]
+fn without_fuel_nothing_burns() {
+    let Some(gpu) = gpu() else { return };
+    let scene = scene::campfire();
+    let params = SmokeParams { cells_y: 48, burner_fuel: 0.0, ..SmokeParams::fire() };
+    let burner = params.burner_temp;
+    let mut s = solver(&gpu, &scene, params);
+    run(&mut s, &gpu, &scene, 2.0);
+    let scal = s.read_scalars(&gpu);
+    let hottest = scal.iter().map(|c| c[1]).fold(0.0, f32::max);
+    let smoke: f32 = scal.iter().map(|c| c[0]).sum();
+    assert!(hottest <= burner + 1e-4, "gas reached {hottest}, hotter than the burner's {burner}");
+    assert_eq!(smoke, 0.0, "smoke without burning");
 }
 
 /// Random velocities, walls, a vent, a solid ball and burners: after the projection

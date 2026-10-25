@@ -43,6 +43,8 @@ const PROBE_CELLS: f32 = 6.0;
 /// Toward the light: above, to the side and a little to the front.
 const LIGHT: Vec3 = Vec3::new(0.6, 0.8, 0.3);
 const MAX_SHAPES: usize = 32;
+/// Glow per metre of full flame, before the roll-off.
+const FLAME_GLOW: f32 = 40.0;
 
 /// Must match `March` in march.wgsl.
 #[repr(C)]
@@ -295,7 +297,7 @@ impl Renderer3d {
         let [x, y, w, h] = viewport;
         let view_proj = camera.view_proj(w / h.max(1.0));
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&view_proj));
-        let march = march_uniforms(view_proj, camera.eye(), viewport, scene, volume.as_ref().map(|v| v.cells), palette);
+        let march = march_uniforms(view_proj, camera.eye(), viewport, scene, volume.as_ref().map(|v| (v.cells, v.fire)), palette);
         queue.write_buffer(&self.march_uniforms, 0, bytemuck::bytes_of(&march));
         let depth = self.depth_view(device, target_size);
         let march_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -373,13 +375,21 @@ impl Renderer3d {
 }
 
 /// The raymarch's parameters: camera, domain, step, smoke colours and the solids.
-fn march_uniforms(view_proj: Mat4, eye: Vec3, viewport: [f32; 4], scene: &Scene3d, cells: Option<glam::UVec3>, palette: &Palette) -> MarchUniforms {
+fn march_uniforms(view_proj: Mat4, eye: Vec3, viewport: [f32; 4], scene: &Scene3d, volume: Option<(glam::UVec3, bool)>, palette: &Palette) -> MarchUniforms {
+    let cells = volume.map(|v| v.0);
+    let volume_fire = volume.is_some_and(|v| v.1);
     let cell = cells.map_or(1.0, |n| scene.size.y / n.y as f32);
+    let fire = volume_fire;
     let [deep, _, highlight] = palette.linear();
     let rgb = |c: [f32; 4]| Vec3::new(c[0], c[1], c[2]);
     // Lit smoke: the highlight paled toward white; shadowed: the deep colour, dimmed.
-    let lit = rgb(highlight).lerp(Vec3::splat(0.7), 0.5);
-    let shade = 0.25 * rgb(deep) + Vec3::splat(0.015);
+    // A fire's smoke is soot, grey whatever the palette (as in 2D, fire keeps its own
+    // colours).
+    let (lit, shade) = if fire {
+        (Vec3::splat(0.32), Vec3::splat(0.02))
+    } else {
+        (rgb(highlight).lerp(Vec3::splat(0.7), 0.5), 0.25 * rgb(deep) + Vec3::splat(0.015))
+    };
     let mut shapes = [[0.0; 4]; 2 * MAX_SHAPES];
     let solids = &scene.solids[..scene.solids.len().min(MAX_SHAPES)];
     for (k, s) in solids.iter().enumerate() {
@@ -390,7 +400,7 @@ fn march_uniforms(view_proj: Mat4, eye: Vec3, viewport: [f32; 4], scene: &Scene3
     }
     MarchUniforms {
         inv_view_proj: view_proj.inverse().to_cols_array_2d(),
-        eye: eye.extend(0.0).to_array(),
+        eye: eye.extend(if fire { FLAME_GLOW } else { 0.0 }).to_array(),
         size: scene.size.extend(STEP_CELLS * cell).to_array(),
         viewport,
         lit: lit.extend(EXTINCTION).to_array(),
@@ -475,7 +485,10 @@ mod tests {
     fn march_parameters_carry_the_solids_and_the_grid() {
         let scene = sim3d::scene::chimney();
         let cells = glam::UVec3::new(107, 160, 107);
-        let m = march_uniforms(Mat4::IDENTITY, Vec3::ONE, [0.0, 0.0, 800.0, 600.0], &scene, Some(cells), &Palette::default());
+        let m = march_uniforms(Mat4::IDENTITY, Vec3::ONE, [0.0, 0.0, 800.0, 600.0], &scene, Some((cells, false)), &Palette::default());
+        assert_eq!(m.eye[3], 0.0, "smoke glows");
+        let lit = march_uniforms(Mat4::IDENTITY, Vec3::ONE, [0.0; 4], &scene, Some((cells, true)), &Palette::default());
+        assert!(lit.eye[3] > 0.0, "fire doesn't glow");
         assert_eq!(m.counts, [scene.solids.len() as u32, 1, 0, 0]);
         for k in 0..scene.solids.len() {
             assert_eq!(m.shapes[2 * k][3], -1.0, "the chimney's solids are boxes");

@@ -1,6 +1,6 @@
 # 3D Simulation Plan
 
-Status: **approved; phases A to C done.** Decisions (§8), taken as recommended
+Status: **approved; phases A to D done.** Decisions (§8), taken as recommended
 (2026-10-24):
 - 128³ with automatic step-down;
 - a separate `World3d` with an app mode switch;
@@ -299,6 +299,39 @@ A–D get 3D fire on screen; E makes it part of the visualizer.
     unit-tested (synthetic drags can't be driven here); the wheel zoom works.
   - Test: the march gets every solid in the shader's encoding, a step in cells, and
     marches only with a volume.
+- **Phase D (done):** 3D fire. "Fire (3D GPU)" is now the first 3D solver; "Smoke
+  (3D GPU)" stays. They're the same solver with different parameters
+  (`SmokeParams::fire` and `::smoke`).
+  - The scalars are now (smoke, temperature, fuel) per cell. Fire burners release
+    lit fuel (temperature 1, so it's already above ignition), smoke burners release
+    smoke.
+  - Combustion is the 2D model's, run after the scalar advection: fuel burns at
+    `burn_rate` where the gas is at least `ignition` hot, releasing `heat` and
+    `soot`; T² cooling as before. There's only gas fuel in 3D, so the 2D heat
+    diffusion (for flames creeping into still solid fuel) isn't ported.
+  - Flicker: each burner cell's fuel varies by up to ±40%, cell to cell and every
+    50 ms, from a hash (reproducible), which seeds the flickering.
+  - Vorticity confinement, two passes in the forces phase: the curl at each cell
+    (stored in the advection's scratch buffer, free at that point, so no ninth
+    storage buffer), then ε·h·(N×ω) averaged onto the free faces. It costs about
+    0.25 ms per substep at the default grid (3.2 ms in total).
+  - Drawing: hot gas glows through the 2D fire's ramp (deep red, orange, yellow, near
+    white) between temperatures 1 and 3, as in 2D, rolled off toward white rather
+    than clipped. A fire's smoke is grey soot whatever the palette, as in 2D.
+  - Tuning: the 2D fire's cooling (2.5) gave short, dim flames in 3D, so the 3D
+    fire uses 1.5; vorticity 0.5 for fire, 0.3 for smoke.
+  - Checked in the app at about 230 to 240 fps: Campfire 3D burns with a
+    yellow-white core going orange and red into a flickering tongue, under a
+    turbulent soot plume; Torch is a long, twisting jet of flame.
+  - Tests: a fire burner keeps burning (gas hotter than 2, soot made, fuel mostly
+    burned within a metre); without fuel nothing burns (no gas hotter than the
+    burner, no smoke); confinement adds swirl (more kinetic energy in a rising blob).
+    The smoke-conservation test now runs without confinement, since it checks the
+    advection and the extra fine swirls cost the limiter a little more (3.1% instead
+    of under 3%).
+  - Once, a full test run stalled (the test process spinning while it waited on the
+    GPU). It didn't happen again in seven runs, and every test passes alone in under
+    half a second, so it looks like a transient GPU hang; worth watching.
 
 ## 8. Decisions for you
 

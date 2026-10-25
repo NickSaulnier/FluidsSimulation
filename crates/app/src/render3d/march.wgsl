@@ -1,10 +1,11 @@
 // The gas volume, raymarched front to back over the lines already drawn, with the
-// scene's solids shaded where the rays hit them. Output is premultiplied: colour added
-// over the target, alpha the light that still comes through from behind.
+// scene's solids shaded where the rays hit them. Smoke absorbs and scatters light; hot
+// gas glows (fire). Output is premultiplied: colour added over the target, alpha the
+// light that still comes through from behind.
 
 struct March {
     inv_view_proj: mat4x4f,
-    // xyz: the camera.
+    // xyz: the camera; w: glow per metre of full flame (0: no fire).
     eye: vec4f,
     // xyz: the domain; w: the march step (m).
     size: vec4f,
@@ -29,6 +30,23 @@ struct March {
 @group(0) @binding(3) var depth: texture_depth_2d;
 
 const SOLID: vec3f = vec3f(0.42, 0.44, 0.48);
+/// Temperatures drawn as the faintest and the fullest flame, as in 2D: warm gas below
+/// the first is invisible, so a flame ends where its gas cools.
+const FLAME_FAINT: f32 = 1.0;
+const FLAME_FULL: f32 = 3.0;
+
+/// The 2D fire's ramp (deep red, orange, yellow, near white), in linear light.
+fn flame_colour(t: f32) -> vec3f {
+    let stops = array<vec3f, 4>(
+        vec3f(0.188, 0.0060, 0.0006),
+        vec3f(0.730, 0.0513, 0.0024),
+        vec3f(1.0, 0.352, 0.0110),
+        vec3f(1.0, 0.888, 0.552),
+    );
+    let x = clamp(t, 0.0, 1.0) * 3.0;
+    let k = min(u32(x), 2u);
+    return mix(stops[k], stops[k + 1u], x - f32(k));
+}
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -120,7 +138,9 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     }
 
     var colour = vec3f(0.0);
+    var glow = vec3f(0.0);
     var through = 1.0;
+    let glow_k = m.eye.w;
     let span = slab(eye, dir, vec3f(0.0), m.size.xyz);
     if m.counts.y == 1u && span.x < span.y {
         let step = m.size.w;
@@ -133,7 +153,12 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 break;
             }
             let p = eye + dir * t;
-            let s = smoke_at(p);
+            let v = textureSampleLevel(volume, linear, p / m.size.xyz, 0.0);
+            let s = v.r;
+            if glow_k > 0.0 {
+                let flame = clamp((v.g - FLAME_FAINT) / (FLAME_FULL - FLAME_FAINT), 0.0, 1.0);
+                glow += through * flame_colour(flame) * (glow_k * flame * step);
+            }
             if s > 1e-4 {
                 let alpha = 1.0 - exp(-s * sigma_k * step);
                 // Smoke and solids between here and the light, from two taps: a cheap
@@ -151,5 +176,6 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         colour += through * SOLID * (0.25 + 0.75 * diffuse);
         through = 0.0;
     }
-    return vec4f(colour, through);
+    // Flames are bright: roll them off toward white rather than clipping.
+    return vec4f(colour + (1.0 - exp(-glow)), through);
 }

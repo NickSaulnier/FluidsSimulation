@@ -1,8 +1,8 @@
-// 3D smoke on a MAC grid (see smoke.rs for the algorithm and the pass order).
+// 3D smoke and fire on a MAC grid (see smoke.rs for the algorithm and the pass order).
 //
 // Velocity: one buffer holding u ((nx+1)·ny·nz), then v (nx·(ny+1)·nz), then w
-// (nx·ny·(nz+1)). Scalars: (smoke, temperature) per cell. pd: (pressure, divergence)
-// per cell; the pressure is φ = p·dt/ρ, so the projection is u -= ∇φ.
+// (nx·ny·(nz+1)). Scalars: (smoke, temperature, fuel, unused) per cell. pd: (pressure,
+// divergence) per cell; the pressure is φ = p·dt/ρ, so the projection is u -= ∇φ.
 
 struct Params {
     n: vec3<u32>,
@@ -20,22 +20,31 @@ struct Params {
     n_burners: u32,
     nu: u32,
     nv: u32,
-    _pad: u32,
+    /// Simulated seconds, for the burners' flicker.
+    time: f32,
+    ignition: f32,
+    burn_rate: f32,
+    heat: f32,
+    soot: f32,
+    vorticity: f32,
+    burner_fuel: f32,
+    burner_smoke: f32,
+    flicker: f32,
 }
 
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read_write> vel: array<f32>;
 @group(0) @binding(2) var<storage, read_write> vel_tmp: array<f32>;
-@group(0) @binding(3) var<storage, read_write> scal: array<vec2<f32>>;
-@group(0) @binding(4) var<storage, read_write> scal_hat: array<vec2<f32>>;
-@group(0) @binding(5) var<storage, read_write> scal_tmp: array<vec2<f32>>;
+@group(0) @binding(3) var<storage, read_write> scal: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read_write> scal_hat: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read_write> scal_tmp: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read_write> pd: array<vec2<f32>>;
 @group(0) @binding(7) var<storage, read_write> flags: array<u32>;
 // Shapes (2 each: a sphere is (centre, radius), a box (min, -1) then (max, 0)), then
 // vents (min, max), then burners ((pos, radius), (dir, speed)).
 @group(0) @binding(8) var<storage, read> geom: array<vec4<f32>>;
-// (smoke, temperature, solid) for drawing: a filterable copy of `scal`, with solid cells
-// marked so the renderer can shadow with them.
+// (smoke, temperature, solid, fuel) for drawing: a filterable copy of `scal`, with
+// solid cells marked so the renderer can shadow with them.
 @group(0) @binding(9) var volume: texture_storage_3d<rgba16float, write>;
 
 // Red-black Gauss-Seidel colour, set per pipeline.
@@ -155,9 +164,9 @@ fn centre(c: vec3<i32>) -> vec3<f32> {
 }
 
 struct Sampled {
-    value: vec2<f32>,
-    lo: vec2<f32>,
-    hi: vec2<f32>,
+    value: vec4<f32>,
+    lo: vec4<f32>,
+    hi: vec4<f32>,
 }
 
 /// Trilinear sample of the scalars, with the range of the eight cells it blends.
@@ -166,7 +175,7 @@ fn sample_scal(p: vec3<f32>) -> Sampled {
     let g = clamp(p / P.h - 0.5, vec3<f32>(0.0), vec3<f32>(n - 1));
     let c = min(vec3<i32>(floor(g)), max(n - 2, vec3<i32>(0)));
     let f = g - vec3<f32>(c);
-    var v: array<vec2<f32>, 8>;
+    var v: array<vec4<f32>, 8>;
     for (var k = 0; k < 8; k++) {
         let o = vec3<i32>(k & 1, (k >> 1) & 1, (k >> 2) & 1);
         v[k] = scal[cell_index(min(c + o, n - 1))];
@@ -180,12 +189,12 @@ fn sample_scal(p: vec3<f32>) -> Sampled {
     return s;
 }
 
-fn sample_hat(p: vec3<f32>) -> vec2<f32> {
+fn sample_hat(p: vec3<f32>) -> vec4<f32> {
     let n = dims();
     let g = clamp(p / P.h - 0.5, vec3<f32>(0.0), vec3<f32>(n - 1));
     let c = min(vec3<i32>(floor(g)), max(n - 2, vec3<i32>(0)));
     let f = g - vec3<f32>(c);
-    var v: array<vec2<f32>, 8>;
+    var v: array<vec4<f32>, 8>;
     for (var k = 0; k < 8; k++) {
         let o = vec3<i32>(k & 1, (k >> 1) & 1, (k >> 2) & 1);
         v[k] = scal_hat[cell_index(min(c + o, n - 1))];
@@ -231,6 +240,20 @@ fn in_vent(p: vec3<f32>) -> bool {
     return false;
 }
 
+/// A burner cell's output relative to steady, varying by up to ±`flicker` from cell to
+/// cell and every 50 ms: it seeds the buoyant instabilities that make flames flicker.
+/// A hash, so runs are reproducible.
+fn flicker(cell: u32) -> f32 {
+    var x = cell * 0x9E3779B9u ^ u32(P.time * 20.0) * 0x85EBCA6Bu;
+    x ^= x >> 16u;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15u;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16u;
+    let unit = f32(x >> 8u) / 16777216.0;
+    return 1.0 + P.flicker * (2.0 * unit - 1.0);
+}
+
 /// Cell types from the scene's shapes, and the burners' gas in their cells.
 @compute @workgroup_size(8, 8, 4)
 fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -257,9 +280,9 @@ fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
     flags[i] = t;
     let kind = t & 0x0fu;
     if kind == INFLOW {
-        scal[i] = vec2<f32>(1.0, P.burner_temp);
+        scal[i] = vec4<f32>(P.burner_smoke, P.burner_temp, P.burner_fuel * flicker(i), 0.0);
     } else if kind == SOLID {
-        scal[i] = vec2<f32>(0.0);
+        scal[i] = vec4<f32>(0.0);
     }
     if kind != FLUID {
         pd[i].x = 0.0;
@@ -292,6 +315,66 @@ fn forces(@builtin(global_invocation_id) id: vec3<u32>) {
             let s = 0.5 * (scal[cell_index(clamp(c, vec3<i32>(0), edge))] + scal[cell_index(clamp(c - axis_unit(axis), vec3<i32>(0), edge))]);
             let a = P.gravity[axis] * (P.heaviness * s.x - P.rise * s.y);
             vel[comp_index(axis, c)] += P.dt * a;
+        }
+    }
+}
+
+/// Cell-centred velocity, from the faces around the cell (clamped to the domain).
+fn cell_velocity(c0: vec3<i32>) -> vec3<f32> {
+    let c = clamp(c0, vec3<i32>(0), dims() - 1);
+    var u: vec3<f32>;
+    for (var axis = 0u; axis < 3u; axis++) {
+        u[axis] = 0.5 * (load_comp(axis, c) + load_comp(axis, c + axis_unit(axis)));
+    }
+    return u;
+}
+
+/// Vorticity confinement, first half: the curl at each cell, into `vel_tmp` (free until
+/// the velocity is advected), three floats per cell.
+@compute @workgroup_size(8, 8, 4)
+fn curl(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec3<i32>(id);
+    if !inside(c) {
+        return;
+    }
+    let dx = cell_velocity(c + vec3<i32>(1, 0, 0)) - cell_velocity(c - vec3<i32>(1, 0, 0));
+    let dy = cell_velocity(c + vec3<i32>(0, 1, 0)) - cell_velocity(c - vec3<i32>(0, 1, 0));
+    let dz = cell_velocity(c + vec3<i32>(0, 0, 1)) - cell_velocity(c - vec3<i32>(0, 0, 1));
+    let w = vec3<f32>(dy.z - dz.y, dz.x - dx.z, dx.y - dy.x) / (2.0 * P.h);
+    let i = 3u * cell_index(c);
+    vel_tmp[i] = w.x;
+    vel_tmp[i + 1u] = w.y;
+    vel_tmp[i + 2u] = w.z;
+}
+
+fn curl_at(c0: vec3<i32>) -> vec3<f32> {
+    let i = 3u * cell_index(clamp(c0, vec3<i32>(0), dims() - 1));
+    return vec3<f32>(vel_tmp[i], vel_tmp[i + 1u], vel_tmp[i + 2u]);
+}
+
+/// The confinement force at a cell: ε·h·(N × ω), N pointing up the gradient of |ω|.
+/// It spins up the small swirls that advection smears out.
+fn confinement(c: vec3<i32>) -> vec3<f32> {
+    let grad = vec3<f32>(
+        length(curl_at(c + vec3<i32>(1, 0, 0))) - length(curl_at(c - vec3<i32>(1, 0, 0))),
+        length(curl_at(c + vec3<i32>(0, 1, 0))) - length(curl_at(c - vec3<i32>(0, 1, 0))),
+        length(curl_at(c + vec3<i32>(0, 0, 1))) - length(curl_at(c - vec3<i32>(0, 0, 1))),
+    );
+    let len = length(grad);
+    if len < 1e-6 {
+        return vec3<f32>(0.0);
+    }
+    return P.vorticity * P.h * cross(grad / len, curl_at(c));
+}
+
+/// Vorticity confinement, second half: the force, averaged onto the free faces.
+@compute @workgroup_size(8, 8, 4)
+fn confine(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec3<i32>(id);
+    for (var axis = 0u; axis < 3u; axis++) {
+        if all(c < comp_dims(axis)) && fixed_face(axis, c).x == 0.0 {
+            let f = 0.5 * (confinement(c)[axis] + confinement(c - axis_unit(axis))[axis]);
+            vel[comp_index(axis, c)] += P.dt * f;
         }
     }
 }
@@ -397,7 +480,8 @@ fn advect_forward(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 /// MacCormack, second half: correct by half the round-trip error, clamped to the cells
-/// the value came from; then cooling and fading.
+/// the value came from; then combustion (fuel burns where the gas is hot enough,
+/// releasing heat and soot), cooling and fading.
 @compute @workgroup_size(8, 8, 4)
 fn advect_correct(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = vec3<i32>(id);
@@ -413,9 +497,19 @@ fn advect_correct(@builtin(global_invocation_id) id: vec3<u32>) {
     let origin = sample_scal(backtrace(p));
     let back = sample_hat(forwardtrace(p));
     var s = clamp(scal_hat[i] + 0.5 * (scal[i] - back), origin.lo, origin.hi);
-    s = max(s, vec2<f32>(0.0));
-    let temp = s.y / (1.0 + P.cooling * s.y * P.dt);
-    scal_tmp[i] = vec2<f32>(s.x * exp(-P.fade * P.dt), temp);
+    s = max(s, vec4<f32>(0.0));
+    var smoke = s.x;
+    var temp = s.y;
+    var fuel = s.z;
+    if temp >= P.ignition && fuel > 0.0 {
+        let burned = fuel * (1.0 - exp(-P.burn_rate * P.dt));
+        fuel -= burned;
+        temp += P.heat * burned;
+        smoke = min(smoke + P.soot * burned, 1.0);
+    }
+    // dT/dt = -cooling·T², implicitly: stable at any step.
+    temp /= 1.0 + P.cooling * temp * P.dt;
+    scal_tmp[i] = vec4<f32>(smoke * exp(-P.fade * P.dt), temp, fuel, 0.0);
 }
 
 /// Copy the scalars into the volume texture the renderer samples.
@@ -426,5 +520,5 @@ fn export_volume(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let s = scal[cell_index(c)];
-    textureStore(volume, c, vec4<f32>(s, select(0.0, 1.0, cell_type(c) == SOLID), 0.0));
+    textureStore(volume, c, vec4<f32>(s.xy, select(0.0, 1.0, cell_type(c) == SOLID), s.z));
 }

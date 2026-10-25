@@ -2,6 +2,7 @@
 //! compute passes into the caller's encoder, and results stay on the GPU.
 
 use crate::scene::Scene3d;
+use crate::smoke::{Smoke3d, SmokeParams};
 use glam::{UVec3, Vec3};
 use sim::{ParamVisitor, Stats};
 use sim_gpu::GpuContext;
@@ -19,10 +20,12 @@ pub struct Brush3d {
 }
 
 /// A solver's gas for drawing: an `Rgba16Float` 3D texture of (smoke, temperature,
-/// solid: 1 in solid cells) with one texel per cell, spanning the scene's domain.
+/// solid: 1 in solid cells, fuel) with one texel per cell, spanning the scene's domain.
 pub struct Volume<'a> {
     pub view: &'a wgpu::TextureView,
     pub cells: UVec3,
+    /// Burning: draw hot gas as flame, and the smoke as soot rather than tinted.
+    pub fire: bool,
 }
 
 /// Per-frame interaction: brushes, and extra burners (the torch tool, reactions).
@@ -55,7 +58,7 @@ pub struct Solver3dEntry {
     pub make: fn(&GpuContext) -> Box<dyn Solver3d>,
 }
 
-pub static SOLVERS: &[Solver3dEntry] = &[Solver3dEntry {
-    name: "Smoke (3D GPU)",
-    make: |gpu| Box::new(crate::smoke::Smoke3d::new(gpu, crate::smoke::SmokeParams::default())),
-}];
+pub static SOLVERS: &[Solver3dEntry] = &[
+    Solver3dEntry { name: "Fire (3D GPU)", make: |gpu| Box::new(Smoke3d::new(gpu, "Fire (3D GPU)", SmokeParams::fire())) },
+    Solver3dEntry { name: "Smoke (3D GPU)", make: |gpu| Box::new(Smoke3d::new(gpu, "Smoke (3D GPU)", SmokeParams::smoke())) },
+];
