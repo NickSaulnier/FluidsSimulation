@@ -1,6 +1,6 @@
 # Music Visualizer Plan
 
-Status: **approved; Phase A done** (see §9). Decisions (§8):
+Status: **approved; Phases A and B done** (see §9). Decisions (§8):
 - live system audio first, track files second;
 - an automatic director, with a lock;
 - `rustfft` for the FFT;
@@ -230,4 +230,57 @@ A–D is the core visualizer; E–G make it good enough to leave running.
     - Live, about 6 kicks a second were counted on whatever was playing.
     - Telling hit kinds apart and the thresholds need checking against real music
       early in Phase B, where hits drive different reactions.
+- **Phase B, reactions (done).**
+  - **Sim:** `ForceBrush` gains `spin` (rad/s) and a `target(p)` helper. All three
+    brush paths use it: particle `apply_brushes`, stable-fluid faces, LBM forcing. A
+    test checks the swirl's direction.
+  - **Engine** (`app/src/audio/reactions.rs`): reactions map a trigger to an effect at
+    a gain.
+    - *Triggers:* the kick, snare and hat hits, the 5 bands, level and brightness.
+    - *One-shot effects:* Splash, Jet, Vortex, Flash.
+    - *Continuous effects:* Gust, Slosh, Breathe, Hue, Param.
+    - *Any trigger drives any effect:* hits drive continuous effects through a
+      decaying pulse; envelopes fire one-shot effects on surges, with hysteresis.
+  - **Applied each frame:**
+    - brushes and emitters go into the step;
+    - gravity is set on the scene, never on the sliders;
+    - parameters are multiples of a base value, remembered when modulation starts and
+      restored when it stops or the solver changes;
+    - the palette is modulated (hue rotation, lightening) for drawing only.
+  - **Music tab:** a Reactions editor (on/off, trigger → effect, gain, remove, add,
+    defaults, intensity), saved with the settings. Selectivity moves into Analysis.
+  - **Defaults:** kick → Splash, snare → Vortex, hat → Flash, bass → Slosh,
+    brightness → Hue; Gust and Breathe present but off.
+  - **Tests:**
+    - no audio does nothing;
+    - splashes are brief;
+    - vortices alternate;
+    - slosh tilts without changing gravity's strength;
+    - surges fire once until they re-arm;
+    - hue and flash;
+    - disabled reactions do nothing;
+    - palette hue rotation and lightening.
+  - **Checked in the app** with the test beat: FLIP splashing and sloshing with a hue
+    shift, and stable fluids stirred into swirls.
+  - **Music tab rebuilt so nothing moves while music plays.** Six things used to shift:
+    1. The Music tab's title gained a dot, pushing the Info tab.
+    2. Play/Pause changed width, sliding Restart and Mute under the cursor.
+    3. A "Silent" hint appeared and vanished in Live input.
+    4. A second "Silent" line did the same in Analysis.
+    5. Loading and error lines pushed the track controls down.
+    6. Hit counters and reaction rows changed width.
+
+    Now:
+    - the tab titles are fixed, and a ♫ indicator in the status bar shows when audio
+      is active;
+    - the source is a two-button switch, Track | System audio;
+    - both source cards are one fixed height, with a reserved status line;
+    - the transport buttons are fixed-size icons;
+    - Analysis is always shown, with dimmed meters and a status line instead of
+      appearing lines;
+    - the reactions are a table of fixed-width slots. Combo boxes treat their width
+      as a minimum, so each sits in a capped slot.
+
+    Checked by pixel-diffing snapshots during playback: only the readouts, meters and
+    lamps change; the Reactions table is identical frame to frame.
 

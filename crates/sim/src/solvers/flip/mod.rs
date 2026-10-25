@@ -739,6 +739,7 @@ mod tests {
             radius: 0.1,
             velocity: Vec2::new(2.0, 0.0),
             strength: 30.0,
+            spin: 0.0,
         };
         let input = StepInput { brushes: vec![brush], ..StepInput::default() };
         let stepper = Stepper::default();

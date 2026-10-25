@@ -29,6 +29,18 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
             ui.weak("·");
             ui.label("paused");
         }
+        // Music: what's driving the reactions.
+        let music = if f.music.is_live() {
+            Some("live audio".to_string())
+        } else if f.music.is_playing() {
+            f.music.track.as_ref().map(|t| t.name.clone())
+        } else {
+            None
+        };
+        if let Some(what) = music {
+            ui.weak("·");
+            ui.label(format!("{} {what}", egui_phosphor::regular::MUSIC_NOTES)).on_hover_text("Music is driving the fluid");
+        }
         // Health of the solver's checked metrics; a click opens the details.
         if let Some((h, metric)) = health::worst(&stats.metrics) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

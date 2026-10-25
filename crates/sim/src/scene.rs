@@ -232,8 +232,10 @@ fn chamfer(occ: &Grid2<u8>, is_source: impl Fn(u8) -> bool) -> Vec<f32> {
     d
 }
 
-/// A circular "push" applied by the mouse: velocities inside `radius` are pulled toward
-/// `velocity` at `strength` per second, fading linearly to zero at the rim.
+/// A circular "push" (the mouse, or a music reaction): velocities inside `radius` are
+/// pulled toward the brush's target velocity at `strength` per second, fading linearly
+/// to zero at the rim. The target is `velocity` plus a rigid rotation at `spin` about
+/// the centre, so a spinning brush stirs a vortex.
 #[derive(Clone, Copy, Debug)]
 pub struct ForceBrush {
     pub pos: Vec2,
@@ -241,6 +243,15 @@ pub struct ForceBrush {
     pub velocity: Vec2,
     /// Blend rate in 1/s.
     pub strength: f32,
+    /// Angular velocity of the stirring, rad/s (positive: anticlockwise).
+    pub spin: f32,
+}
+
+impl ForceBrush {
+    /// The velocity the brush pulls toward at `p`.
+    pub fn target(&self, p: Vec2) -> Vec2 {
+        self.velocity + self.spin * (p - self.pos).perp()
+    }
 }
 
 /// A nozzle producing a steady stream. It is specified as a volume flow (width x

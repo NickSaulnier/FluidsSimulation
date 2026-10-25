@@ -42,16 +42,18 @@ type Populations = [f32; 9];
 struct Forcing {
     /// Per unit dye.
     buoyancy: Vec2,
-    /// (centre, radius, target lattice velocity, blend fraction per step).
-    brushes: Vec<(Vec2, f32, Vec2, f32)>,
+    /// (centre, radius, lattice velocity, lattice spin (per metre of offset), blend
+    /// fraction per step).
+    brushes: Vec<(Vec2, f32, Vec2, f32, f32)>,
 }
 
 impl Forcing {
     fn du(&self, centre: Vec2, dye: f32, u: Vec2) -> Vec2 {
         let mut du = self.buoyancy * dye;
-        for &(pos, radius, target, rate) in &self.brushes {
+        for &(pos, radius, velocity, spin, rate) in &self.brushes {
             let d = centre.distance(pos);
             if d < radius {
+                let target = (velocity + spin * (centre - pos).perp()).clamp_length_max(MAX_SOURCE_SPEED);
                 du += (target - u) * rate * (1.0 - d / radius);
             }
         }
@@ -442,8 +444,9 @@ impl Solver for Lbm {
             .brushes
             .iter()
             .map(|b| {
-                let target = (b.velocity * self.params.lattice_per_mps).clamp_length_max(MAX_SOURCE_SPEED);
-                (b.pos, b.radius, target, (b.strength * dt_lb).min(1.0))
+                let to_lattice = self.params.lattice_per_mps;
+                let velocity = (b.velocity * to_lattice).clamp_length_max(MAX_SOURCE_SPEED);
+                (b.pos, b.radius, velocity, b.spin * to_lattice, (b.strength * dt_lb).min(1.0))
             })
             .collect();
         let forcing = Forcing { buoyancy, brushes };

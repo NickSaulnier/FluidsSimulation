@@ -30,6 +30,7 @@ pub struct Settings {
     pub panel_open: bool,
     pub tab: Tab,
     pub palette: Palette,
+    pub reactions: Vec<crate::audio::reactions::Reaction>,
 }
 
 impl Default for Settings {
@@ -55,6 +56,7 @@ impl Settings {
             panel_open: s.panel_open,
             tab: s.tab,
             palette: s.palette,
+            reactions: s.reactions.clone(),
         }
     }
 
@@ -75,6 +77,10 @@ impl Settings {
         s.panel_open = self.panel_open;
         s.tab = self.tab;
         s.palette = self.palette;
+        s.reactions = self.reactions.clone();
+        for r in &mut s.reactions {
+            r.gain = clamp(r.gain, 0.0, 3.0);
+        }
     }
 }
 

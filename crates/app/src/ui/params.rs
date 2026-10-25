@@ -1,4 +1,5 @@
-//! Renders solver parameters (from `Solver::visit_params`) as form rows, one rounded
+//! Solver parameters by key (for music reactions), and renders them (from
+//! `Solver::visit_params`) as form rows, one rounded
 //! group per section. The visitor streams parameters one at a time, so each group is
 //! opened with `Frame::begin` at its section and closed at the next one (or `finish`).
 //! Advanced sections start collapsed: their header toggles them, and while collapsed
@@ -8,6 +9,49 @@ use super::theme;
 use super::widgets::{self, param_text};
 use egui::RichText;
 use egui_phosphor::regular as icon;
+
+/// The current solver's float parameters that can change live (no restart):
+/// (key, label).
+pub fn live_float_params(world: &mut sim::World) -> Vec<(&'static str, &'static str)> {
+    struct List(Vec<(&'static str, &'static str)>);
+    impl sim::ParamVisitor for List {
+        fn float(&mut self, s: &sim::FloatSpec, _: &mut f32) {
+            if !s.restart {
+                self.0.push((s.key, s.label));
+            }
+        }
+        fn int(&mut self, _: &sim::IntSpec, _: &mut u32) {}
+        fn toggle(&mut self, _: &sim::ToggleSpec, _: &mut bool) {}
+    }
+    let mut list = List(Vec::new());
+    world.solver.visit_params(&mut list);
+    list.0
+}
+
+/// Read a float parameter by key, or set it (clamped to its range) if `set` is given.
+/// Returns the value before any change.
+pub fn float_param(world: &mut sim::World, key: &str, set: Option<f32>) -> Option<f32> {
+    struct Access<'k> {
+        key: &'k str,
+        set: Option<f32>,
+        found: Option<f32>,
+    }
+    impl sim::ParamVisitor for Access<'_> {
+        fn float(&mut self, s: &sim::FloatSpec, v: &mut f32) {
+            if s.key == self.key {
+                self.found = Some(*v);
+                if let Some(new) = self.set {
+                    *v = new.clamp(*s.range.start(), *s.range.end());
+                }
+            }
+        }
+        fn int(&mut self, _: &sim::IntSpec, _: &mut u32) {}
+        fn toggle(&mut self, _: &sim::ToggleSpec, _: &mut bool) {}
+    }
+    let mut access = Access { key, set, found: None };
+    world.solver.visit_params(&mut access);
+    access.found
+}
 
 pub struct EguiParams<'u> {
     ui: &'u mut egui::Ui,

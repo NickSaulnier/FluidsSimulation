@@ -1,6 +1,6 @@
 //! Audio-reactive mode: analyse the music (see `analyzer`) from either a track file
-//! played by the app or whatever the computer is playing (live, see `live`), and fire
-//! fluid pulses on its kick drums.
+//! played by the app or whatever the computer is playing (live, see `live`), and drive
+//! the fluid with it (see `reactions`).
 //!
 //! Both sources go through the same streaming analyzer: live audio as it's captured,
 //! a track's decoded samples as playback passes them. Decoding runs on a background
@@ -8,29 +8,20 @@
 
 pub mod analyzer;
 pub mod live;
+pub mod reactions;
 
-use analyzer::{Analyzer, AudioFeatures, OnsetKind};
+use analyzer::{Analyzer, AudioFeatures, Onset, OnsetKind};
+use reactions::{Reaction, ReactionEngine, ReactionOutput};
 use rodio::Source;
-use sim::{Emitter, ForceBrush, Vec2};
+use sim::Vec2;
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-/// How long one kick keeps pushing, and where successive kicks land across the floor.
-const PULSE: Duration = Duration::from_millis(90);
-const LANES: [f32; 3] = [0.3, 0.7, 0.5];
 /// Track playback that jumps further than this (seeking) restarts the feed there
 /// instead of analysing everything skipped.
 const MAX_FEED_S: f32 = 0.5;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KickAction {
-    /// Shove the water upward (conserves the fluid).
-    Splash,
-    /// Fire an emitter jet from the floor (adds fluid; pair with drains).
-    Jet,
-}
 
 pub struct Track {
     pub name: String,
@@ -45,12 +36,6 @@ struct Loaded {
     samples: Vec<f32>,
 }
 
-struct Pulse {
-    started: Instant,
-    strength: f32,
-    lane: f32,
-}
-
 pub struct Music {
     pub track: Option<Track>,
     /// Capturing the computer's audio output instead of playing the track.
@@ -58,8 +43,8 @@ pub struct Music {
     pub error: Option<String>,
     /// Onset threshold, in standard deviations above the recent onset activity.
     pub sensitivity: f32,
-    pub gain: f32,
-    pub action: KickAction,
+    /// Scales every reaction.
+    pub intensity: f32,
     pub muted: bool,
     /// Hits counted since the source started, and when each kind last hit
     /// (`OnsetKind::ALL` order).
@@ -77,8 +62,9 @@ pub struct Music {
     fed_frames: usize,
     /// Scratch: mono samples for the analyzer.
     mono: Vec<f32>,
-    pulses: Vec<Pulse>,
-    lane: usize,
+    /// This frame's hits.
+    frame_onsets: Vec<Onset>,
+    engine: ReactionEngine,
 }
 
 impl Default for Music {
@@ -88,8 +74,7 @@ impl Default for Music {
             live: None,
             error: None,
             sensitivity: 1.5,
-            gain: 1.0,
-            action: KickAction::Splash,
+            intensity: 1.0,
             muted: false,
             hits: [0; 3],
             last_hit: [None; 3],
@@ -100,8 +85,8 @@ impl Default for Music {
             loading: None,
             fed_frames: 0,
             mono: Vec::new(),
-            pulses: Vec::new(),
-            lane: 0,
+            frame_onsets: Vec::new(),
+            engine: ReactionEngine::default(),
         }
     }
 }
@@ -189,8 +174,8 @@ impl Music {
         }
     }
 
-    /// Poll the loader, feed the analyzer whatever the source produced since last frame,
-    /// and turn kicks into pulses.
+    /// Poll the loader, and feed the analyzer whatever the source produced since last
+    /// frame.
     pub fn update(&mut self) {
         if let Some((_, rx)) = &self.loading {
             match rx.try_recv() {
@@ -225,42 +210,21 @@ impl Music {
             self.mono.extend(frames.chunks(c).map(|f| f.iter().sum::<f32>() / c as f32));
             self.fed_frames = now;
         }
+        self.frame_onsets.clear();
         let Some(analyzer) = &mut self.analyzer else { return };
         analyzer.process(&self.mono, self.sensitivity);
-        for onset in analyzer.take_onsets() {
+        self.frame_onsets = analyzer.take_onsets();
+        for onset in &self.frame_onsets {
             let k = OnsetKind::ALL.iter().position(|&kind| kind == onset.kind).unwrap_or(0);
             self.hits[k] += 1;
             self.last_hit[k] = Some(Instant::now());
-            if onset.kind == OnsetKind::Kick {
-                self.pulses.push(Pulse { started: Instant::now(), strength: onset.strength, lane: LANES[self.lane % LANES.len()] });
-                self.lane += 1;
-            }
         }
     }
 
-    /// This frame's forces from recent kicks, for a domain of the given size.
-    pub fn pulse_input(&mut self, domain: Vec2) -> (Vec<ForceBrush>, Vec<Emitter>) {
-        let now = Instant::now();
-        self.pulses.retain(|p| now - p.started < PULSE);
-        let (mut brushes, mut emitters) = (Vec::new(), Vec::new());
-        for p in &self.pulses {
-            let x = domain.x * p.lane;
-            match self.action {
-                KickAction::Splash => brushes.push(ForceBrush {
-                    pos: Vec2::new(x, 0.15 * domain.y),
-                    radius: 0.22 * domain.y,
-                    velocity: Vec2::new(0.0, (1.5 + 3.5 * p.strength) * self.gain),
-                    strength: 45.0,
-                }),
-                KickAction::Jet => emitters.push(Emitter {
-                    pos: Vec2::new(x, 0.07 * domain.y),
-                    dir: Vec2::Y,
-                    speed: (2.0 + 3.0 * p.strength) * self.gain,
-                    width: 0.04,
-                }),
-            }
-        }
-        (brushes, emitters)
+    /// This frame's reactions to the music (see `reactions`).
+    pub fn react(&mut self, reactions: &[Reaction], domain: Vec2, base_gravity: Vec2, dt: f32) -> ReactionOutput {
+        let features = self.analyzer.as_ref().map(Analyzer::features);
+        self.engine.evaluate(reactions, features, &self.frame_onsets, domain, base_gravity, self.intensity, dt)
     }
 
     /// A fresh analyzer at `rate` (or none), with the hit counters reset.

@@ -171,7 +171,7 @@ impl Emission {
     }
 }
 
-/// Blend particle velocities toward each brush's velocity, with linear falloff.
+/// Blend particle velocities toward each brush's target velocity, with linear falloff.
 pub fn apply_brushes(brushes: &[ForceBrush], dt: f32, pos: &[Vec2], vel: &mut [Vec2]) {
     for b in brushes {
         let r2 = b.radius * b.radius;
@@ -180,7 +180,7 @@ pub fn apply_brushes(brushes: &[ForceBrush], dt: f32, pos: &[Vec2], vel: &mut [V
             if d2 < r2 {
                 let falloff = 1.0 - d2.sqrt() / b.radius;
                 let blend = (b.strength * falloff * dt).min(1.0);
-                *v += (b.velocity - *v) * blend;
+                *v += (b.target(*p) - *v) * blend;
             }
         });
     }

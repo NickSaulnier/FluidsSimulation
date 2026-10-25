@@ -308,7 +308,7 @@ impl StableFluids {
         (Vec2::new(i as f32, j as f32) + 0.5) * self.grid.h
     }
 
-    /// Brushes blend face velocities toward theirs.
+    /// Brushes blend face velocities toward their targets.
     fn apply_brushes(&mut self, input: &StepInput, dt: f32) {
         let h = self.grid.h;
         for b in &input.brushes {
@@ -323,13 +323,13 @@ impl StableFluids {
             for j in 0..ny {
                 for i in 0..=nx {
                     let p = (Vec2::new(i as f32, j as f32) + U_OFFSET) * h;
-                    self.grid.u[(i, j)] = blend(p, self.grid.u[(i, j)], b.velocity.x);
+                    self.grid.u[(i, j)] = blend(p, self.grid.u[(i, j)], b.target(p).x);
                 }
             }
             for j in 0..=ny {
                 for i in 0..nx {
                     let p = (Vec2::new(i as f32, j as f32) + V_OFFSET) * h;
-                    self.grid.v[(i, j)] = blend(p, self.grid.v[(i, j)], b.velocity.y);
+                    self.grid.v[(i, j)] = blend(p, self.grid.v[(i, j)], b.target(p).y);
                 }
             }
         }
@@ -774,6 +774,26 @@ mod tests {
         let smoke = centroid(&s, |i, j| s.dye[(i, j)]);
         assert!(s.dye.as_slice().iter().sum::<f32>() > 1.0, "no smoke: it didn't burn");
         assert!(smoke.y < start.y + 0.03, "smoke at {smoke}, fuel started at {start}");
+    }
+
+    /// A spinning brush stirs a vortex in its direction: anticlockwise spin moves the
+    /// flow left above the centre and right below it.
+    #[test]
+    fn a_spinning_brush_stirs_a_vortex() {
+        let scene = Scene::empty_box(Vec2::new(2.0, 1.0), 128);
+        let mut s = StableFluids::with_params(StableParams { cells_y: 64, buoyancy: 0.0, ..StableParams::default() });
+        s.reset(&scene, Init::FromScene);
+        let centre = Vec2::new(1.0, 0.5);
+        let brush = crate::scene::ForceBrush { pos: centre, radius: 0.2, velocity: Vec2::ZERO, strength: 25.0, spin: 10.0 };
+        let input = StepInput { brushes: vec![brush], ..StepInput::default() };
+        let stepper = Stepper::default();
+        for _ in 0..20 {
+            stepper.advance(&mut s, &scene, 1.0 / 60.0, &input);
+        }
+        let g = &s.grid;
+        let u_at = |p: Vec2| Stencil::on(&g.u, g.h, U_OFFSET, p).sample(&g.u);
+        let (above, below) = (u_at(centre + Vec2::new(0.0, 0.1)), u_at(centre - Vec2::new(0.0, 0.1)));
+        assert!(above < -0.1 && below > 0.1, "u above {above}, below {below}");
     }
 
     /// No fuel, no fire: an empty box stays cold and clear.

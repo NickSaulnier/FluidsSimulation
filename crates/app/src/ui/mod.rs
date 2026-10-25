@@ -8,7 +8,7 @@ mod compass;
 mod health;
 mod legend;
 mod panel;
-mod params;
+pub mod params;
 pub mod settings;
 pub mod shortcuts;
 mod status_bar;
@@ -72,6 +72,8 @@ pub struct UiState {
     pub cheat_sheet: bool,
     /// The fluid's colours.
     pub palette: crate::render::Palette,
+    /// How the music drives the fluid.
+    pub reactions: Vec<crate::audio::reactions::Reaction>,
 }
 
 impl Default for UiState {
@@ -97,6 +99,7 @@ impl Default for UiState {
             panel_open: true,
             cheat_sheet: false,
             palette: crate::render::Palette::default(),
+            reactions: crate::audio::reactions::default_reactions(),
         }
     }
 }

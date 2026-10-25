@@ -82,6 +82,10 @@ struct State {
     input: Input,
     /// Canvas rect (points) from the last UI layout.
     canvas: Option<egui::Rect>,
+    /// The palette as drawn this frame: the chosen one, modulated by the music.
+    palette_now: render::Palette,
+    /// Base values of parameters the music is modulating, for the solver they belong to.
+    param_bases: (usize, Vec<(String, f32)>),
     /// The `World::scene_generation` whose gravity the UI last took on.
     gravity_synced: u64,
     last_frame: Instant,
@@ -199,10 +203,42 @@ impl State {
             field_range: None,
             input: Input::default(),
             canvas: None,
+            palette_now: render::Palette::default(),
+            param_bases: (usize::MAX, Vec::new()),
             gravity_synced: u64::MAX, // take the first scene's gravity too
             last_frame: Instant::now(),
             perf: PerfCounter::new(),
         })
+    }
+
+    /// Parameter reactions: each key is set to its base value times the reaction's
+    /// multiple; the base is remembered when modulation starts and restored when it
+    /// stops (or the solver changes).
+    fn modulate_params(&mut self, params: &[(String, f32)]) {
+        if self.param_bases.0 != self.world.solver_index {
+            self.param_bases = (self.world.solver_index, Vec::new());
+        }
+        let bases = &mut self.param_bases.1;
+        bases.retain(|(key, base)| {
+            let active = params.iter().any(|(k, _)| k == key);
+            if !active {
+                ui::params::float_param(&mut self.world, key, Some(*base));
+            }
+            active
+        });
+        for (key, multiple) in params {
+            let base = match bases.iter().find(|(k, _)| k == key) {
+                Some((_, base)) => *base,
+                None => match ui::params::float_param(&mut self.world, key, None) {
+                    Some(base) => {
+                        bases.push((key.clone(), base));
+                        base
+                    }
+                    None => continue,
+                },
+            };
+            ui::params::float_param(&mut self.world, key, Some(base * multiple));
+        }
     }
 
     /// Keyboard shortcuts, as listed in `ui::shortcuts::SHORTCUTS`.
@@ -272,11 +308,14 @@ impl State {
             self.gravity_synced = self.world.scene_generation;
             self.ui.set_gravity(self.world.scene.gravity);
         }
-        self.world.scene.gravity = self.ui.gravity();
         let mut step_input = self.input.apply(&view, &self.ui, &mut self.world, real_dt);
-        let (brushes, emitters) = self.music.pulse_input(self.world.scene.size);
-        step_input.brushes.extend(brushes);
-        step_input.emitters.extend(emitters);
+        // Music reactions: forces, gravity, parameters, and the colours drawn this frame.
+        let reaction = self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), real_dt);
+        self.world.scene.gravity = reaction.gravity;
+        step_input.brushes.extend(reaction.brushes);
+        step_input.emitters.extend(reaction.emitters);
+        self.modulate_params(&reaction.params);
+        self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
         let wanted = real_dt * self.ui.speed;
         let sim_dt = if !self.ui.paused {
             Some(wanted.min(MAX_FRAME_DT))
@@ -340,7 +379,7 @@ impl State {
             show_particles: self.ui.show_particles,
             liquid: self.ui.liquid_style(),
             target_size: (self.gpu.config.width, self.gpu.config.height),
-            palette: self.ui.palette,
+            palette: self.palette_now,
         };
         self.field_range = self.renderer.render(device, queue, &mut encoder, &target, options);
 

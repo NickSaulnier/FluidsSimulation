@@ -41,6 +41,17 @@ impl Palette {
         [b, [mix(b[0], h[0]), mix(b[1], h[1]), mix(b[2], h[2])], h]
     }
 
+    /// The palette with its hue rotated by `hue_deg` and lightened toward white by
+    /// `flash` (0..1): how music reactions colour the fluid without touching the
+    /// chosen palette.
+    pub fn modulated(&self, hue_deg: f32, flash: f32) -> Self {
+        if hue_deg == 0.0 && flash <= 0.0 {
+            return *self;
+        }
+        let f = |c: [u8; 3]| lighten(rotate_hue(c, hue_deg), 0.6 * flash.clamp(0.0, 1.0));
+        Self { deep: f(self.deep), base: f(self.base), highlight: f(self.highlight) }
+    }
+
     /// The three colours in linear space, padded to `vec4` for a uniform buffer.
     pub fn linear(&self) -> [[f32; 4]; 3] {
         let lin = |c: [u8; 3]| {
@@ -54,9 +65,53 @@ impl Palette {
     }
 }
 
+/// Rotate a colour's hue (HSV) by `deg`, keeping saturation and value.
+fn rotate_hue(c: [u8; 3], deg: f32) -> [u8; 3] {
+    let [r, g, b] = c.map(|v| f32::from(v) / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let delta = max - min;
+    if delta <= 0.0 {
+        return c;
+    }
+    let hue = if max == r {
+        60.0 * ((g - b) / delta).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    let h = (hue + deg).rem_euclid(360.0) / 60.0;
+    let x = delta * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h as u32 {
+        0 => (delta, x, 0.0),
+        1 => (x, delta, 0.0),
+        2 => (0.0, delta, x),
+        3 => (0.0, x, delta),
+        4 => (x, 0.0, delta),
+        _ => (delta, 0.0, x),
+    };
+    [r1, g1, b1].map(|v| ((v + min) * 255.0).round().clamp(0.0, 255.0) as u8)
+}
+
+fn lighten(c: [u8; 3], amount: f32) -> [u8; 3] {
+    c.map(|v| (f32::from(v) + (255.0 - f32::from(v)) * amount).round() as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modulation_rotates_hue_and_lightens() {
+        let p = Palette::default();
+        assert_eq!(p.modulated(0.0, 0.0), p);
+        assert_eq!(rotate_hue([255, 0, 0], 120.0), [0, 255, 0]);
+        assert_eq!(rotate_hue([128, 128, 128], 90.0), [128, 128, 128], "grey has no hue");
+        let full_turn = p.modulated(360.0, 0.0);
+        assert!(full_turn.base.iter().zip(p.base).all(|(a, b)| a.abs_diff(b) <= 1));
+        let flashed = p.modulated(0.0, 1.0);
+        assert!(flashed.base.iter().zip(p.base).all(|(a, b)| *a >= b) && flashed.base != p.base);
+    }
 
     #[test]
     fn presets_are_named_and_custom_colours_are_not() {

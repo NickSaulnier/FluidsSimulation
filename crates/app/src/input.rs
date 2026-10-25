@@ -71,6 +71,7 @@ impl Input {
                     radius: ui.brush_radius,
                     velocity,
                     strength: ui.push_strength,
+                    spin: 0.0,
                 });
             }
             Tool::Faucet => {
