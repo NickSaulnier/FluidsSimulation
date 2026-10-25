@@ -37,7 +37,12 @@ impl Gpu {
         log::info!("adapter: {} ({:?})", info.name, info.backend);
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor { label: Some("device"), ..Default::default() })
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("device"),
+                // Pass timings, where available (the 3D solvers report them).
+                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+                ..Default::default()
+            })
             .await?;
 
         let size = window.inner_size();

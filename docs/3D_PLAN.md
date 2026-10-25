@@ -1,6 +1,6 @@
 # 3D Simulation Plan
 
-Status: **approved; Phase A done.** Decisions (§8), taken as recommended
+Status: **approved; phases A and B done.** Decisions (§8), taken as recommended
 (2026-10-24):
 - 128³ with automatic step-down;
 - a separate `World3d` with an app mode switch;
@@ -232,6 +232,43 @@ A–D get 3D fire on screen; E makes it part of the visualizer.
     3D and back. Orbiting couldn't be driven from the test harness (synthetic mouse
     moves get a mouse-leave when the real cursor is elsewhere), so the unit test
     covers it.
+- **Phase B (done):** `sim3d::Smoke3d` ("Smoke (3D GPU)", `smoke.rs` and
+  `smoke.wgsl`) replaces the empty preview solver.
+  - Each substep runs five timed passes: sources and forces (cell types, prescribed
+    faces, burner gas, Boussinesq buoyancy); velocity advection (RK2
+    semi-Lagrangian); pressure (divergence, then 40 warm-started red-black SOR
+    sweeps); projection; smoke and heat advection (MacCormack with the limiter, T²
+    cooling, fade). Substeps are at most 1/60 s.
+  - Burners are inflow cells whose faces carry the exit velocity (as the 2D
+    nozzles). Vents hold φ = 0, so gas reaching them leaves. Solids are classified
+    from the analytic shapes on the GPU each substep.
+  - Changed from §3.2: the fields are storage buffers sampled trilinearly in the
+    shader, not 3D textures. That needs no filterable float textures, and with
+    velocity in one buffer and (pressure, divergence) and (smoke, temperature) packed
+    as pairs it fits wgpu's default eight storage buffers per stage. The raymarcher
+    can copy the smoke into a 3D texture.
+  - Pass timings come from timestamp queries (both devices now request
+    `TIMESTAMP_QUERY` where supported), read back a frame or two late without
+    stalling, and show in the Info tab's step breakdown.
+  - Measured on the RTX 4090, GPU time per substep, with pressure about 85% of it:
+
+    | Grid | Cells | GPU per substep |
+    |---|---|---|
+    | 85×128×85 | 0.92M | 1.2 ms |
+    | 107×160×107 (default) | 1.83M | 2.3 ms |
+    | 128×192×128 | 3.15M | 4.4 ms |
+
+    That's well under the 6–8 ms estimated for 128³, so the default is 160 cells
+    high (close to the 128³ budget). In the app it runs at the display's 240 fps.
+  - Tests (headless GPU, skipped without an adapter): a hot blob rises, stays put
+    without gravity and leans under tilted gravity; smoke is conserved within 3% in
+    a closed box; projecting random velocities (walls, vent, solid ball, burners)
+    leaves under 0.1% of the divergence; the classification, prescribed faces,
+    pressure and projected velocities match a CPU version value by value (16×24×16,
+    chimney scene); a centred plume is symmetric under swapping x and z (exactly)
+    and mirroring x (closely). An ignored test prints the pass timings.
+  - Not yet: brushes (`StepInput3d::brushes`) wait for phase E; the extra burners in
+    `StepInput3d::burners` already work. Nothing draws the smoke until phase C.
 
 ## 8. Decisions for you
 

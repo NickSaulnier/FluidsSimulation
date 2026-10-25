@@ -31,6 +31,8 @@ pub trait Solver3d {
     fn reset(&mut self, gpu: &GpuContext, scene: &Scene3d);
     /// Record one step of `dt` seconds into `encoder` (the caller submits it).
     fn step(&mut self, gpu: &GpuContext, encoder: &mut wgpu::CommandEncoder, dt: f32, scene: &Scene3d, input: &StepInput3d);
+    /// The step's commands were submitted (to start reading back what they copied).
+    fn submitted(&mut self, _gpu: &GpuContext) {}
     /// Parameters, through the same visitor (and so the same panel) as 2D solvers.
     fn visit_params(&mut self, _v: &mut dyn ParamVisitor) {}
     fn stats(&self) -> &Stats;
@@ -42,25 +44,7 @@ pub struct Solver3dEntry {
     pub make: fn(&GpuContext) -> Box<dyn Solver3d>,
 }
 
-pub static SOLVERS: &[Solver3dEntry] = &[Solver3dEntry { name: "3D preview (empty box)", make: |_| Box::new(Empty::default()) }];
-
-/// A placeholder until the smoke-and-fire solver lands: an empty volume, so the 3D view,
-/// camera and mode switch can be built and checked first.
-#[derive(Default)]
-pub struct Empty {
-    stats: Stats,
-}
-
-impl Solver3d for Empty {
-    fn name(&self) -> &'static str {
-        "3D preview (empty box)"
-    }
-
-    fn reset(&mut self, _gpu: &GpuContext, _scene: &Scene3d) {}
-
-    fn step(&mut self, _gpu: &GpuContext, _encoder: &mut wgpu::CommandEncoder, _dt: f32, _scene: &Scene3d, _input: &StepInput3d) {}
-
-    fn stats(&self) -> &Stats {
-        &self.stats
-    }
-}
+pub static SOLVERS: &[Solver3dEntry] = &[Solver3dEntry {
+    name: "Smoke (3D GPU)",
+    make: |gpu| Box::new(crate::smoke::Smoke3d::new(gpu, crate::smoke::SmokeParams::default())),
+}];

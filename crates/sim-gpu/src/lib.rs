@@ -41,7 +41,12 @@ impl GpuContext {
                 .context("no GPU adapter")?;
             let info = adapter.get_info();
             let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor { label: Some("sim-gpu"), ..Default::default() })
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("sim-gpu"),
+                    // Pass timings, where available (the 3D solvers report them).
+                    required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+                    ..Default::default()
+                })
                 .await
                 .context("GPU device")?;
             Ok(Self { device, queue, adapter: format!("{} ({:?})", info.name, info.backend) })

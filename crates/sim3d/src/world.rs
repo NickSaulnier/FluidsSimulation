@@ -46,6 +46,7 @@ impl World3d {
         let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sim3d step") });
         self.solver.step(&self.gpu, &mut encoder, dt, &self.scene, input);
         self.gpu.queue.submit([encoder.finish()]);
+        self.solver.submitted(&self.gpu);
         self.time += f64::from(dt);
     }
 }
