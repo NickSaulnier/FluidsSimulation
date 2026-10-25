@@ -24,6 +24,7 @@ egui-phosphor.workspace = true
 glam.workspace = true
 rayon.workspace = true
 rodio.workspace = true
+rtrb.workspace = true
 rustfft.workspace = true
 bytemuck.workspace = true
 pollster.workspace = true

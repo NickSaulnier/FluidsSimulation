@@ -3,8 +3,9 @@
 //! the fluid with it (see `reactions`).
 //!
 //! Both sources go through the same streaming analyzer: live audio as it's captured,
-//! a track's decoded samples as playback passes them. Decoding runs on a background
-//! thread so a long track doesn't freeze the window.
+//! a track's decoded samples as playback passes them, each as stereo frames (live
+//! capture mixes surround down; a mono track goes to both sides). Decoding runs on a
+//! background thread so a long track doesn't freeze the window.
 
 pub mod analyzer;
 pub mod live;
@@ -60,7 +61,8 @@ pub struct Music {
     loading: Option<(String, Receiver<Result<Loaded, String>>)>,
     /// Track frames already fed to the analyzer.
     fed_frames: usize,
-    /// Scratch: mono samples for the analyzer.
+    /// Scratch: this frame's audio as stereo frames, and mixed to mono for the analyzer.
+    stereo: Vec<live::Frame>,
     mono: Vec<f32>,
     /// This frame's hits.
     frame_onsets: Vec<Onset>,
@@ -84,6 +86,7 @@ impl Default for Music {
             samples: None,
             loading: None,
             fed_frames: 0,
+            stereo: Vec::new(),
             mono: Vec::new(),
             frame_onsets: Vec::new(),
             engine: ReactionEngine::default(),
@@ -200,11 +203,11 @@ impl Music {
             }
         }
 
-        self.mono.clear();
+        self.stereo.clear();
         if let Some(input) = &mut self.live {
-            input.drain(&mut self.mono);
+            input.drain(&mut self.stereo);
         } else if let (Some((channels, rate, samples)), true) = (&self.samples, self.is_playing()) {
-            // The frames playback has passed since last frame, downmixed.
+            // The frames playback has passed since last frame, as stereo.
             let c = usize::from(channels.get());
             let rate = rate.get() as f32;
             let now = ((self.position() * rate) as usize).min(samples.len() / c);
@@ -212,9 +215,11 @@ impl Music {
                 self.fed_frames = now; // restarted or skipped: pick up from here
             }
             let frames = &samples[self.fed_frames * c..now * c];
-            self.mono.extend(frames.chunks(c).map(|f| f.iter().sum::<f32>() / c as f32));
+            self.stereo.extend(frames.chunks_exact(c).map(|f| live::to_stereo(f.iter().copied())));
             self.fed_frames = now;
         }
+        self.mono.clear();
+        self.mono.extend(self.stereo.iter().map(|[l, r]| 0.5 * (l + r)));
         self.frame_onsets.clear();
         let Some(analyzer) = &mut self.analyzer else { return };
         analyzer.process(&self.mono, self.sensitivity);
