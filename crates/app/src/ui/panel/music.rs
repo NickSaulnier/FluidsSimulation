@@ -8,7 +8,7 @@
 //! reactions either.
 
 use crate::audio::Music;
-use crate::audio::analyzer::{AudioFeatures, BAND_NAMES, OnsetKind};
+use crate::audio::analyzer::{self, AudioFeatures, BAND_NAMES, OnsetKind};
 use crate::audio::reactions::{Effect, Reaction, Trigger, default_reactions};
 use crate::looks::LOOKS;
 use crate::ui::Frame;
@@ -168,6 +168,17 @@ fn analysis(ui: &mut Ui, music: &mut Music) {
         };
         ui.add(egui::Label::new(RichText::new(status).weak()).truncate());
         bands(ui, &f, active);
+        spectrum(ui, &f, active);
+        let mut wave = Vec::new();
+        music.waveform(&mut wave);
+        scope(ui, &wave, active);
+        row(ui, "Stereo", "Balance (left to right) and width (mono to wide)", |ui| {
+            ui.label(RichText::new(format!("balance {:+.2} · width {:.2}", f.balance, f.width)).small());
+        });
+        row(ui, "MilkDrop", "Bass, mid and treble over their running averages (1 is typical for the song)", |ui| {
+            let m = f.milk;
+            ui.label(RichText::new(format!("bass {:.2} · mid {:.2} · treb {:.2}", m.bass_att, m.mid_att, m.treb_att)).small());
+        });
         row(ui, "Level", "Overall loudness, relative to the last few seconds", |ui| bar(ui, 140.0, 8.0, f.level, active));
         row(ui, "Brightness", "Spectral centroid: dull bass to bright treble", |ui| {
             bar(ui, 140.0, 8.0, f.brightness, active)
@@ -185,6 +196,42 @@ fn analysis(ui: &mut Ui, music: &mut Music) {
             ui.add(egui::Slider::new(&mut music.sensitivity, 0.5..=4.0));
         });
     });
+}
+
+/// The log-spaced spectrum, 20 Hz to 16 kHz, as thin bars.
+fn spectrum(ui: &mut Ui, f: &AudioFeatures, active: bool) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2, theme::GROUP_FILL.gamma_multiply(1.6));
+    let width = rect.width() / f.spectrum_smooth.len() as f32;
+    let colour = if active { theme::ACCENT } else { DIM };
+    for (k, level) in f.spectrum_smooth.iter().enumerate() {
+        let x = rect.min.x + k as f32 * width;
+        let top = rect.max.y - rect.height() * level.clamp(0.0, 1.0);
+        painter.rect_filled(egui::Rect::from_min_max(egui::pos2(x, top), egui::pos2(x + width - 1.0, rect.max.y)), 0, colour);
+    }
+}
+
+/// The latest waveform, left over right, as two traces.
+fn scope(ui: &mut Ui, wave: &[analyzer::Frame], active: bool) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2, theme::GROUP_FILL.gamma_multiply(1.6));
+    if wave.len() < 2 {
+        return;
+    }
+    let colours = if active { [theme::ACCENT, theme::WARN] } else { [DIM, DIM] };
+    for (channel, colour) in colours.into_iter().enumerate() {
+        let points: Vec<egui::Pos2> = wave
+            .iter()
+            .enumerate()
+            .map(|(k, frame)| {
+                let x = rect.min.x + rect.width() * k as f32 / (wave.len() - 1) as f32;
+                egui::pos2(x, rect.center().y - 0.5 * rect.height() * frame[channel].clamp(-1.0, 1.0))
+            })
+            .collect();
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, colour)));
+    }
 }
 
 /// Five vertical band meters.

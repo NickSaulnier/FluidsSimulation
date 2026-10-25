@@ -67,6 +67,7 @@ mod tests {
         let mut base_gravity = world.scene.gravity;
         let per_frame = (RATE as f32 * FRAME) as usize;
         let (mut cursor, mut visited, mut peak) = (0, Vec::new(), 0usize);
+        let mut onsets = Vec::new();
         // The 3D world, made on the first 3D look and kept; whether it's the one running.
         let mut world3d: Option<sim3d::World3d> = None;
         let (mut in_3d, mut checks_3d, mut no_gpu) = (false, 0, false);
@@ -74,8 +75,9 @@ mod tests {
             let t = frame as f32 * FRAME;
             let chunk: Vec<f32> = (0..per_frame).map(|k| audio[(cursor + k) % audio.len()]).collect();
             cursor += per_frame;
-            analyzer.process(&chunk, 1.5);
-            let onsets = analyzer.take_onsets();
+            analyzer.process_mono(&chunk, 1.5);
+            onsets.clear();
+            analyzer.drain_onsets(&mut onsets);
             let kicked = onsets.iter().any(|o| o.kind == OnsetKind::Kick);
             if let Some(look) = ui.director.update(true, Some(analyzer.features()), kicked, FRAME) {
                 let l = &LOOKS[look];

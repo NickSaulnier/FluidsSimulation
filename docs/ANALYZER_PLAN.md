@@ -1,6 +1,6 @@
 # Audio Analyzer Plan
 
-Status: **approved; phase A done.** Decisions (§8) taken as recommended (2026-10-25):
+Status: **approved; phases A and B done.** Decisions (§8) taken as recommended (2026-10-25):
 - `rtrb` for the lock-free hand-over from the audio thread;
 - `ebur128` for loudness;
 - a second, longer FFT for the low bands;
@@ -237,3 +237,35 @@ before or with MilkDrop phase E.
     drain after a stall keeps the newest.
   - Checked in the app: `--live` opens the headphones at 48 kHz, 2 channels, `f32`, with
     no warnings. Audio flowing through it wasn't checked (nothing was playing).
+- **Phase B (done):** the core and outputs (`app/src/audio/analyzer.rs`).
+  - The analyzer takes stereo frames (`process`); its mono mix feeds the FFT. A mono
+    ring replaces the per-sample queue, `realfft` replaces the complex FFT (and the
+    `rustfft` dependency), and every buffer is made once: after warming up, analysing
+    allocates nothing (a test counts allocations on its thread with a test-only
+    allocator). Onsets come out through `drain_onsets`, into the caller's buffer.
+  - The onset picker keeps its statistics as it goes: running sums for the threshold
+    window, a 256-bin histogram for the 10 s floor's 98th percentile (accurate to a
+    bin, 0.03 in log units), and a maximum falling with a 3 s time constant for the
+    strength scale, so one huge hit no longer makes the next 10 s read weak.
+  - New outputs in `AudioFeatures`: `spectrum` and `spectrum_smooth` (64 log-spaced
+    triangular bands, 20 Hz to 16 kHz, tilted +3 dB per octave, shown over the 60 dB
+    below their shared recent peak); `balance` and `width` (from the channels' levels and
+    correlation); `milk` (bass, mid and treble over 3 s running averages, capped at 4,
+    and their 0.25 s smoothed `_att` versions). `waveform` returns the last 1024 stereo
+    frames.
+  - Changed from §5.2: the five display bands and the onset bands still sum FFT bins
+    directly, not the filter bank. At 23 Hz per bin the filter bank's lowest bands are
+    narrower than a bin (they interpolate between the two nearest), so summing them
+    would distort the kick band's energy and with it the loudness gate. They're unified
+    in phase D, with the long low FFT and the scoring harness to measure the change.
+  - The Music tab shows the new outputs under the band meters: the spectrum as bars, a
+    two-trace scope (left and right), stereo balance and width, and MilkDrop's levels.
+  - Tests: the spectrum's bands tile the range (weights sum to 1 from 500 Hz up); tones
+    peak in their own band (80 Hz, 1 kHz, 6 kHz); the waveform is the latest frames in
+    order; left-only audio reads left, identical channels read mono, opposite ones wide;
+    MilkDrop's bass is about 1 when steady and over 2 when it gets louder; the running
+    statistics match a direct computation; analysing allocates nothing. The existing
+    tests pass unchanged, including identical onsets for any chunking.
+  - Checked in the app with a generated stereo track (a beat, plus a tone on the right
+    only), muted: the spectrum spikes at the tone, the scope shows it on the right
+    trace only, balance reads +0.57, MilkDrop's levels sit near 1, and hits count.

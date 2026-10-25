@@ -61,9 +61,8 @@ pub struct Music {
     loading: Option<(String, Receiver<Result<Loaded, String>>)>,
     /// Track frames already fed to the analyzer.
     fed_frames: usize,
-    /// Scratch: this frame's audio as stereo frames, and mixed to mono for the analyzer.
+    /// Scratch: this frame's audio as stereo frames.
     stereo: Vec<live::Frame>,
-    mono: Vec<f32>,
     /// This frame's hits.
     frame_onsets: Vec<Onset>,
     engine: ReactionEngine,
@@ -87,7 +86,6 @@ impl Default for Music {
             loading: None,
             fed_frames: 0,
             stereo: Vec::new(),
-            mono: Vec::new(),
             frame_onsets: Vec::new(),
             engine: ReactionEngine::default(),
         }
@@ -144,6 +142,15 @@ impl Music {
     /// The latest analysis of the current source, if there is one.
     pub fn features(&self) -> Option<&AudioFeatures> {
         self.analyzer.as_ref().map(Analyzer::features)
+    }
+
+    /// The latest stereo frames (see `analyzer::WAVEFORM_LEN`), oldest first, into
+    /// `out`; empty without a source.
+    pub fn waveform(&self, out: &mut Vec<analyzer::Frame>) {
+        out.clear();
+        if let Some(a) = &self.analyzer {
+            a.waveform(out);
+        }
     }
 
     pub fn loading_name(&self) -> Option<&str> {
@@ -218,12 +225,10 @@ impl Music {
             self.stereo.extend(frames.chunks_exact(c).map(|f| live::to_stereo(f.iter().copied())));
             self.fed_frames = now;
         }
-        self.mono.clear();
-        self.mono.extend(self.stereo.iter().map(|[l, r]| 0.5 * (l + r)));
         self.frame_onsets.clear();
         let Some(analyzer) = &mut self.analyzer else { return };
-        analyzer.process(&self.mono, self.sensitivity);
-        self.frame_onsets = analyzer.take_onsets();
+        analyzer.process(&self.stereo, self.sensitivity);
+        analyzer.drain_onsets(&mut self.frame_onsets);
         for onset in &self.frame_onsets {
             let k = OnsetKind::ALL.iter().position(|&kind| kind == onset.kind).unwrap_or(0);
             self.hits[k] += 1;

@@ -12,8 +12,7 @@ use rodio::cpal;
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{FromSample, SampleFormat, SizedSample};
 
-/// One stereo frame: left, right.
-pub type Frame = [f32; 2];
+pub use super::analyzer::Frame;
 
 /// The ring holds this many seconds. The frame loop drains it every frame, so it only
 /// fills while the window is stalled; once full, new frames are dropped (the audio

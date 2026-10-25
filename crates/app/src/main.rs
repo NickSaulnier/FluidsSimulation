@@ -16,6 +16,8 @@ mod governor;
 mod looks;
 mod react3d;
 mod soak;
+#[cfg(test)]
+mod test_alloc;
 mod stability;
 mod gpu;
 mod input;
