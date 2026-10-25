@@ -80,6 +80,8 @@ pub struct UiState {
     pub faucet_speed: f32,
     /// Draw particles as a continuous liquid surface.
     pub liquid: bool,
+    /// In the 3D visualizer, how fast the camera circles the scene, rad/s.
+    pub orbit: f32,
     pub blob_size: f32,
     pub surface_threshold: f32,
     pub tab: Tab,
@@ -118,6 +120,7 @@ impl Default for UiState {
             show_particles: true,
             faucet_speed: 2.0,
             liquid: true,
+            orbit: 0.12,
             blob_size: 3.0,
             surface_threshold: 0.5,
             tab: Tab::Simulate,
@@ -236,13 +239,14 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
     }
     let canvas = ui.available_rect_before_wrap();
     if f.world3d.is_some() {
-        // No tools, overlay or brush in 3D yet: the canvas is all camera.
+        // The 3D tools, but no overlay legend or brush outline.
+        tool_strip::show(ui.ctx(), canvas, f.state, true);
         if f.state.cheat_sheet {
             cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);
         }
         return canvas;
     }
-    tool_strip::show(ui.ctx(), canvas, f.state);
+    tool_strip::show(ui.ctx(), canvas, f.state, false);
     if let Some((field, range)) = overlay_legend(f) {
         legend::show(ui.ctx(), canvas, field, range, &f.state.palette);
     }

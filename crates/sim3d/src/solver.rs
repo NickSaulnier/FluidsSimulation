@@ -50,6 +50,10 @@ pub trait Solver3d {
     fn volume(&self) -> Option<Volume<'_>> {
         None
     }
+    /// Problems with the state, read back from the GPU (slow: tests and soak runs).
+    fn check(&self, _gpu: &GpuContext) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Copy)]

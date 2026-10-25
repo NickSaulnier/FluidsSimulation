@@ -1,9 +1,13 @@
-//! Mouse state and the tools it drives: push the fluid, paint or erase walls; in 3D,
-//! orbit and zoom the camera.
+//! Mouse state and the tools it drives: push the fluid, paint or erase walls. In 3D the
+//! left button orbits the camera and the wheel zooms, and the right button pushes the
+//! gas or holds a torch.
 
+use crate::render3d::OrbitCamera;
 use crate::ui::{Tool, UiState};
 use crate::view::View;
+use glam::Vec3;
 use sim::{Emitter, ForceBrush, StepInput, Vec2, World};
+use sim3d::{Brush3d, Burner, StepInput3d};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 /// Cap on the push velocity derived from mouse motion, so a flick can't blow things up.
@@ -19,6 +23,8 @@ pub struct Input {
     stroke: Option<MouseButton>,
     /// Cursor world position at the previous frame of the stroke.
     prev_world: Option<Vec2>,
+    /// The same in 3D: the cursor's point in the volume.
+    prev_volume: Option<Vec3>,
     /// Cursor motion (pixels) during the stroke, and wheel steps, since last taken.
     drag: Vec2,
     wheel: f32,
@@ -72,6 +78,34 @@ impl Input {
     fn end_stroke(&mut self) {
         self.stroke = None;
         self.prev_world = None;
+        self.prev_volume = None;
+    }
+
+    /// Apply this frame's 3D stroke: the right button acts where the cursor meets the
+    /// plane through the volume's centre facing the camera (the left button orbits).
+    /// The faucet tool holds a burner there, a torch pointing along the drag (up while
+    /// still); every other tool pushes. `viewport` is the canvas in physical pixels.
+    pub fn apply_3d(&mut self, camera: &OrbitCamera, viewport: [f32; 4], size: Vec3, ui: &UiState, real_dt: f32) -> StepInput3d {
+        let mut input = StepInput3d::default();
+        let [x, y, w, h] = viewport;
+        let (Some(MouseButton::Right), Some(cursor)) = (self.stroke, self.cursor) else {
+            return input;
+        };
+        if w < 1.0 || h < 1.0 {
+            return input;
+        }
+        let ndc = Vec2::new((cursor.x - x) / w * 2.0 - 1.0, 1.0 - (cursor.y - y) / h * 2.0);
+        let here = camera.point_on_target_plane(ndc, w / h).clamp(Vec3::ZERO, size);
+        let motion = here - self.prev_volume.unwrap_or(here);
+        self.prev_volume = Some(here);
+        if ui.tool == Tool::Faucet {
+            let dir = if motion.length() > 1e-3 { motion.normalize() } else { Vec3::Y };
+            input.burners.push(Burner { pos: here, dir, radius: 0.5 * ui.brush_radius, speed: ui.faucet_speed });
+        } else {
+            let velocity = (motion / real_dt.max(1e-4)).clamp_length_max(MAX_PUSH_SPEED);
+            input.brushes.push(Brush3d { pos: here, radius: ui.brush_radius, velocity, spin: Vec3::ZERO, strength: ui.push_strength });
+        }
+        input
     }
 
     /// Apply this frame's stroke. Wall edits go straight into the scene; a push becomes
@@ -154,6 +188,34 @@ mod tests {
         input.handle(&button(ElementState::Pressed, MouseButton::Left), true);
         input.handle(&moved(260.0, 120.0), false);
         assert_eq!(input.take_orbit().0, None);
+    }
+
+    /// A right drag in 3D pushes along the drag (on screen: rightward is the camera's
+    /// right); with the faucet it holds a burner instead. Left drags don't touch the gas.
+    #[test]
+    fn a_right_drag_in_3d_pushes_or_lights_a_torch() {
+        let size = Vec3::new(1.0, 1.5, 1.0);
+        let camera = OrbitCamera::framing(size);
+        let viewport = [0.0, 0.0, 800.0, 600.0];
+        let mut ui = UiState::default();
+        let mut input = Input::default();
+        input.handle(&moved(400.0, 300.0), false);
+        input.handle(&button(ElementState::Pressed, MouseButton::Left), false);
+        assert!(input.apply_3d(&camera, viewport, size, &ui, 0.016).brushes.is_empty(), "a left drag pushed");
+        input.handle(&button(ElementState::Released, MouseButton::Left), false);
+
+        input.handle(&button(ElementState::Pressed, MouseButton::Right), false);
+        let first = input.apply_3d(&camera, viewport, size, &ui, 0.016);
+        assert!((first.brushes[0].pos - camera.target).length() < 1e-3, "the screen centre is the target");
+        input.handle(&moved(440.0, 300.0), false);
+        let push = input.apply_3d(&camera, viewport, size, &ui, 0.016).brushes[0];
+        assert!(push.velocity.dot(camera.right()) > 0.5, "pushed {} for a rightward drag", push.velocity);
+
+        ui.tool = Tool::Faucet;
+        let torch = input.apply_3d(&camera, viewport, size, &ui, 0.016);
+        assert!(torch.brushes.is_empty());
+        assert_eq!(torch.burners.len(), 1);
+        assert!((torch.burners[0].dir - Vec3::Y).length() < 1e-6, "a still torch points up");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! solver runs on (normally the renderer's own device).
 
 use crate::scene::{PRESETS, Scene3d};
+use glam::Vec3;
 use crate::solver::{SOLVERS, Solver3d, StepInput3d};
 use sim_gpu::GpuContext;
 
@@ -13,13 +14,18 @@ pub struct World3d {
     pub preset_index: usize,
     /// Simulated seconds since the last reset.
     pub time: f64,
+    /// The scene's own gravity (`scene.gravity` may be tilted by the music meanwhile).
+    pub base_gravity: Vec3,
+    /// Counts resets, so watchers can tell a fresh start.
+    pub generation: u64,
 }
 
 impl World3d {
     pub fn new(gpu: GpuContext, solver_index: usize, preset_index: usize) -> Self {
         let scene = (PRESETS[preset_index].build)();
         let solver = (SOLVERS[solver_index].make)(&gpu);
-        let mut world = Self { gpu, scene, solver, solver_index, preset_index, time: 0.0 };
+        let base_gravity = scene.gravity;
+        let mut world = Self { gpu, scene, solver, solver_index, preset_index, time: 0.0, base_gravity, generation: 0 };
         world.reset();
         world
     }
@@ -27,12 +33,20 @@ impl World3d {
     pub fn reset(&mut self) {
         self.solver.reset(&self.gpu, &self.scene);
         self.time = 0.0;
+        self.generation += 1;
     }
 
     pub fn load_preset(&mut self, index: usize) {
         self.preset_index = index;
         self.scene = (PRESETS[index].build)();
+        self.base_gravity = self.scene.gravity;
         self.reset();
+    }
+
+    /// Problems with the solver's state (non-finite values, values out of range),
+    /// read back from the GPU: slow, for tests and soak runs.
+    pub fn check(&self) -> Vec<String> {
+        self.solver.check(&self.gpu)
     }
 
     pub fn switch_solver(&mut self, index: usize) {

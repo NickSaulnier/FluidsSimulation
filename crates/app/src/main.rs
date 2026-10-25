@@ -14,6 +14,7 @@ mod audio;
 mod director;
 mod governor;
 mod looks;
+mod react3d;
 mod soak;
 mod stability;
 mod gpu;
@@ -50,6 +51,8 @@ static SOLVERS: LazyLock<Vec<SolverEntry>> =
 const MAX_FRAME_DT: f32 = 1.0 / 60.0;
 const SINGLE_STEP_DT: f32 = 1.0 / 60.0;
 const VIEW_MARGIN_PX: f32 = 16.0;
+/// In the full-screen visualizer a 3D look is framed this much closer.
+const PRESENTING_ZOOM: f32 = 0.8;
 const TILT_STEP_DEG: f32 = 5.0;
 
 fn main() -> anyhow::Result<()> {
@@ -103,7 +106,8 @@ struct State {
     fullscreen: bool,
     cursor_visible: bool,
     governor: governor::Governor,
-    /// The (solver, scene) the governor is judging.
+    /// The (solver, scene) the governor is judging (3D solvers count down from the
+    /// top, so they never match a 2D one).
     governed: (usize, u64),
     /// The `World::scene_generation` whose gravity the UI last took on.
     gravity_synced: u64,
@@ -262,41 +266,77 @@ impl State {
             self.cursor_visible = cursor;
             self.window.set_cursor_visible(cursor);
         }
-        let scene = (self.world.solver_index, self.world.scene_generation);
+        let (scene, slowness) = match &self.world3d {
+            Some(w) => ((usize::MAX - w.solver_index, w.generation), governor::frame_slowness(real_dt)),
+            None => ((self.world.solver_index, self.world.scene_generation), self.perf.latest().slow_motion),
+        };
         if scene != self.governed {
             self.governed = scene;
             self.governor.reset();
         }
-        if presenting
-            && self.world3d.is_none()
-            && !self.ui.paused
-            && self.governor.update(self.perf.latest().slow_motion, real_dt)
-            && let Some(message) = governor::lower_resolution(&mut self.world)
-        {
-            log::info!("{message}");
-            self.ui.show_notice(message);
+        if presenting && !self.ui.paused && self.governor.update(slowness, real_dt) {
+            let lowered = match &mut self.world3d {
+                Some(w) => governor::lower_resolution(w),
+                None => governor::lower_resolution(&mut self.world),
+            };
+            if let Some(message) = lowered {
+                log::info!("{message}");
+                self.ui.show_notice(message);
+            }
         }
+    }
+
+    /// Switch to look `index`, moving between the 2D and 3D worlds if it needs to.
+    fn apply_look(&mut self, index: usize) {
+        let look = &looks::LOOKS[index];
+        // Put back any parameters the last look's reactions were modulating.
+        self.modulate_params(&[]);
+        match look.solver_3d() {
+            Some(solver) => {
+                self.choose_solver(ui::SolverChoice::ThreeD(solver));
+                if let Some(world) = &mut self.world3d {
+                    looks::apply_3d(look, world, &mut self.ui);
+                    // Frame the new scene, keeping the camera's heading; closer in full
+                    // screen, where there are no controls around it.
+                    let framing = OrbitCamera::framing(world.scene.size);
+                    let distance = if self.ui.presenting { PRESENTING_ZOOM * framing.distance } else { framing.distance };
+                    self.camera = OrbitCamera { yaw: self.camera.yaw, distance, ..framing };
+                }
+            }
+            None => {
+                if self.world3d.is_some() {
+                    self.choose_solver(ui::SolverChoice::TwoD(self.world.solver_index));
+                }
+                looks::apply(look, &mut self.world, &mut self.ui);
+            }
+        }
+        log::info!("look: {}", look.name);
     }
 
     /// Parameter reactions: each key is set to its base value times the reaction's
     /// multiple; the base is remembered when modulation starts and restored when it
     /// stops (or the solver changes).
     fn modulate_params(&mut self, params: &[(String, f32)]) {
-        if self.param_bases.0 != self.world.solver_index {
-            self.param_bases = (self.world.solver_index, Vec::new());
+        // 3D solvers count down from the top, so they never match a 2D one.
+        let (solver, world): (usize, &mut dyn ui::params::Params) = match &mut self.world3d {
+            Some(w) => (usize::MAX - w.solver_index, w),
+            None => (self.world.solver_index, &mut self.world),
+        };
+        if self.param_bases.0 != solver {
+            self.param_bases = (solver, Vec::new());
         }
         let bases = &mut self.param_bases.1;
         bases.retain(|(key, base)| {
             let active = params.iter().any(|(k, _)| k == key);
             if !active {
-                ui::params::float_param(&mut self.world, key, Some(*base));
+                ui::params::float_param(&mut *world, key, Some(*base));
             }
             active
         });
         for (key, multiple) in params {
             let base = match bases.iter().find(|(k, _)| k == key) {
                 Some((_, base)) => *base,
-                None => match ui::params::float_param(&mut self.world, key, None) {
+                None => match ui::params::float_param(&mut *world, key, None) {
                     Some(base) => {
                         bases.push((key.clone(), base));
                         base
@@ -304,7 +344,7 @@ impl State {
                     None => continue,
                 },
             };
-            ui::params::float_param(&mut self.world, key, Some(base * multiple));
+            ui::params::float_param(&mut *world, key, Some(base * multiple));
         }
     }
 
@@ -395,6 +435,11 @@ impl State {
         }
 
         self.sync_presentation(real_dt);
+        // The director: change looks with the music (by itself only in full screen).
+        let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
+        if let Some(look) = self.ui.director.update(self.ui.presenting, self.music.features(), kicked, real_dt) {
+            self.apply_look(look);
+        }
         let (drag, wheel) = self.input.take_orbit();
         if self.world3d.is_some() {
             self.step_3d(drag, wheel, real_dt);
@@ -428,15 +473,8 @@ impl State {
         self.render(frame, &view, egui_out);
     }
 
-    /// The 2D frame: the director, tools, music reactions, then the simulation step.
+    /// The 2D frame: tools, music reactions, then the simulation step.
     fn step_2d(&mut self, now: Instant, real_dt: f32, view: &View) {
-        // The director: change looks with the music (by itself only in full screen).
-        let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
-        if let Some(look) = self.ui.director.update(self.ui.presenting, self.music.features(), kicked, real_dt) {
-            looks::apply(&looks::LOOKS[look], &mut self.world, &mut self.ui);
-            log::info!("look: {}", looks::LOOKS[look].name);
-        }
-
         // Tools and gravity, then the simulation step. A freshly loaded preset brings
         // its own gravity (the wind tunnel has none); after that the sliders own it.
         if self.gravity_synced != self.world.scene_generation {
@@ -461,18 +499,40 @@ impl State {
         self.perf.record(now, report, if self.ui.paused { 0.0 } else { wanted });
     }
 
-    /// The 3D frame: the camera follows the mouse, then the volume steps.
+    /// The 3D frame: the camera (the mouse, and a slow orbit in the visualizer), the
+    /// mouse's and the music's pushes (see `react3d`), then the volume steps.
     fn step_3d(&mut self, drag: Option<glam::Vec2>, wheel: f32, real_dt: f32) {
         let sim_dt = self.sim_dt(real_dt);
-        let Some(world) = &mut self.world3d else { return };
+        let viewport = self.viewport_3d();
+        let Some((size, base_gravity)) = self.world3d.as_ref().map(|w| (w.scene.size, w.base_gravity)) else { return };
         if let Some(d) = drag {
             self.camera.orbit(d.x, d.y);
         }
         if wheel != 0.0 {
-            self.camera.zoom(wheel, OrbitCamera::framing(world.scene.size).distance);
+            self.camera.zoom(wheel, OrbitCamera::framing(size).distance);
         }
+        if self.ui.presenting && !self.ui.paused {
+            // Circle the scene, a little faster while the music is loud.
+            let level = self.music.features().map_or(0.0, |f| f.level);
+            self.camera.yaw += self.ui.orbit * (1.0 + level) * real_dt;
+        }
+        let mut input = self.input.apply_3d(&self.camera, viewport, size, &self.ui, real_dt);
+        let reaction = self.music.react(
+            &self.ui.reactions,
+            react3d::front_view(size),
+            react3d::front_gravity(base_gravity),
+            self.ui.presenting,
+            real_dt,
+        );
+        let (music, gravity) = react3d::lift(&reaction, size, self.camera.right(), base_gravity);
+        input.brushes.extend(music.brushes);
+        input.burners.extend(music.burners);
+        self.modulate_params(&reaction.params);
+        self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
+        let Some(world) = &mut self.world3d else { return };
+        world.scene.gravity = gravity;
         if let Some(dt) = sim_dt {
-            world.advance(dt, &sim3d::StepInput3d::default());
+            world.advance(dt, &input);
         }
     }
 
@@ -528,7 +588,7 @@ impl State {
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
             let size = [self.gpu.config.width, self.gpu.config.height];
             let volume = world.solver.volume();
-            self.renderer3d.render(device, queue, &mut encoder, &target, size, viewport, &self.camera, &world.scene, volume, &self.ui.palette);
+            self.renderer3d.render(device, queue, &mut encoder, &target, size, viewport, &self.camera, &world.scene, volume, &self.palette_now);
             self.field_range = None;
         } else {
             self.render_2d(&mut encoder, &target, view);

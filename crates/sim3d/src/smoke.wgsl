@@ -30,6 +30,10 @@ struct Params {
     burner_fuel: f32,
     burner_smoke: f32,
     flicker: f32,
+    n_brushes: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> P: Params;
@@ -41,7 +45,8 @@ struct Params {
 @group(0) @binding(6) var<storage, read_write> pd: array<vec2<f32>>;
 @group(0) @binding(7) var<storage, read_write> flags: array<u32>;
 // Shapes (2 each: a sphere is (centre, radius), a box (min, -1) then (max, 0)), then
-// vents (min, max), then burners ((pos, radius), (dir, speed)).
+// vents (min, max), then burners ((pos, radius), (dir, speed)), then brushes (3 each:
+// (pos, radius), (velocity, strength), (spin, unused)).
 @group(0) @binding(8) var<storage, read> geom: array<vec4<f32>>;
 // (smoke, temperature, solid, fuel) for drawing: a filterable copy of `scal`, with
 // solid cells marked so the renderer can shadow with them.
@@ -376,6 +381,38 @@ fn confine(@builtin(global_invocation_id) id: vec3<u32>) {
             let f = 0.5 * (confinement(c)[axis] + confinement(c - axis_unit(axis))[axis]);
             vel[comp_index(axis, c)] += P.dt * f;
         }
+    }
+}
+
+fn brush_base(b: u32) -> u32 {
+    return 2u * (P.n_shapes + P.n_vents + P.n_burners) + 3u * b;
+}
+
+/// Brushes (the mouse, music reactions): inside each sphere the velocity is pulled
+/// toward the brush's push plus its spin (spin × offset), fading to the rim, at
+/// `strength` per second, as the 2D brushes do.
+@compute @workgroup_size(8, 8, 4)
+fn brushes(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec3<i32>(id);
+    for (var axis = 0u; axis < 3u; axis++) {
+        if !all(c < comp_dims(axis)) || fixed_face(axis, c).x != 0.0 {
+            continue;
+        }
+        let p = (vec3<f32>(c) + comp_origin(axis)) * P.h;
+        let i = comp_index(axis, c);
+        var u = vel[i];
+        for (var b = 0u; b < P.n_brushes; b++) {
+            let a = geom[brush_base(b)];
+            let d = distance(p, a.xyz);
+            if d < a.w {
+                let push = geom[brush_base(b) + 1u];
+                let spin = geom[brush_base(b) + 2u].xyz;
+                let goal = push.xyz + cross(spin, p - a.xyz);
+                let blend = min(push.w * (1.0 - d / a.w) * P.dt, 1.0);
+                u += (goal[axis] - u) * blend;
+            }
+        }
+        vel[i] = u;
     }
 }
 

@@ -9,7 +9,7 @@
 //!    prescribed faces (zero at walls and solids, the exit velocity at burners); the
 //!    burners' gas in their cells, flickering; Boussinesq buoyancy (heat rises, smoke
 //!    is a little heavy); vorticity confinement (ε·h·N×ω, which spins the small swirls
-//!    back up).
+//!    back up); brushes (the mouse and the music), as in 2D.
 //! 2. **Advect velocity:** semi-Lagrangian with an RK2 backtrace.
 //! 3. **Pressure:** divergence, then warm-started red-black SOR for ∇²φ = ∇·u. Where
 //!    a vent touches the domain's wall the wall is open, with φ = 0 beyond it; other
@@ -52,10 +52,11 @@ use std::time::Duration;
 /// buoyancy and burners accurate.
 const MAX_SUBSTEP: f32 = 1.0 / 60.0;
 /// Geometry capacity (vec4s), and the most of each kind it holds.
-const MAX_GEOM: usize = 256;
+const MAX_GEOM: usize = 512;
 const MAX_SHAPES: usize = 32;
 const MAX_VENTS: usize = 16;
 const MAX_BURNERS: usize = 64;
+const MAX_BRUSHES: usize = 32;
 const WORKGROUP: UVec3 = UVec3::new(8, 8, 4);
 const PHASES: [&str; 6] = ["sources + forces", "advect velocity", "pressure", "project", "advect smoke", "volume copy"];
 const VOLUME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -282,7 +283,7 @@ pub fn grid(size: Vec3, cells_y: u32) -> (UVec3, f32) {
     ((size / h).round().as_uvec3().max(UVec3::splat(2)), h)
 }
 
-/// Must match `Params` in smoke.wgsl (112 bytes).
+/// Must match `Params` in smoke.wgsl (128 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -310,6 +311,8 @@ struct Uniforms {
     burner_fuel: f32,
     burner_smoke: f32,
     flicker: f32,
+    n_brushes: u32,
+    _pad: [u32; 3],
 }
 
 struct Pipelines {
@@ -326,6 +329,7 @@ struct Pipelines {
     export_volume: wgpu::ComputePipeline,
     curl: wgpu::ComputePipeline,
     confine: wgpu::ComputePipeline,
+    brushes: wgpu::ComputePipeline,
 }
 
 /// The grid's GPU buffers.
@@ -464,6 +468,7 @@ impl Smoke3d {
             export_volume: pipeline("export_volume", &[]),
             curl: pipeline("curl", &[]),
             confine: pipeline("confine", &[]),
+            brushes: pipeline("brushes", &[]),
         };
         let buffer = |label: &str, size: u64, usage: wgpu::BufferUsages| {
             device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
@@ -542,9 +547,10 @@ impl Smoke3d {
         self.fields = Some(Fields { n, h, nu, nv, vel, vel_tmp, scal, _scal_hat: scal_hat, scal_tmp, pd, flags, volume, bind_group });
     }
 
-    /// The scene's shapes, vents and burners (plus the frame's extra burners) for the
-    /// shader, and the parameters for a substep of `dt`.
-    fn upload(&self, gpu: &GpuContext, scene: &Scene3d, input: &StepInput3d, dt: f32) {
+    /// The scene's shapes, vents and burners (plus the frame's extra burners and its
+    /// brushes) for the shader, and the parameters for a substep of `dt`. Returns
+    /// whether there are brushes.
+    fn upload(&self, gpu: &GpuContext, scene: &Scene3d, input: &StepInput3d, dt: f32) -> bool {
         let f = self.fields.as_ref().expect("reset ran");
         let mut geom: Vec<[f32; 4]> = Vec::with_capacity(MAX_GEOM);
         let shapes = &scene.solids[..scene.solids.len().min(MAX_SHAPES)];
@@ -561,6 +567,10 @@ impl Smoke3d {
         let burners: Vec<_> = scene.burners.iter().chain(&input.burners).take(MAX_BURNERS).collect();
         for b in &burners {
             geom.extend([b.pos.extend(b.radius).to_array(), b.dir.normalize_or(Vec3::Y).extend(b.speed).to_array()]);
+        }
+        let brushes = &input.brushes[..input.brushes.len().min(MAX_BRUSHES)];
+        for b in brushes {
+            geom.extend([b.pos.extend(b.radius).to_array(), b.velocity.extend(b.strength).to_array(), b.spin.extend(0.0).to_array()]);
         }
         let p = &self.params;
         let uniforms = Uniforms {
@@ -588,11 +598,14 @@ impl Smoke3d {
             burner_fuel: p.burner_fuel,
             burner_smoke: p.burner_smoke,
             flicker: p.flicker,
+            n_brushes: brushes.len() as u32,
+            _pad: [0; 3],
         };
         gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniforms));
         if !geom.is_empty() {
             gpu.queue.write_buffer(&self.geom, 0, bytemuck::cast_slice(&geom));
         }
+        !brushes.is_empty()
     }
 
     /// Record one compute pass (timed as `phase` when timings are on).
@@ -608,7 +621,7 @@ impl Smoke3d {
         body(&mut pass, &self.pipelines, f);
     }
 
-    fn record_sources(&self, encoder: &mut wgpu::CommandEncoder, forces: bool) {
+    fn record_sources(&self, encoder: &mut wgpu::CommandEncoder, forces: bool, brushes: bool) {
         let confine = forces && self.params.vorticity > 0.0;
         self.pass(encoder, 0, |pass, p, f| {
             dispatch(pass, &p.classify, f.cell_groups());
@@ -619,6 +632,9 @@ impl Smoke3d {
             if confine {
                 dispatch(pass, &p.curl, f.cell_groups());
                 dispatch(pass, &p.confine, f.face_groups());
+            }
+            if brushes {
+                dispatch(pass, &p.brushes, f.face_groups());
             }
         });
     }
@@ -635,9 +651,9 @@ impl Smoke3d {
         self.pass(encoder, 3, |pass, p, f| dispatch(pass, &p.project, f.face_groups()));
     }
 
-    fn record_substep(&self, encoder: &mut wgpu::CommandEncoder) {
+    fn record_substep(&self, encoder: &mut wgpu::CommandEncoder, brushes: bool) {
         let f = self.fields.as_ref().expect("reset ran");
-        self.record_sources(encoder, true);
+        self.record_sources(encoder, true, brushes);
         self.pass(encoder, 1, |pass, p, f| dispatch(pass, &p.advect_velocity, f.face_groups()));
         encoder.copy_buffer_to_buffer(&f.vel_tmp, 0, &f.vel, 0, u64::from(f.vel_len()) * 4);
         self.record_projection(encoder);
@@ -682,7 +698,7 @@ impl Smoke3d {
     pub fn prepare(&mut self, gpu: &GpuContext, scene: &Scene3d, input: &StepInput3d) {
         self.upload(gpu, scene, input, MAX_SUBSTEP);
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
-        self.record_sources(&mut encoder, false);
+        self.record_sources(&mut encoder, false, false);
         gpu.queue.submit([encoder.finish()]);
     }
 
@@ -779,10 +795,10 @@ impl Solver3d for Smoke3d {
             return;
         }
         let substeps = (dt / MAX_SUBSTEP).ceil().max(1.0) as u32;
-        self.upload(gpu, scene, input, dt / substeps as f32);
+        let brushes = self.upload(gpu, scene, input, dt / substeps as f32);
         self.time += dt;
         for _ in 0..substeps {
-            self.record_substep(encoder);
+            self.record_substep(encoder, brushes);
         }
         self.pass(encoder, 5, |pass, p, f| dispatch(pass, &p.export_volume, f.cell_groups()));
         self.collect_timings(encoder);
@@ -801,6 +817,32 @@ impl Solver3d for Smoke3d {
 
     fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
         self.params.visit(v);
+    }
+
+    /// Every value finite; smoke within 0..1, temperature and fuel not negative, and no
+    /// gas faster than 50 m/s (a blow-up, not a flame).
+    fn check(&self, gpu: &GpuContext) -> Vec<String> {
+        if self.fields.is_none() {
+            return Vec::new();
+        }
+        let mut problems = Vec::new();
+        let scal = self.read_scalars(gpu);
+        if let Some(bad) = scal.iter().find(|c| !c.iter().all(|v| v.is_finite())) {
+            problems.push(format!("non-finite gas {bad:?}"));
+        }
+        let smoke = scal.iter().map(|c| c[0]).fold(0.0f32, f32::max);
+        if smoke > 1.0 + 1e-3 {
+            problems.push(format!("smoke {smoke} above 1"));
+        }
+        if scal.iter().any(|c| c[1] < -1e-4 || c[2] < -1e-4) {
+            problems.push("negative temperature or fuel".into());
+        }
+        let vel = self.read_velocity(gpu);
+        let fastest = vel.iter().map(|v| v.abs()).fold(0.0f32, |a, b| if b.is_finite() { a.max(b) } else { f32::INFINITY });
+        if fastest > 50.0 {
+            problems.push(format!("gas at {fastest} m/s"));
+        }
+        problems
     }
 
     fn volume(&self) -> Option<Volume<'_>> {

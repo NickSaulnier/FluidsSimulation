@@ -1,6 +1,6 @@
 # 3D Simulation Plan
 
-Status: **approved; phases A to D done.** Decisions (§8), taken as recommended
+Status: **approved; phases A to E done.** Decisions (§8), taken as recommended
 (2026-10-24):
 - 128³ with automatic step-down;
 - a separate `World3d` with an app mode switch;
@@ -332,6 +332,53 @@ A–D get 3D fire on screen; E makes it part of the visualizer.
   - Once, a full test run stalled (the test process spinning while it waited on the
     GPU). It didn't happen again in seven runs, and every test passes alone in under
     half a second, so it looks like a transient GPU hang; worth watching.
+- **Phase E (done):** 3D in the visualizer.
+  - Brushes in the solver: a pass after confinement pulls the velocity inside each
+    sphere toward its push plus spin × offset, fading to the rim, at its strength per
+    second (the 2D brushes' rule). They ride in the geometry buffer.
+  - Mouse in 3D: left drag orbits, the wheel zooms, and right drag acts where the
+    cursor meets the plane through the volume's centre facing the camera. The tool
+    strip shows two 3D tools: Push, and Torch (the faucet), which holds a burner at
+    the cursor pointing along the drag, up while still. (Changed from §5: the right
+    button carries the tool, since the left one orbits; "puff" isn't a separate tool,
+    a quick torch does it.)
+  - Reactions (`app/src/react3d.rs`): the 2D engine runs unchanged on a front view of
+    the volume, and its output is lifted along the camera's horizontal right.
+    Splashes and gusts push the same way on screen; vortices and the idle drift spin
+    about the axis toward the camera, so they read as swirls; jets become burner
+    bursts on the floor (flame puffs, smoke puffs); slosh tilts gravity across the
+    screen and breathe scales it; parameter reactions work by key on the 3D solver;
+    hue and flash tint the smoke. As the camera orbits, the lifted pushes turn with
+    it. (Changed from §5's table: vortices face the camera rather than a random
+    vertical axis, and gusts turn with the orbit rather than on their own.)
+  - Looks: Bonfire 3D (fire on Campfire 3D; kicks puff flames, the bass feeds the
+    burner, any music), Inferno (the Torch; kick jets, snare swirls, bass leans the
+    flame, loud music) and Smoke dance (smoke round the twin burners' ball, palette
+    tinted, quiet music). A look naming a 3D solver is a 3D look; it carries an orbit
+    speed.
+  - Director: it now runs before either world steps, and `apply_look` moves between
+    the 2D and 3D worlds as a look needs, so the rotation mixes them. In full screen
+    the camera circles at the look's speed, faster when the music is loud, and a 3D
+    look is framed 20% closer.
+  - Governor: a 3D step never falls behind in simulated time (it's queued on the
+    GPU), so in 3D it judges the frames' slowness instead (anything below 50 fps
+    counts) and lowers `cells_y` in the same 0.8 steps. The parameter helpers now take
+    either world.
+  - Soak: 3D looks run on a headless GPU world with the reactions lifted as in the
+    app, checked every 10 s (finite values, smoke within 0..1, no negative heat or
+    fuel, nothing faster than 50 m/s; `World3d::check`). Reading 1.8M cells back every
+    half second would dominate the run.
+  - Tests: brushes push and spin the gas; the health check passes a running fire and
+    catches a NaN; screen points land on the camera's target plane; a right drag
+    pushes along the drag on screen, or with the torch holds an upright burner; the
+    lift (pushes follow the screen, swirls face the camera, jets become floor burners,
+    slosh tilts across the screen); 3D looks name real scenes and parameters (with a
+    GPU); 3D frame slowness.
+  - Checked in the app, full screen at 4K and over 200 fps (with the soak sharing the
+    GPU): stepping through the looks crosses from the 2D Mercury rain to Bonfire 3D,
+    then Inferno and Smoke dance, with the camera circling. Not checked here: music
+    driving the 3D looks (no audio source in this session), and the right-drag tools
+    (synthetic drags are cut short), which unit tests cover.
 
 ## 8. Decisions for you
 

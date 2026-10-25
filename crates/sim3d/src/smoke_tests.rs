@@ -140,6 +140,42 @@ fn smoke_is_conserved_in_a_closed_box() {
     assert!((after / before - 1.0).abs() < 0.03, "smoke went from {before} to {after}");
 }
 
+/// A brush pulls the gas toward its push and its spin: still gas starts moving the
+/// brush's way at its centre, and turns around its axis off centre.
+#[test]
+fn brushes_push_and_spin_the_gas() {
+    let Some(gpu) = gpu() else { return };
+    let scene = Scene3d::empty_box(Vec3::new(1.0, 1.5, 1.0));
+    let mut s = solver(&gpu, &scene, SmokeParams { vorticity: 0.0, ..at(32) });
+    let centre = Vec3::new(0.5, 0.75, 0.5);
+    let input = StepInput3d {
+        brushes: vec![crate::Brush3d { pos: centre, radius: 0.25, velocity: Vec3::new(1.0, 0.0, 0.0), spin: Vec3::new(0.0, 4.0, 0.0), strength: 20.0 }],
+        ..StepInput3d::default()
+    };
+    for _ in 0..6 {
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        s.step(&gpu, &mut encoder, 1.0 / 60.0, &scene, &input);
+        gpu.queue.submit([encoder.finish()]);
+    }
+    let (n, h) = s.dims().unwrap();
+    let vel = s.read_velocity(&gpu);
+    let nu = ((n.x + 1) * n.y * n.z) as usize;
+    let nv = (n.x * (n.y + 1) * n.z) as usize;
+    let cell = |p: Vec3| (p / h).as_uvec3();
+    let u_at = |p: Vec3| {
+        let c = cell(p);
+        vel[(c.x + (n.x + 1) * (c.y + n.y * c.z)) as usize]
+    };
+    let w_at = |p: Vec3| {
+        let c = cell(p);
+        vel[nu + nv + (c.x + n.x * (c.y + n.y * c.z)) as usize]
+    };
+    assert!(u_at(centre) > 0.2, "no push at the centre: u = {}", u_at(centre));
+    // Spinning about +y: at +x of the axis the gas turns toward -z, at -x toward +z.
+    let (east, west) = (w_at(centre + Vec3::new(0.1, 0.0, 0.0)), w_at(centre - Vec3::new(0.1, 0.0, 0.0)));
+    assert!(east < -0.05 && west > 0.05, "no spin: w {east} east of the axis, {west} west");
+}
+
 /// Vorticity confinement feeds the swirls: a rising blob ends up with more of them.
 #[test]
 fn confinement_adds_swirl() {
@@ -153,6 +189,20 @@ fn confinement_adds_swirl() {
     };
     let (plain, confined) = (swirl(0.0), swirl(1.0));
     assert!(confined > 1.05 * plain, "kinetic energy {plain} without confinement, {confined} with");
+}
+
+/// The health check passes on a running fire and catches a corrupted value.
+#[test]
+fn the_check_finds_bad_values() {
+    let Some(gpu) = gpu() else { return };
+    let scene = scene::campfire();
+    let mut s = solver(&gpu, &scene, SmokeParams { cells_y: 32, ..SmokeParams::fire() });
+    run(&mut s, &gpu, &scene, 1.0);
+    assert_eq!(s.check(&gpu), Vec::<String>::new());
+    let mut scal = s.read_scalars(&gpu);
+    scal[100][1] = f32::NAN;
+    s.write_scalars(&gpu, &scal);
+    assert!(!s.check(&gpu).is_empty(), "missed a NaN");
 }
 
 /// A fire burner keeps a flame going: hot gas above the visible threshold, soot from

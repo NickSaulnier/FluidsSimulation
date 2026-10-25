@@ -10,9 +10,36 @@ use super::widgets::{self, param_text};
 use egui::RichText;
 use egui_phosphor::regular as icon;
 
+/// A world whose solver's parameters can be visited (and which can start over, to
+/// apply restart-only ones): the 2D one or the 3D one.
+pub trait Params {
+    fn visit_params(&mut self, v: &mut dyn sim::ParamVisitor);
+    fn reset(&mut self);
+}
+
+impl Params for sim::World {
+    fn visit_params(&mut self, v: &mut dyn sim::ParamVisitor) {
+        self.solver.visit_params(v);
+    }
+
+    fn reset(&mut self) {
+        sim::World::reset(self);
+    }
+}
+
+impl Params for sim3d::World3d {
+    fn visit_params(&mut self, v: &mut dyn sim::ParamVisitor) {
+        self.solver.visit_params(v);
+    }
+
+    fn reset(&mut self) {
+        sim3d::World3d::reset(self);
+    }
+}
+
 /// The current solver's float parameters that can change live (no restart):
 /// (key, label).
-pub fn live_float_params(world: &mut sim::World) -> Vec<(&'static str, &'static str)> {
+pub fn live_float_params(world: &mut (impl Params + ?Sized)) -> Vec<(&'static str, &'static str)> {
     struct List(Vec<(&'static str, &'static str)>);
     impl sim::ParamVisitor for List {
         fn float(&mut self, s: &sim::FloatSpec, _: &mut f32) {
@@ -24,13 +51,13 @@ pub fn live_float_params(world: &mut sim::World) -> Vec<(&'static str, &'static 
         fn toggle(&mut self, _: &sim::ToggleSpec, _: &mut bool) {}
     }
     let mut list = List(Vec::new());
-    world.solver.visit_params(&mut list);
+    world.visit_params(&mut list);
     list.0
 }
 
 /// Read a float parameter by key, or set it (clamped to its range) if `set` is given.
 /// Returns the value before any change.
-pub fn float_param(world: &mut sim::World, key: &str, set: Option<f32>) -> Option<f32> {
+pub fn float_param(world: &mut (impl Params + ?Sized), key: &str, set: Option<f32>) -> Option<f32> {
     struct Access<'k> {
         key: &'k str,
         set: Option<f32>,
@@ -49,23 +76,23 @@ pub fn float_param(world: &mut sim::World, key: &str, set: Option<f32>) -> Optio
         fn toggle(&mut self, _: &sim::ToggleSpec, _: &mut bool) {}
     }
     let mut access = Access { key, set, found: None };
-    world.solver.visit_params(&mut access);
+    world.visit_params(&mut access);
     access.found
 }
 
 /// Read an int parameter by key, or set it (clamped to its range) if `set` is given.
 /// Returns the value before any change.
-pub fn int_param(world: &mut sim::World, key: &str, set: Option<u32>) -> Option<u32> {
+pub fn int_param(world: &mut (impl Params + ?Sized), key: &str, set: Option<u32>) -> Option<u32> {
     int_access(world, key, set).map(|(v, _)| v)
 }
 
 /// An int parameter's value and the bottom of its range.
-pub fn int_param_range(world: &mut sim::World, key: &str) -> Option<(u32, u32)> {
+pub fn int_param_range(world: &mut (impl Params + ?Sized), key: &str) -> Option<(u32, u32)> {
     int_access(world, key, None)
 }
 
 /// A float parameter's value and the top of its range.
-pub fn float_param_range(world: &mut sim::World, key: &str) -> Option<(f32, f32)> {
+pub fn float_param_range(world: &mut (impl Params + ?Sized), key: &str) -> Option<(f32, f32)> {
     struct Range<'k>(&'k str, Option<(f32, f32)>);
     impl sim::ParamVisitor for Range<'_> {
         fn float(&mut self, s: &sim::FloatSpec, v: &mut f32) {
@@ -77,11 +104,11 @@ pub fn float_param_range(world: &mut sim::World, key: &str) -> Option<(f32, f32)
         fn toggle(&mut self, _: &sim::ToggleSpec, _: &mut bool) {}
     }
     let mut range = Range(key, None);
-    world.solver.visit_params(&mut range);
+    world.visit_params(&mut range);
     range.1
 }
 
-fn int_access(world: &mut sim::World, key: &str, set: Option<u32>) -> Option<(u32, u32)> {
+fn int_access(world: &mut (impl Params + ?Sized), key: &str, set: Option<u32>) -> Option<(u32, u32)> {
     struct Access<'k> {
         key: &'k str,
         set: Option<u32>,
@@ -100,7 +127,7 @@ fn int_access(world: &mut sim::World, key: &str, set: Option<u32>) -> Option<(u3
         fn toggle(&mut self, _: &sim::ToggleSpec, _: &mut bool) {}
     }
     let mut access = Access { key, set, found: None };
-    world.solver.visit_params(&mut access);
+    world.visit_params(&mut access);
     access.found
 }
 

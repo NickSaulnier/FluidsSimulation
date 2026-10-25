@@ -1,7 +1,7 @@
 //! The 3D orbit camera: yaw and pitch around a target, at a distance.
 
 use glam::camera::rh::{proj::directx, view};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 
 /// Radians of turn per pixel of drag.
 const ORBIT_PER_PX: f32 = 0.008;
@@ -44,6 +44,22 @@ impl OrbitCamera {
         self.pitch = (self.pitch + dy * ORBIT_PER_PX).clamp(-MAX_PITCH, MAX_PITCH);
     }
 
+    /// The horizontal direction pointing right on screen.
+    pub fn right(&self) -> Vec3 {
+        (self.target - self.eye()).cross(Vec3::Y).normalize_or(Vec3::X)
+    }
+
+    /// The point under screen position `ndc` (-1..1, y up) on the plane through the
+    /// target facing the camera: where a drag on screen acts in the volume.
+    pub fn point_on_target_plane(&self, ndc: Vec2, aspect: f32) -> Vec3 {
+        let eye = self.eye();
+        let far = self.view_proj(aspect).inverse().project_point3(ndc.extend(1.0));
+        let dir = (far - eye).normalize();
+        let normal = (self.target - eye).normalize();
+        let t = (self.target - eye).dot(normal) / dir.dot(normal).max(1e-4);
+        eye + dir * t
+    }
+
     /// Zoom by wheel `steps` (positive: closer).
     pub fn zoom(&mut self, steps: f32, framing_distance: f32) {
         self.distance = (self.distance * ZOOM_STEP.powf(steps)).clamp(0.2 * framing_distance, 4.0 * framing_distance);
@@ -57,6 +73,18 @@ mod tests {
     fn clip(m: Mat4, p: Vec3) -> Vec3 {
         let c = m * p.extend(1.0);
         c.truncate() / c.w
+    }
+
+    /// The screen's centre is the target; a point right of centre is to the camera's
+    /// right, on the plane through the target.
+    #[test]
+    fn screen_points_land_on_the_target_plane() {
+        let cam = OrbitCamera::framing(Vec3::new(1.0, 1.5, 1.0));
+        assert!(cam.point_on_target_plane(Vec2::ZERO, 1.5).distance(cam.target) < 1e-4);
+        let p = cam.point_on_target_plane(Vec2::new(0.5, 0.0), 1.5);
+        assert!((p - cam.target).dot(cam.right()) > 0.1, "{p}");
+        assert!((p - cam.target).dot(cam.target - cam.eye()).abs() < 1e-3, "off the plane");
+        assert!(cam.right().y.abs() < 1e-6);
     }
 
     #[test]

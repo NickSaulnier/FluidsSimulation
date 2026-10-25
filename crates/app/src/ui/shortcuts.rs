@@ -88,6 +88,7 @@ pub const MOUSE: &[(&str, &str)] = &[
     ("Left drag", "use the selected tool"),
     ("Right drag", "push, whatever the tool"),
     ("Left drag in 3D", "orbit the camera"),
+    ("Right drag in 3D", "push the gas, or hold a torch"),
     ("Wheel in 3D", "zoom"),
     ("Drop a file", "load music"),
     ("Esc", "close this sheet, leave full screen, or quit"),

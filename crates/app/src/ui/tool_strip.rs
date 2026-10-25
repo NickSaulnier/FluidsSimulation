@@ -23,8 +23,19 @@ pub const TOOLS: [(Tool, &str, &str); 4] = [
     (Tool::EraseWall, icon::ERASER, "Erase: drag to erase walls"),
     (Tool::Faucet, icon::DROP, "Faucet: hold to pour, along the drag direction"),
 ];
+/// In 3D the left button orbits, so the tools are on the right button; walls are
+/// shapes in the scene, not painted.
+pub const TOOLS_3D: [(Tool, &str, &str); 2] = [
+    (Tool::Push, icon::HAND, "Push: right drag to push the gas (left drag orbits)"),
+    (Tool::Faucet, icon::FIRE, "Torch: right drag to hold a burner, pointing along the drag"),
+];
 
-pub fn show(ctx: &egui::Context, canvas: egui::Rect, s: &mut UiState) {
+/// The strip, with the 3D tools when `in_3d`.
+pub fn show(ctx: &egui::Context, canvas: egui::Rect, s: &mut UiState, in_3d: bool) {
+    if in_3d && matches!(s.tool, Tool::PaintWall | Tool::EraseWall) {
+        s.tool = Tool::Push;
+    }
+    let tools: &[(Tool, &str, &str)] = if in_3d { &TOOLS_3D } else { &TOOLS };
     egui::Area::new(egui::Id::new("tool_strip"))
         .order(egui::Order::Middle)
         .pivot(Align2::LEFT_TOP)
@@ -38,7 +49,7 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, s: &mut UiState) {
                     ui.set_width(WIDTH);
                     ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        for (tool, glyph, help) in TOOLS {
+                        for &(tool, glyph, help) in tools {
                             let button = egui::Button::selectable(s.tool == tool, RichText::new(glyph).size(20.0))
                                 .min_size(vec2(36.0, 34.0));
                             if ui.add(button).on_hover_text(tip(help, Action::SelectTool(tool))).clicked() {
@@ -55,7 +66,8 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, s: &mut UiState) {
                                     slider(ui, "force", &mut s.push_strength, 2.0..=80.0, true, "Push strength", 0);
                                 }
                                 Tool::Faucet => {
-                                    slider(ui, "flow", &mut s.faucet_speed, 0.2..=6.0, false, "Faucet speed, m/s", 1);
+                                    let help = if in_3d { "Torch speed, m/s" } else { "Faucet speed, m/s" };
+                                    slider(ui, "flow", &mut s.faucet_speed, 0.2..=6.0, false, help, 1);
                                 }
                                 Tool::PaintWall | Tool::EraseWall => {}
                             }

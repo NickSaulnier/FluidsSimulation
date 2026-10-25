@@ -2,9 +2,11 @@
 //! motion), lower the solver's resolution a step rather than let it drift out of sync
 //! with the music. Only in presentation mode: in the toy, slow motion is a fair trade
 //! for detail, and the user can see and change the settings.
+//!
+//! A 3D step never falls behind in simulated time (it's queued on the GPU); what drops
+//! is the frame rate, so in 3D the frames' own slowness is judged instead.
 
-use crate::ui::params;
-use sim::World;
+use crate::ui::params::{self, Params};
 
 /// Slow motion above this fraction counts as falling behind...
 const SLOW: f32 = 0.1;
@@ -16,6 +18,14 @@ const COOLDOWN_S: f32 = 10.0;
 /// Each step: grids get this much coarser, particles this much further apart.
 const GRID_STEP: f32 = 0.8;
 const SPACING_STEP: f32 = 1.25;
+/// 3D frames slower than this (50 fps) count toward falling behind.
+const SLOWEST_3D_FRAME_S: f32 = 1.0 / 50.0;
+
+/// How far a 3D frame of `real_dt` seconds falls short, as a slow-motion fraction (0
+/// at 50 fps and better, 0.5 at 25 fps).
+pub fn frame_slowness(real_dt: f32) -> f32 {
+    (1.0 - SLOWEST_3D_FRAME_S / real_dt.max(1e-6)).max(0.0)
+}
 
 #[derive(Default)]
 pub struct Governor {
@@ -45,7 +55,7 @@ impl Governor {
 /// Lower the current solver's resolution one step and reset the scene. Returns what
 /// changed, or `None` if it's already as coarse as it goes (or has no resolution
 /// setting).
-pub fn lower_resolution(world: &mut World) -> Option<String> {
+pub fn lower_resolution(world: &mut (impl Params + ?Sized)) -> Option<String> {
     if let Some((cells, min)) = params::int_param_range(world, "cells_y") {
         let lower = ((cells as f32 * GRID_STEP).round() as u32).max(min);
         if lower < cells {
@@ -97,8 +107,14 @@ mod tests {
     }
 
     #[test]
+    fn slow_3d_frames_count_as_falling_behind() {
+        assert_eq!(frame_slowness(1.0 / 60.0), 0.0);
+        assert!((frame_slowness(1.0 / 25.0) - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
     fn lowers_a_grid_solver_and_stops_at_the_minimum() {
-        let mut world = World::new(0, 0); // FLIP: cells_y 100, minimum 16
+        let mut world = sim::World::new(0, 0); // FLIP: cells_y 100, minimum 16
         let first = lower_resolution(&mut world).expect("should lower");
         assert!(first.contains("80"), "{first}");
         let mut steps = 1;
