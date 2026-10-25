@@ -4,6 +4,20 @@ use super::health::{self, Health};
 use super::{Frame, Tab, theme};
 
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
+    if let Some(w) = f.world3d.as_deref() {
+        ui.horizontal(|ui| {
+            ui.label(format!("{:.0} fps", f.perf.fps));
+            ui.weak("·");
+            ui.label(format!("{} 3D", egui_phosphor::regular::CUBE));
+            ui.weak("·");
+            ui.label(format!("t = {:.1} s", w.time));
+            if f.state.paused {
+                ui.weak("·");
+                ui.label("paused");
+            }
+        });
+        return;
+    }
     let (perf, world) = (f.perf, &*f.world);
     let stats = world.solver.stats();
     ui.horizontal(|ui| {

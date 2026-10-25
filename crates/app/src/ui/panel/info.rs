@@ -8,17 +8,20 @@ use crate::ui::shortcuts::{Action, MOUSE, SHORTCUTS, tip};
 use crate::ui::widgets::{self, row};
 
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
-    let (world, perf) = (&*f.world, f.perf);
-    let stats = world.solver.stats();
+    let perf = f.perf;
+    let (name, stats, time) = match f.world3d.as_deref() {
+        Some(w) => (w.solver.name(), w.solver.stats(), w.time),
+        None => (f.world.solver.name(), f.world.solver.stats(), f.world.time),
+    };
     widgets::group(ui, "Performance", |ui| {
         row(ui, "Frame rate", "", |ui| ui.label(format!("{:.0} fps", perf.fps)));
         row(ui, "Sim cost", "", |ui| ui.label(format!("{:.1} ms, {:.1} substeps", perf.sim_ms, perf.substeps)));
         row(ui, "Particles", "", |ui| ui.label(stats.particles.to_string()));
         let slow = if perf.slow_motion > 0.05 { format!("  ({:.0}% speed)", 100.0 * (1.0 - perf.slow_motion)) } else { String::new() };
-        row(ui, "Sim time", "", |ui| ui.label(format!("{:.1} s{slow}", world.time)));
+        row(ui, "Sim time", "", |ui| ui.label(format!("{time:.1} s{slow}")));
     });
 
-    widgets::group(ui, &format!("{} metrics", world.solver.name()), |ui| {
+    widgets::group(ui, &format!("{name} metrics"), |ui| {
         for m in &stats.metrics {
             let help = match m.tolerance {
                 Some(t) => format!("{}: limit {t}", m.name),

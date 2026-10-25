@@ -19,6 +19,7 @@ mod stability;
 mod gpu;
 mod input;
 mod render;
+mod render3d;
 mod ui;
 mod view;
 
@@ -26,6 +27,7 @@ use audio::Music;
 use gpu::Gpu;
 use input::Input;
 use render::Renderer;
+use render3d::{OrbitCamera, Renderer3d};
 use sim::{PRESETS, SolverEntry, World};
 use std::sync::LazyLock;
 use std::sync::Arc;
@@ -81,6 +83,10 @@ struct State {
     /// Textures egui asked to free; released next frame, after this frame has drawn.
     egui_pending_free: Vec<egui::TextureId>,
     world: World,
+    /// The 3D world, while a 3D solver is picked; `world` waits underneath meanwhile.
+    world3d: Option<sim3d::World3d>,
+    camera: OrbitCamera,
+    renderer3d: Renderer3d,
     ui: UiState,
     music: Music,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
@@ -175,6 +181,7 @@ impl State {
         let window = Arc::new(event_loop.create_window(attrs)?);
         let gpu = pollster::block_on(Gpu::new(window.clone(), event_loop.owned_display_handle()))?;
         let renderer = Renderer::new(&gpu.device, gpu.config.format);
+        let renderer3d = Renderer3d::new(&gpu.device, gpu.config.format);
 
         let egui_ctx = egui::Context::default();
         ui::theme::apply(&egui_ctx);
@@ -210,6 +217,9 @@ impl State {
             egui_renderer,
             egui_pending_free: Vec::new(),
             world,
+            world3d: None,
+            camera: OrbitCamera::framing(glam::Vec3::ONE),
+            renderer3d,
             ui: {
                 let mut ui = UiState::default();
                 if let Some(saved) = ui::settings::load() {
@@ -258,6 +268,7 @@ impl State {
             self.governor.reset();
         }
         if presenting
+            && self.world3d.is_none()
             && !self.ui.paused
             && self.governor.update(self.perf.latest().slow_motion, real_dt)
             && let Some(message) = governor::lower_resolution(&mut self.world)
@@ -305,10 +316,21 @@ impl State {
         match action {
             Action::TogglePause => ui.paused = !ui.paused,
             Action::Step => ui.step_once = true,
-            Action::Reset => self.world.reset(),
-            Action::NextPreset => self.world.load_preset((self.world.preset_index + 1) % PRESETS.len()),
+            Action::Reset => match &mut self.world3d {
+                Some(w) => w.reset(),
+                None => self.world.reset(),
+            },
+            Action::NextPreset => match &mut self.world3d {
+                Some(w) => w.load_preset((w.preset_index + 1) % sim3d::PRESETS.len()),
+                None => self.world.load_preset((self.world.preset_index + 1) % PRESETS.len()),
+            },
             Action::NextSolver => {
-                self.world.switch_solver((self.world.solver_index + 1) % self.world.solvers.len(), ui.keep_particles);
+                // Through the 2D solvers, then the 3D ones, and round again.
+                let n2 = self.world.solvers.len();
+                let index = self.world3d.as_ref().map_or(self.world.solver_index, |w| n2 + w.solver_index);
+                let next = (index + 1) % (n2 + sim3d::SOLVERS.len());
+                let choice = if next < n2 { ui::SolverChoice::TwoD(next) } else { ui::SolverChoice::ThreeD(next - n2) };
+                self.choose_solver(choice);
             }
             Action::SelectTool(tool) => ui.tool = tool,
             Action::BrushSmaller => ui.scale_brush(1.0 / ui::BRUSH_STEP),
@@ -352,8 +374,14 @@ impl State {
         let cursor = self.input.cursor().map(|pos| ui::Cursor { pos, px_per_metre: view.px_per_metre });
         let perf = self.perf.latest();
         self.music.update();
-        let mut frame =
-            ui::Frame { world: &mut self.world, state: &mut self.ui, music: &mut self.music, perf: &perf, field_range: self.field_range };
+        let mut frame = ui::Frame {
+            world: &mut self.world,
+            world3d: self.world3d.as_mut(),
+            state: &mut self.ui,
+            music: &mut self.music,
+            perf: &perf,
+            field_range: self.field_range,
+        };
         let mut canvas = None;
         let mut egui_out = self.egui_ctx.run_ui(raw_input, |ui| canvas = Some(ui::layout(ui, &mut frame, cursor)));
         // Fit this frame's input and drawing to the scene area just laid out (the panel
@@ -362,43 +390,18 @@ impl State {
         let view = self.view();
         self.egui_winit.handle_platform_output(&self.window, std::mem::take(&mut egui_out.platform_output));
         self.apply_egui_textures(std::mem::take(&mut egui_out.textures_delta));
+        if let Some(choice) = self.ui.solver_request.take() {
+            self.choose_solver(choice);
+        }
 
         self.sync_presentation(real_dt);
-        // The director: change looks with the music (by itself only in full screen).
-        let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
-        if let Some(look) = self.ui.director.update(self.ui.presenting, self.music.features(), kicked, real_dt) {
-            looks::apply(&looks::LOOKS[look], &mut self.world, &mut self.ui);
-            log::info!("look: {}", looks::LOOKS[look].name);
-        }
-
-        // Tools and gravity, then the simulation step. A freshly loaded preset brings
-        // its own gravity (the wind tunnel has none); after that the sliders own it.
-        if self.gravity_synced != self.world.scene_generation {
-            self.gravity_synced = self.world.scene_generation;
-            self.ui.set_gravity(self.world.scene.gravity);
-        }
-        let mut step_input = self.input.apply(&view, &self.ui, &mut self.world, real_dt);
-        // Music reactions: forces, gravity, parameters, and the colours drawn this frame.
-        let mut reaction =
-            self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), self.ui.presenting, real_dt);
-        if !stability::room_for_fluid(&self.world) {
-            reaction.emitters.clear(); // jets pause while particles are over budget
-        }
-        self.world.scene.gravity = reaction.gravity;
-        step_input.brushes.extend(reaction.brushes);
-        step_input.emitters.extend(reaction.emitters);
-        self.modulate_params(&reaction.params);
-        self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
-        let wanted = real_dt * self.ui.speed;
-        let sim_dt = if !self.ui.paused {
-            Some(wanted.min(MAX_FRAME_DT))
-        } else if std::mem::take(&mut self.ui.step_once) {
-            Some(SINGLE_STEP_DT)
+        let (drag, wheel) = self.input.take_orbit();
+        if self.world3d.is_some() {
+            self.step_3d(drag, wheel, real_dt);
+            self.perf.record(now, None, 0.0);
         } else {
-            None
-        };
-        let report = sim_dt.map(|dt| self.world.advance(dt, &step_input));
-        self.perf.record(now, report, if self.ui.paused { 0.0 } else { wanted });
+            self.step_2d(now, real_dt, &view);
+        }
         self.update_title();
 
         let frame = match self.gpu.surface.get_current_texture() {
@@ -425,36 +428,110 @@ impl State {
         self.render(frame, &view, egui_out);
     }
 
+    /// The 2D frame: the director, tools, music reactions, then the simulation step.
+    fn step_2d(&mut self, now: Instant, real_dt: f32, view: &View) {
+        // The director: change looks with the music (by itself only in full screen).
+        let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
+        if let Some(look) = self.ui.director.update(self.ui.presenting, self.music.features(), kicked, real_dt) {
+            looks::apply(&looks::LOOKS[look], &mut self.world, &mut self.ui);
+            log::info!("look: {}", looks::LOOKS[look].name);
+        }
+
+        // Tools and gravity, then the simulation step. A freshly loaded preset brings
+        // its own gravity (the wind tunnel has none); after that the sliders own it.
+        if self.gravity_synced != self.world.scene_generation {
+            self.gravity_synced = self.world.scene_generation;
+            self.ui.set_gravity(self.world.scene.gravity);
+        }
+        let mut step_input = self.input.apply(view, &self.ui, &mut self.world, real_dt);
+        // Music reactions: forces, gravity, parameters, and the colours drawn this frame.
+        let mut reaction =
+            self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), self.ui.presenting, real_dt);
+        if !stability::room_for_fluid(&self.world) {
+            reaction.emitters.clear(); // jets pause while particles are over budget
+        }
+        self.world.scene.gravity = reaction.gravity;
+        step_input.brushes.extend(reaction.brushes);
+        step_input.emitters.extend(reaction.emitters);
+        self.modulate_params(&reaction.params);
+        self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
+        let wanted = real_dt * self.ui.speed;
+        let sim_dt = self.sim_dt(real_dt);
+        let report = sim_dt.map(|dt| self.world.advance(dt, &step_input));
+        self.perf.record(now, report, if self.ui.paused { 0.0 } else { wanted });
+    }
+
+    /// The 3D frame: the camera follows the mouse, then the volume steps.
+    fn step_3d(&mut self, drag: Option<glam::Vec2>, wheel: f32, real_dt: f32) {
+        let sim_dt = self.sim_dt(real_dt);
+        let Some(world) = &mut self.world3d else { return };
+        if let Some(d) = drag {
+            self.camera.orbit(d.x, d.y);
+        }
+        if wheel != 0.0 {
+            self.camera.zoom(wheel, OrbitCamera::framing(world.scene.size).distance);
+        }
+        if let Some(dt) = sim_dt {
+            world.advance(dt, &sim3d::StepInput3d::default());
+        }
+    }
+
+    /// Simulated time for this frame: real time at the chosen speed (capped), one fixed
+    /// step if a single step was asked for while paused, or none.
+    fn sim_dt(&mut self, real_dt: f32) -> Option<f32> {
+        if !self.ui.paused {
+            Some((real_dt * self.ui.speed).min(MAX_FRAME_DT))
+        } else if std::mem::take(&mut self.ui.step_once) {
+            Some(SINGLE_STEP_DT)
+        } else {
+            None
+        }
+    }
+
+    /// Act on a solver picked in the UI. Into 3D creates the 3D world on the renderer's
+    /// device; back to 2D drops it, and the 2D world carries on where it was.
+    fn choose_solver(&mut self, choice: ui::SolverChoice) {
+        match choice {
+            ui::SolverChoice::TwoD(k) => {
+                self.world3d = None;
+                if k != self.world.solver_index {
+                    self.world.switch_solver(k, self.ui.keep_particles);
+                }
+            }
+            ui::SolverChoice::ThreeD(k) => match &mut self.world3d {
+                Some(world) => world.switch_solver(k),
+                None => {
+                    let gpu = sim3d::GpuContext::shared(self.gpu.device.clone(), self.gpu.queue.clone(), self.gpu.adapter.clone());
+                    let world = sim3d::World3d::new(gpu, k, 0);
+                    self.camera = OrbitCamera::framing(world.scene.size);
+                    self.world3d = Some(world);
+                }
+            },
+        }
+    }
+
+    /// Where the 3D view draws: the canvas in physical pixels (x, y, width, height),
+    /// kept inside the window.
+    fn viewport_3d(&self) -> [f32; 4] {
+        let (w, h) = (self.gpu.config.width as f32, self.gpu.config.height as f32);
+        let ppp = self.egui_ctx.pixels_per_point();
+        let Some(r) = self.canvas else { return [0.0, 0.0, w, h] };
+        let (x, y) = ((r.min.x * ppp).clamp(0.0, w), (r.min.y * ppp).clamp(0.0, h));
+        [x, y, (r.width() * ppp).min(w - x).max(0.0), (r.height() * ppp).min(h - y).max(0.0)]
+    }
+
     fn render(&mut self, frame: wgpu::SurfaceTexture, view: &View, egui_out: egui::FullOutput) {
-        let (device, queue) = (&self.gpu.device, &self.gpu.queue);
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        // The selected overlay field, looked up by key in whatever the solver offers. A
-        // solver without particles (pure grid) is drawn through its first field. A key
-        // this solver doesn't have (picked under another solver) counts as no overlay;
-        // otherwise a grid solver would draw nothing at all.
-        let fields = self.world.solver.fields();
-        let selected = self.ui.overlay.filter(|key| fields.iter().any(|f| f.key == *key));
-        let (key, opacity) = match selected {
-            Some(key) => (Some(key), self.ui.overlay_opacity),
-            None if self.world.solver.particles().is_none() => (fields.first().map(|f| f.key), 1.0),
-            None => (None, 0.0),
-        };
-        let field = key.and_then(|key| {
-            let index = fields.iter().position(|f| f.key == key)?;
-            let layout = self.world.solver.fill_field(index, &mut self.field_values)?;
-            Some(render::FieldFrame { layout, values: &self.field_values, kind: fields[index].kind, opacity })
-        });
-        let options = render::DrawOptions {
-            view,
-            world: &self.world,
-            field,
-            show_particles: self.ui.show_particles,
-            liquid: self.ui.liquid_style(),
-            target_size: (self.gpu.config.width, self.gpu.config.height),
-            palette: self.palette_now,
-        };
-        self.field_range = self.renderer.render(device, queue, &mut encoder, &target, options);
+        let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        if let Some(world) = &self.world3d {
+            let viewport = self.viewport_3d();
+            let (device, queue) = (&self.gpu.device, &self.gpu.queue);
+            self.renderer3d.render(device, queue, &mut encoder, &target, viewport, &self.camera, &world.scene);
+            self.field_range = None;
+        } else {
+            self.render_2d(&mut encoder, &target, view);
+        }
+        let (device, queue) = (&self.gpu.device, &self.gpu.queue);
 
         // egui on top, in its own pass that keeps the scene underneath.
         let screen = egui_wgpu::ScreenDescriptor {
@@ -488,6 +565,36 @@ impl State {
         queue.present(frame);
     }
 
+    fn render_2d(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, view: &View) {
+        let (device, queue) = (&self.gpu.device, &self.gpu.queue);
+        // The selected overlay field, looked up by key in whatever the solver offers. A
+        // solver without particles (pure grid) is drawn through its first field. A key
+        // this solver doesn't have (picked under another solver) counts as no overlay;
+        // otherwise a grid solver would draw nothing at all.
+        let fields = self.world.solver.fields();
+        let selected = self.ui.overlay.filter(|key| fields.iter().any(|f| f.key == *key));
+        let (key, opacity) = match selected {
+            Some(key) => (Some(key), self.ui.overlay_opacity),
+            None if self.world.solver.particles().is_none() => (fields.first().map(|f| f.key), 1.0),
+            None => (None, 0.0),
+        };
+        let field = key.and_then(|key| {
+            let index = fields.iter().position(|f| f.key == key)?;
+            let layout = self.world.solver.fill_field(index, &mut self.field_values)?;
+            Some(render::FieldFrame { layout, values: &self.field_values, kind: fields[index].kind, opacity })
+        });
+        let options = render::DrawOptions {
+            view,
+            world: &self.world,
+            field,
+            show_particles: self.ui.show_particles,
+            liquid: self.ui.liquid_style(),
+            target_size: (self.gpu.config.width, self.gpu.config.height),
+            palette: self.palette_now,
+        };
+        self.field_range = self.renderer.render(device, queue, encoder, target, options);
+    }
+
     /// egui's texture changes must be applied every frame, even ones we end up not
     /// drawing (epaint asserts on dropped deltas).
     fn apply_egui_textures(&mut self, mut delta: egui::TexturesDelta) {
@@ -503,12 +610,11 @@ impl State {
     }
 
     fn update_title(&self) {
-        let title = format!(
-            "fluid toy | {} | {} | {:.0} fps",
-            self.world.solvers[self.world.solver_index].name,
-            PRESETS[self.world.preset_index].name,
-            self.perf.latest().fps
-        );
+        let (solver, scene) = match &self.world3d {
+            Some(w) => (sim3d::SOLVERS[w.solver_index].name, sim3d::PRESETS[w.preset_index].name),
+            None => (self.world.solvers[self.world.solver_index].name, PRESETS[self.world.preset_index].name),
+        };
+        let title = format!("fluid toy | {solver} | {scene} | {:.0} fps", self.perf.latest().fps);
         if self.window.title() != title {
             self.window.set_title(&title);
         }

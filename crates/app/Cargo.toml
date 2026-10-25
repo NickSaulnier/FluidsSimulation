@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 sim.workspace = true
 sim-gpu.workspace = true
+sim3d.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 egui.workspace = true

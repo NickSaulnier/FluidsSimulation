@@ -1,0 +1,13 @@
+[package]
+name = "sim3d"
+description = "3D fluid solvers on the GPU (wgpu compute): scenes, the Solver3d trait, World3d."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sim.workspace = true
+sim-gpu.workspace = true
+wgpu.workspace = true
+glam.workspace = true

@@ -42,6 +42,14 @@ pub enum Tool {
     Faucet,
 }
 
+/// A solver picked in the UI that the app acts on: moving between 2D and 3D replaces
+/// the world, which the UI can't do by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolverChoice {
+    TwoD(usize),
+    ThreeD(usize),
+}
+
 /// Side panel tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tab {
@@ -89,6 +97,8 @@ pub struct UiState {
     pub notice: Option<(String, Instant)>,
     /// Picks visualizer looks and changes them with the music.
     pub director: crate::director::Director,
+    /// A solver change for the app to make after this frame's layout.
+    pub solver_request: Option<SolverChoice>,
 }
 
 impl Default for UiState {
@@ -119,6 +129,7 @@ impl Default for UiState {
             reveal_until: None,
             notice: None,
             director: crate::director::Director::default(),
+            solver_request: None,
         }
     }
 }
@@ -179,6 +190,8 @@ pub struct Cursor {
 /// Everything the interface reads or changes in one frame.
 pub struct Frame<'a> {
     pub world: &'a mut World,
+    /// The 3D world, while a 3D solver is running (it replaces `world` on screen).
+    pub world3d: Option<&'a mut sim3d::World3d>,
     pub state: &'a mut UiState,
     pub music: &'a mut Music,
     pub perf: &'a Perf,
@@ -222,6 +235,13 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
         egui::Panel::right("side_panel").resizable(false).exact_size(PANEL_WIDTH).show(ui, |ui| panel::show(ui, f));
     }
     let canvas = ui.available_rect_before_wrap();
+    if f.world3d.is_some() {
+        // No tools, overlay or brush in 3D yet: the canvas is all camera.
+        if f.state.cheat_sheet {
+            cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);
+        }
+        return canvas;
+    }
     tool_strip::show(ui.ctx(), canvas, f.state);
     if let Some((field, range)) = overlay_legend(f) {
         legend::show(ui.ctx(), canvas, field, range, &f.state.palette);

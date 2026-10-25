@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sim", "crates/sim-gpu", "crates/app", "crates/bench"]
+members = ["crates/sim", "crates/sim-gpu", "crates/sim3d", "crates/app", "crates/bench"]
 
 [workspace.package]
 edition = "2024"
@@ -14,6 +14,7 @@ publish = false
 [workspace.dependencies]
 sim        = { path = "crates/sim" }
 sim-gpu    = { path = "crates/sim-gpu" }
+sim3d      = { path = "crates/sim3d" }
 wgpu       = "=30.0.1"
 winit      = "=0.30.13"
 egui       = "=0.36.2"

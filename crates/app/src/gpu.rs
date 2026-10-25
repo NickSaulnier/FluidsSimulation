@@ -17,6 +17,8 @@ pub struct Gpu {
     pub config: wgpu::SurfaceConfiguration,
     /// Non-sRGB view format of the swapchain, for egui (which blends in gamma space).
     pub ui_format: wgpu::TextureFormat,
+    /// The adapter's name, for logs and the 3D solvers' context.
+    pub adapter: String,
 }
 
 impl Gpu {
@@ -52,7 +54,7 @@ impl Gpu {
         }
         surface.configure(&device, &config);
 
-        Ok(Self { instance, window, surface, device, queue, config, ui_format })
+        Ok(Self { instance, window, surface, device, queue, config, ui_format, adapter: info.name })
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {

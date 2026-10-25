@@ -1,12 +1,15 @@
-//! Mouse state and the tools it drives: push the fluid, paint or erase walls.
+//! Mouse state and the tools it drives: push the fluid, paint or erase walls; in 3D,
+//! orbit and zoom the camera.
 
 use crate::ui::{Tool, UiState};
 use crate::view::View;
 use sim::{Emitter, ForceBrush, StepInput, Vec2, World};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 /// Cap on the push velocity derived from mouse motion, so a flick can't blow things up.
 const MAX_PUSH_SPEED: f32 = 6.0;
+/// Touchpads scroll in pixels; this many make one wheel step.
+const PIXELS_PER_WHEEL_STEP: f32 = 40.0;
 
 #[derive(Default)]
 pub struct Input {
@@ -16,6 +19,9 @@ pub struct Input {
     stroke: Option<MouseButton>,
     /// Cursor world position at the previous frame of the stroke.
     prev_world: Option<Vec2>,
+    /// Cursor motion (pixels) during the stroke, and wheel steps, since last taken.
+    drag: Vec2,
+    wheel: f32,
 }
 
 impl Input {
@@ -23,7 +29,17 @@ impl Input {
     pub fn handle(&mut self, event: &WindowEvent, ui_owns_it: bool) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Some(Vec2::new(position.x as f32, position.y as f32));
+                let here = Vec2::new(position.x as f32, position.y as f32);
+                if let (Some(_), Some(before)) = (self.stroke, self.cursor) {
+                    self.drag += here - before;
+                }
+                self.cursor = Some(here);
+            }
+            WindowEvent::MouseWheel { delta, .. } if !ui_owns_it => {
+                self.wheel += match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / PIXELS_PER_WHEEL_STEP,
+                };
             }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
@@ -43,6 +59,14 @@ impl Input {
 
     pub fn cursor(&self) -> Option<Vec2> {
         self.cursor
+    }
+
+    /// The 3D camera's share of the mouse since last frame: the left-drag motion (if a
+    /// left drag is under way) and wheel steps. Call every frame, so 2D strokes don't
+    /// pile up motion.
+    pub fn take_orbit(&mut self) -> (Option<Vec2>, f32) {
+        let drag = std::mem::take(&mut self.drag);
+        (self.stroke.filter(|b| *b == MouseButton::Left).map(|_| drag), std::mem::take(&mut self.wheel))
     }
 
     fn end_stroke(&mut self) {
@@ -91,5 +115,55 @@ impl Input {
             }
         }
         input
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::DeviceId;
+
+    fn moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) }
+    }
+
+    fn button(state: ElementState, button: MouseButton) -> WindowEvent {
+        WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button }
+    }
+
+    #[test]
+    fn a_left_drag_orbits_and_other_motion_does_not() {
+        let mut input = Input::default();
+        input.handle(&moved(100.0, 100.0), false);
+        input.handle(&moved(130.0, 90.0), false);
+        assert_eq!(input.take_orbit(), (None, 0.0), "hovering is not a drag");
+
+        input.handle(&button(ElementState::Pressed, MouseButton::Left), false);
+        input.handle(&moved(150.0, 95.0), false);
+        input.handle(&moved(170.0, 120.0), false);
+        assert_eq!(input.take_orbit(), (Some(Vec2::new(40.0, 30.0)), 0.0));
+        assert_eq!(input.take_orbit(), (Some(Vec2::ZERO), 0.0), "motion is taken once");
+        input.handle(&button(ElementState::Released, MouseButton::Left), false);
+
+        // A right drag is a push, not an orbit; a press on the panel starts nothing.
+        input.handle(&button(ElementState::Pressed, MouseButton::Right), false);
+        input.handle(&moved(200.0, 120.0), false);
+        assert_eq!(input.take_orbit().0, None);
+        input.handle(&button(ElementState::Released, MouseButton::Right), false);
+        input.handle(&button(ElementState::Pressed, MouseButton::Left), true);
+        input.handle(&moved(260.0, 120.0), false);
+        assert_eq!(input.take_orbit().0, None);
+    }
+
+    #[test]
+    fn the_wheel_counts_steps_unless_over_the_panel() {
+        let mut input = Input::default();
+        let wheel = |delta| WindowEvent::MouseWheel { device_id: DeviceId::dummy(), delta, phase: winit::event::TouchPhase::Moved };
+        input.handle(&wheel(MouseScrollDelta::LineDelta(0.0, 2.0)), false);
+        input.handle(&wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -PIXELS_PER_WHEEL_STEP as f64))), false);
+        input.handle(&wheel(MouseScrollDelta::LineDelta(0.0, 5.0)), true);
+        assert_eq!(input.take_orbit(), (None, 1.0));
+        assert_eq!(input.take_orbit(), (None, 0.0));
     }
 }

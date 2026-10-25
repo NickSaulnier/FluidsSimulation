@@ -6,6 +6,16 @@ use crate::ui::params::EguiParams;
 use crate::ui::widgets::{self, row};
 
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
+    if let Some(w) = f.world3d.as_deref_mut() {
+        widgets::title(ui, w.solver.name());
+        let mut params = EguiParams::new(ui);
+        w.solver.visit_params(&mut params);
+        if params.finish() {
+            w.reset();
+        }
+        ui.weak("Left drag orbits the camera; the wheel zooms.");
+        return;
+    }
     let s = &mut *f.state;
     widgets::group(ui, "World", |ui| {
         row(ui, "Gravity", "Drag the needle, or type exact values (the Left and Right arrow keys tilt too).", |ui| {

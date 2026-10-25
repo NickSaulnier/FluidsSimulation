@@ -9,8 +9,13 @@ use crate::ui::widgets::{self, row};
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     let s = &mut *f.state;
     let solver = &f.world.solver;
+    let in_3d = f.world3d.is_some();
     widgets::group(ui, "Display", |ui| {
         colours(ui, &mut s.palette);
+        if in_3d {
+            ui.weak("The 3D view shows the scene in outline for now.");
+            return;
+        }
         // Grid solvers have no particles to draw: they show a field (the dye) instead.
         if solver.particles().is_none() {
             let field = solver.fields().first().map_or("grid", |f| f.label);
@@ -33,7 +38,9 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         }
         widgets::toggle(ui, &mut s.show_particles, &tip("Show particles", Action::ToggleParticles), "");
     });
-    widgets::group(ui, "Overlay", |ui| overlay(ui, f));
+    if !in_3d {
+        widgets::group(ui, "Overlay", |ui| overlay(ui, f));
+    }
 }
 
 /// A preset menu, then the palette's three colours, each editable (which makes it a

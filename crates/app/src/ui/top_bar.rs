@@ -2,7 +2,7 @@
 //! every few seconds, so they're always visible. (The tools are in the strip on the
 //! canvas.)
 
-use super::Frame;
+use super::{Frame, SolverChoice};
 use super::shortcuts::{Action, tip};
 use egui::RichText;
 use egui_phosphor::regular as icon;
@@ -43,39 +43,75 @@ fn transport(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         s.step_once = true;
     }
     if icon_button(ui, icon::ARROW_COUNTER_CLOCKWISE).on_hover_text(tip("Reset the scene", Action::Reset)).clicked() {
-        f.world.reset();
+        match f.world3d.as_deref_mut() {
+            Some(w) => w.reset(),
+            None => f.world.reset(),
+        }
     }
     ui.add(egui::Slider::new(&mut s.speed, 0.1..=2.0).logarithmic(true).suffix("×").fixed_decimals(1))
         .on_hover_text("Simulation speed");
 }
 
+/// The scene (2D or 3D, whichever is running) and the solver, from either family.
 pub(super) fn scene_and_solver(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     let world = &mut *f.world;
     ui.label("Scene");
-    let mut preset = world.preset_index;
-    egui::ComboBox::from_id_salt("preset").selected_text(PRESETS[preset].name).width(170.0).show_ui(ui, |ui| {
-        for (k, p) in PRESETS.iter().enumerate() {
-            ui.selectable_value(&mut preset, k, p.name);
+    match f.world3d.as_deref_mut() {
+        Some(w) => {
+            let mut preset = w.preset_index;
+            egui::ComboBox::from_id_salt("preset").selected_text(sim3d::PRESETS[preset].name).width(170.0).show_ui(ui, |ui| {
+                for (k, p) in sim3d::PRESETS.iter().enumerate() {
+                    ui.selectable_value(&mut preset, k, p.name);
+                }
+            });
+            if preset != w.preset_index {
+                w.load_preset(preset);
+            }
         }
-    });
-    if preset != world.preset_index {
-        world.load_preset(preset);
+        None => {
+            let mut preset = world.preset_index;
+            egui::ComboBox::from_id_salt("preset").selected_text(PRESETS[preset].name).width(170.0).show_ui(ui, |ui| {
+                for (k, p) in PRESETS.iter().enumerate() {
+                    ui.selectable_value(&mut preset, k, p.name);
+                }
+            });
+            if preset != world.preset_index {
+                world.load_preset(preset);
+            }
+        }
     }
 
     ui.label("Solver");
-    let mut index = world.solver_index;
-    egui::ComboBox::from_id_salt("solver").selected_text(world.solvers[index].name).width(190.0).show_ui(ui, |ui| {
+    let current = match &f.world3d {
+        Some(w) => SolverChoice::ThreeD(w.solver_index),
+        None => SolverChoice::TwoD(world.solver_index),
+    };
+    let name = match current {
+        SolverChoice::TwoD(k) => world.solvers[k].name.to_string(),
+        SolverChoice::ThreeD(k) => format!("{} {}", icon::CUBE, sim3d::SOLVERS[k].name),
+    };
+    let mut choice = current;
+    let in_3d = f.world3d.is_some();
+    egui::ComboBox::from_id_salt("solver").selected_text(name).width(190.0).show_ui(ui, |ui| {
         for (k, s) in world.solvers.iter().enumerate() {
-            ui.selectable_value(&mut index, k, s.name);
+            ui.selectable_value(&mut choice, SolverChoice::TwoD(k), s.name);
+        }
+        ui.separator();
+        for (k, s) in sim3d::SOLVERS.iter().enumerate() {
+            ui.selectable_value(&mut choice, SolverChoice::ThreeD(k), format!("{} {}", icon::CUBE, s.name));
         }
         ui.separator();
         // Only particles can be handed over; a grid solver's successor starts from the scene.
-        let has_particles = world.solver.particles().is_some();
+        let has_particles = !in_3d && world.solver.particles().is_some();
         ui.add_enabled(has_particles, egui::Checkbox::new(&mut f.state.keep_particles, "Keep particles when switching"))
             .on_hover_text("Hand the current fluid to the new solver instead of restarting the scene.")
-            .on_disabled_hover_text("Only a particle solver can hand its fluid over.");
+            .on_disabled_hover_text("Only a 2D particle solver can hand its fluid over.");
     });
-    if index != world.solver_index {
-        world.switch_solver(index, f.state.keep_particles);
+    if choice != current {
+        match choice {
+            SolverChoice::TwoD(k) if !in_3d => world.switch_solver(k, f.state.keep_particles),
+            // Into or out of 3D: the app swaps the worlds.
+            _ => f.state.solver_request = Some(choice),
+        }
     }
 }

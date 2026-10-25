@@ -16,13 +16,23 @@ mod tests {
     use crate::stability;
     use crate::ui::UiState;
     use sim::{StepInput, World, invariants};
+    use std::f32::consts::TAU;
 
     const RATE: u32 = 48_000;
     const FRAME: f32 = 1.0 / 60.0;
 
-    /// One "song": 20 s of a 120 bpm beat, then 3 s of silence (a gap between songs).
+    /// One "song": a 15 s verse (a bare 120 bpm beat), a 15 s chorus (the beat over a
+    /// sustained bass line, loud enough to count as energetic), then 3 s of silence (a
+    /// gap between songs). Without the chorus the energetic looks would never come up.
     fn song() -> Vec<f32> {
-        let (mut audio, _, _) = synthetic_beat(RATE, 20.0, 120.0, 0.8);
+        let (verse, _, _) = synthetic_beat(RATE, 15.0, 120.0, 0.8);
+        let (mut chorus, _, _) = synthetic_beat(RATE, 15.0, 120.0, 0.8);
+        for (k, s) in chorus.iter_mut().enumerate() {
+            let t = k as f32 / RATE as f32;
+            *s += 0.35 * (TAU * 110.0 * t).sin() + 0.15 * (TAU * 220.0 * t).sin();
+        }
+        let mut audio = verse;
+        audio.extend(chorus);
         audio.extend(std::iter::repeat_n(0.0, 3 * RATE as usize));
         audio
     }

@@ -194,6 +194,7 @@ dependencies = [
  "serde_json",
  "sim",
  "sim-gpu",
+ "sim3d",
  "wgpu",
  "winit",
 ]
@@ -2840,6 +2841,16 @@ dependencies = [
  "log",
  "pollster",
  "sim",
+ "wgpu",
+]
+
+[[package]]
+name = "sim3d"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "sim",
+ "sim-gpu",
  "wgpu",
 ]
 

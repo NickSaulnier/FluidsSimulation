@@ -355,8 +355,11 @@ A–D is the core visualizer; E–G make it good enough to leave running.
   - **Idle drift:** in full screen, after 5 s of silence (or with no source), a slow
     swirl wanders on a Lissajous path and fades in over 2 s. Music stops it at once.
   - **Soak tests** (`app/src/soak.rs`): the analyzer, director, reactions and budget
-    drive a world from synthetic songs (20 s of beat, 3 s gap, looped), checking
-    invariants and the particle budget every half second.
+    drive a world from synthetic songs, checking invariants and the particle budget
+    every half second. Each song is a 15 s verse (a bare beat), a 15 s chorus (the
+    beat over a sustained bass line) and a 3 s gap, looped. The chorus matters: the
+    first 30-minute run used only the bare beat, whose slow level sits right at the
+    energetic threshold, so the two energetic looks never came up.
     - A 60 s run (15 s interval) is in the normal tests.
     - A 30-minute run is on demand:
       `cargo test --release -p app thirty_minute_soak -- --ignored --nocapture`.
