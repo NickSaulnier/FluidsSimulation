@@ -1,6 +1,6 @@
 # Music Visualizer Plan
 
-Status: **approved; Phases A–D done** (see §9). Decisions (§8):
+Status: **approved; Phases A–E done** (see §9). Decisions (§8):
 - live system audio first, track files second;
 - an automatic director, with a lock;
 - `rustfft` for the FFT;
@@ -343,4 +343,25 @@ A–D is the core visualizer; E–G make it good enough to leave running.
   - **Tuning note:** on the bass-heavy test beat, Hue reactions shift colours a long way
     (low brightness). Wind tunnel's Hue gain is halved; real music sits nearer the
     middle.
+- **Phase E, long-run stability (done).**
+  - **Particle budget** (`app/src/stability.rs`): reaction jets pause while a particle
+    solver is over budget, a quarter above its starting count (20 000 if it started
+    empty). Splashes carry on, and the user's faucet is unaffected. Grid solvers always
+    have room.
+  - **Locked looks refresh:** with auto off, the director refreshes the same look
+    (fading back in with a fresh scene) on new songs and at the interval, since dye
+    mixes to a uniform smear and solid fuel burns out. A drop doesn't change a locked
+    look.
+  - **Idle drift:** in full screen, after 5 s of silence (or with no source), a slow
+    swirl wanders on a Lissajous path and fades in over 2 s. Music stops it at once.
+  - **Soak tests** (`app/src/soak.rs`): the analyzer, director, reactions and budget
+    drive a world from synthetic songs (20 s of beat, 3 s gap, looped), checking
+    invariants and the particle budget every half second.
+    - A 60 s run (15 s interval) is in the normal tests.
+    - A 30-minute run is on demand:
+      `cargo test --release -p app thirty_minute_soak -- --ignored --nocapture`.
+    - The soak lives in the app's tests rather than the bench as planned: the bench
+      can't reach the app's audio and director code.
+  - **Checked in the app:** full screen with no source; after 10 s the settled water
+    was rocking gently.
 

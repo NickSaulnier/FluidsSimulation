@@ -14,6 +14,8 @@ mod audio;
 mod director;
 mod governor;
 mod looks;
+mod soak;
+mod stability;
 mod gpu;
 mod input;
 mod render;
@@ -364,8 +366,7 @@ impl State {
         self.sync_presentation(real_dt);
         // The director: change looks with the music (by itself only in full screen).
         let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
-        let active = self.ui.presenting && self.ui.director.auto;
-        if let Some(look) = self.ui.director.update(active, self.music.features(), kicked, real_dt) {
+        if let Some(look) = self.ui.director.update(self.ui.presenting, self.music.features(), kicked, real_dt) {
             looks::apply(&looks::LOOKS[look], &mut self.world, &mut self.ui);
             log::info!("look: {}", looks::LOOKS[look].name);
         }
@@ -378,7 +379,11 @@ impl State {
         }
         let mut step_input = self.input.apply(&view, &self.ui, &mut self.world, real_dt);
         // Music reactions: forces, gravity, parameters, and the colours drawn this frame.
-        let reaction = self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), real_dt);
+        let mut reaction =
+            self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), self.ui.presenting, real_dt);
+        if !stability::room_for_fluid(&self.world) {
+            reaction.emitters.clear(); // jets pause while particles are over budget
+        }
         self.world.scene.gravity = reaction.gravity;
         step_input.brushes.extend(reaction.brushes);
         step_input.emitters.extend(reaction.emitters);

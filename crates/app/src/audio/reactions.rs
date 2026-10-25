@@ -10,6 +10,9 @@
 //!
 //! The engine only produces what the app already feeds the simulation: brushes and
 //! emitters, a gravity vector, a palette modulation and parameter values by key.
+//!
+//! With `idle` set (the full-screen visualizer), long silence (or no source at all) gets
+//! a slow wandering swirl, so a pause between songs doesn't freeze the picture.
 
 use super::analyzer::{AudioFeatures, Onset, OnsetKind};
 use serde::{Deserialize, Serialize};
@@ -210,6 +213,9 @@ const SLOSH_MAX_DEG: f32 = 30.0;
 /// The gust turns around over this period, seconds.
 const GUST_PERIOD_S: f32 = 16.0;
 const LANES: [f32; 3] = [0.3, 0.7, 0.5];
+/// Idle drift starts after this much silence and fades in over `IDLE_FADE_S`, seconds.
+const IDLE_AFTER_S: f32 = 5.0;
+const IDLE_FADE_S: f32 = 2.0;
 
 struct Impulse {
     effect: Effect,
@@ -222,6 +228,9 @@ struct Impulse {
 /// The reactions' running state: pulses in flight, hit envelopes, the clock.
 #[derive(Default)]
 pub struct ReactionEngine {
+    /// Drift gently during long silences (set by the app each frame).
+    pub idle: bool,
+    silent_for: f32,
     time: f32,
     impulses: Vec<Impulse>,
     hit_env: [f32; 3],
@@ -249,6 +258,11 @@ impl ReactionEngine {
     ) -> ReactionOutput {
         self.time += dt;
         let mut out = ReactionOutput { gravity: base_gravity, ..ReactionOutput::default() };
+        let silent = features.is_none_or(|f| f.silent);
+        self.silent_for = if silent { self.silent_for + dt } else { 0.0 };
+        if let Some(drift) = self.idle_drift(domain) {
+            out.brushes.push(drift);
+        }
         let Some(features) = features else {
             self.impulses.clear();
             return out;
@@ -345,6 +359,19 @@ impl ReactionEngine {
             }
         }
         out
+    }
+
+    /// A slow swirl wandering on a Lissajous path, turning around now and then, once the
+    /// silence has lasted `IDLE_AFTER_S` (and only with `idle` set).
+    fn idle_drift(&self, domain: Vec2) -> Option<ForceBrush> {
+        if !self.idle || self.silent_for < IDLE_AFTER_S {
+            return None;
+        }
+        let fade = ((self.silent_for - IDLE_AFTER_S) / IDLE_FADE_S).min(1.0);
+        let t = self.time;
+        let offset = Vec2::new(0.3 * domain.x * (0.13 * t).sin(), 0.22 * domain.y * (0.21 * t).sin());
+        let turn = if (0.05 * t).sin() >= 0.0 { 1.0 } else { -1.0 };
+        Some(ForceBrush { pos: 0.5 * domain + offset, radius: 0.2 * domain.y, velocity: Vec2::ZERO, strength: 2.0 * fade, spin: 3.0 * turn })
     }
 
     fn fire(&mut self, effect: Effect, strength: f32, domain: Vec2) {
@@ -470,6 +497,22 @@ mod tests {
         assert!(out.flash > 0.75, "flash {}", out.flash);
         let neutral = e.evaluate(&r, Some(&features(0.0, 0.5)), &[], DOMAIN, G, 1.0, 1.0);
         assert!(neutral.hue_shift.abs() < 1e-4 && neutral.flash < 0.01);
+    }
+
+    #[test]
+    fn idle_drift_starts_after_a_long_silence_and_stops_with_music() {
+        let mut e = ReactionEngine { idle: true, ..ReactionEngine::default() };
+        let quiet = AudioFeatures { silent: true, ..AudioFeatures::default() };
+        let r = default_reactions();
+        let step = |e: &mut ReactionEngine, f: Option<&AudioFeatures>, s: f32| e.evaluate(&r, f, &[], DOMAIN, G, 1.0, s);
+        assert!(step(&mut e, Some(&quiet), 4.0).brushes.is_empty(), "drifting before the silence was long");
+        let drift = step(&mut e, Some(&quiet), 3.0).brushes;
+        assert_eq!(drift.len(), 1);
+        assert!(drift[0].spin != 0.0 && drift[0].strength > 0.0);
+        assert_eq!(step(&mut e, None, 1.0).brushes.len(), 1, "no source also drifts");
+        assert!(step(&mut e, Some(&features(0.3, 0.5)), 0.01).brushes.is_empty(), "music stops the drift");
+        let mut off = ReactionEngine::default();
+        assert!(off.evaluate(&r, None, &[], DOMAIN, G, 1.0, 10.0).brushes.is_empty(), "idle off: no drift");
     }
 
     #[test]

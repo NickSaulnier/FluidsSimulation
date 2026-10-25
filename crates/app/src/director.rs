@@ -10,6 +10,10 @@
 //!
 //! The first two wait at least `MIN_LOOK_S` into a look. The next look suits the
 //! music's energy: calm looks for quiet passages, energetic ones for loud.
+//!
+//! With auto off (the look locked) it still refreshes the look on new songs and at the
+//! interval: the same look fades back in with a fresh scene. Left alone for long, dye
+//! mixes to a uniform smear and solid fuel burns out.
 
 use crate::audio::analyzer::AudioFeatures;
 use crate::looks::LOOKS;
@@ -91,10 +95,11 @@ impl Director {
         }
     }
 
-    /// Advance `dt` seconds. `active`: the director may change looks by itself.
+    /// Advance `dt` seconds. `presenting`: in full screen, where the director acts by
+    /// itself (changing looks with `auto`, refreshing the locked one without).
     /// `features`: the analysis (none without a source); `kicked`: a kick this frame.
     /// Returns the look to apply now, at the darkest point of a fade.
-    pub fn update(&mut self, active: bool, features: Option<&AudioFeatures>, kicked: bool, dt: f32) -> Option<usize> {
+    pub fn update(&mut self, presenting: bool, features: Option<&AudioFeatures>, kicked: bool, dt: f32) -> Option<usize> {
         self.elapsed += dt;
         let level = features.map_or(0.0, |f| f.level);
         self.fast += (level - self.fast) * (1.0 - (-dt / FAST_S).exp());
@@ -119,13 +124,22 @@ impl Director {
             }
             Fade::None => {}
         }
-        if !active || matches!(self.fade, Fade::In { .. }) {
+        if !presenting || matches!(self.fade, Fade::In { .. }) {
             return None;
         }
         if self.elapsed >= self.interval_s {
             self.due = true;
         }
         let settled = self.elapsed >= MIN_LOOK_S;
+        if !self.auto {
+            // Locked: refresh the same look, so it doesn't go stale.
+            if let Some(current) = self.current
+                && ((settled && song_change) || self.due)
+            {
+                self.request(current);
+            }
+            return None;
+        }
         let drop = settled && self.fast - self.slow > DROP_JUMP;
         if (settled && song_change) || drop || (self.due && kicked) {
             let target = self.choose(self.slow > ENERGETIC);
@@ -238,6 +252,15 @@ mod tests {
         assert!(darkest_at_switch > 0.95, "switched at darkness {darkest_at_switch}");
         assert_eq!(d.darkness(), 0.0, "never faded back in");
         assert_eq!(d.current, Some(2));
+    }
+
+    #[test]
+    fn a_locked_look_refreshes_itself() {
+        let mut d = Director { auto: false, current: Some(2), ..Director::default() };
+        let applied = run(&mut d, &music(0.4), Some(30), 95.0);
+        assert_eq!(applied, vec![2], "locked: same look, refreshed once at the interval");
+        let applied = run(&mut d, &music(1.0), Some(30), 20.0);
+        assert!(applied.is_empty(), "a drop doesn't change a locked look");
     }
 
     #[test]

@@ -226,8 +226,10 @@ impl Music {
         }
     }
 
-    /// This frame's reactions to the music (see `reactions`).
-    pub fn react(&mut self, reactions: &[Reaction], domain: Vec2, base_gravity: Vec2, dt: f32) -> ReactionOutput {
+    /// This frame's reactions to the music (see `reactions`). `idle`: drift gently
+    /// through long silences (the full-screen visualizer).
+    pub fn react(&mut self, reactions: &[Reaction], domain: Vec2, base_gravity: Vec2, idle: bool, dt: f32) -> ReactionOutput {
+        self.engine.idle = idle;
         let features = self.analyzer.as_ref().map(Analyzer::features);
         self.engine.evaluate(reactions, features, &self.frame_onsets, domain, base_gravity, self.intensity, dt)
     }
