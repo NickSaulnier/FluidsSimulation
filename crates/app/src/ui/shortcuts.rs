@@ -22,6 +22,7 @@ pub enum Action {
     ToggleMusic,
     TogglePanel,
     ToggleCheatSheet,
+    TogglePresentation,
 }
 
 /// Cheat-sheet columns.
@@ -73,6 +74,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s(KeyCode::KeyM, "M", A::ToggleMusic, "play / pause music", G::View),
     s(KeyCode::Backquote, "`", A::TogglePanel, "hide / show the side panel", G::View),
     s(KeyCode::F1, "F1", A::ToggleCheatSheet, "this cheat sheet", G::View),
+    s(KeyCode::F11, "F11", A::TogglePresentation, "full-screen visualizer", G::View),
 ];
 
 /// Mouse actions, for the cheat sheet and the Info tab.
@@ -80,7 +82,7 @@ pub const MOUSE: &[(&str, &str)] = &[
     ("Left drag", "use the selected tool"),
     ("Right drag", "push, whatever the tool"),
     ("Drop a file", "load music"),
-    ("Esc", "close this sheet, or quit"),
+    ("Esc", "close this sheet, leave full screen, or quit"),
 ];
 
 /// The action bound to `key`, if any (ignoring auto-repeat unless the action repeats).

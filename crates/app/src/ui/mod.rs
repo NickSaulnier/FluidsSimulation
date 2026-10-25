@@ -1,5 +1,7 @@
 //! The egui interface: a top bar (run, scene, solver), a status bar, a tabbed side
-//! panel, and on the canvas a tool strip and the overlay legend. Solver parameters come from `Solver::visit_params`, so nothing here names
+//! panel, and on the canvas a tool strip and the overlay legend. In presentation mode
+//! (the full-screen visualizer) all of that hides, leaving an overlay that appears
+//! when the mouse moves. Solver parameters come from `Solver::visit_params`, so nothing here names
 //! a specific solver. Whatever is left after the bars and panel is the canvas; its rect
 //! is returned so the scene view is fitted into exactly that area.
 
@@ -8,6 +10,7 @@ mod compass;
 mod health;
 mod legend;
 mod panel;
+mod presentation;
 pub mod params;
 pub mod settings;
 pub mod shortcuts;
@@ -18,6 +21,7 @@ mod top_bar;
 mod widgets;
 
 use crate::audio::Music;
+use std::time::{Duration, Instant};
 use sim::{Vec2, World};
 
 /// Side panel width in points.
@@ -25,6 +29,9 @@ pub const PANEL_WIDTH: f32 = 320.0;
 /// Brush radius limits (m), and the factor `[` and `]` change it by.
 pub const BRUSH_RADIUS: std::ops::RangeInclusive<f32> = 0.02..=0.3;
 pub const BRUSH_STEP: f32 = 1.15;
+/// How long the presentation overlay stays after the mouse stops, and notices last.
+const REVEAL: Duration = Duration::from_secs(3);
+const NOTICE: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tool {
@@ -74,6 +81,12 @@ pub struct UiState {
     pub palette: crate::render::Palette,
     /// How the music drives the fluid.
     pub reactions: Vec<crate::audio::reactions::Reaction>,
+    /// The full-screen visualizer: no controls, the scene filling the screen.
+    pub presenting: bool,
+    /// In presentation mode, the overlay (and cursor) show until then.
+    pub reveal_until: Option<Instant>,
+    /// A brief message (e.g. the resolution was lowered), until then.
+    pub notice: Option<(String, Instant)>,
 }
 
 impl Default for UiState {
@@ -100,6 +113,9 @@ impl Default for UiState {
             cheat_sheet: false,
             palette: crate::render::Palette::default(),
             reactions: crate::audio::reactions::default_reactions(),
+            presenting: false,
+            reveal_until: None,
+            notice: None,
         }
     }
 }
@@ -113,6 +129,19 @@ impl UiState {
     pub fn gravity(&self) -> Vec2 {
         let a = self.gravity_deg.to_radians();
         Vec2::new(a.sin(), -a.cos()) * self.gravity_mag
+    }
+
+    /// Presentation mode: show the overlay and cursor for a few seconds (the mouse moved).
+    pub fn reveal(&mut self) {
+        self.reveal_until = Some(Instant::now() + REVEAL);
+    }
+
+    pub fn revealed(&self) -> bool {
+        self.reveal_until.is_some_and(|t| Instant::now() < t)
+    }
+
+    pub fn show_notice(&mut self, text: String) {
+        self.notice = Some((text, Instant::now() + NOTICE));
     }
 
     pub fn scale_brush(&mut self, factor: f32) {
@@ -158,6 +187,26 @@ pub struct Frame<'a> {
 /// canvas the bars and panel leave over, minus the tool strip's column, so the strip
 /// never hides any of the fluid.
 pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> egui::Rect {
+    if let Some((text, until)) = &f.state.notice {
+        if Instant::now() < *until {
+            let text = text.clone();
+            presentation::notice(ui.ctx(), ui.max_rect(), &text);
+        } else {
+            f.state.notice = None;
+        }
+    }
+    if f.state.presenting {
+        // The whole window is canvas; the overlay shows while the mouse is active (or on
+        // it, so it doesn't vanish under the pointer).
+        let canvas = ui.max_rect();
+        if f.state.revealed() || ui.ctx().is_pointer_over_egui() {
+            presentation::overlay(ui.ctx(), canvas, f);
+        }
+        if f.state.cheat_sheet {
+            cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);
+        }
+        return canvas;
+    }
     egui::Panel::top("top_bar").show(ui, |ui| top_bar::show(ui, f));
     egui::Panel::bottom("status_bar").show(ui, |ui| status_bar::show(ui, f));
     if f.state.panel_open {

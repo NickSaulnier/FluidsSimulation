@@ -1,6 +1,6 @@
 # Music Visualizer Plan
 
-Status: **approved; Phases A and B done** (see §9). Decisions (§8):
+Status: **approved; Phases A–C done** (see §9). Decisions (§8):
 - live system audio first, track files second;
 - an automatic director, with a lock;
 - `rustfft` for the FFT;
@@ -283,4 +283,22 @@ A–D is the core visualizer; E–G make it good enough to leave running.
 
     Checked by pixel-diffing snapshots during playback: only the readouts, meters and
     lamps change; the Reactions table is identical frame to frame.
+- **Phase C, presentation mode (done).**
+  - **Entering and leaving:** F11 (or `--visualizer`, which also listens to system
+    audio unless a track is given) switches to borderless full screen. All controls
+    hide and the scene fits the whole screen with no margin. Esc closes the cheat sheet
+    first, then leaves full screen, and only then quits.
+  - **Overlay:** moving the mouse shows the cursor and a bottom overlay for 3 s: exit,
+    scene, solver, what's playing (or "Listen to system audio"), shortcuts. It stays
+    while hovered.
+  - **Governor** (`app/src/governor.rs`): in presentation mode, slow motion above 10%
+    for 3 s lowers the solver's resolution a step and resets the scene, with a notice:
+    grid height ×0.8 (`cells_y`) or particle spacing ×1.25 (`spacing`). A 10 s
+    cooldown follows each step, and it stops at the parameter's limit.
+  - **Tests:** the governor acts only on sustained slowness and respects the cooldown;
+    brief slowdowns don't add up; FLIP steps down to its minimum and stops.
+  - **Checked in the app** at 3840×2160: full screen, the overlay, and Esc back to the
+    window. FLIP kept up at 4K (simulation cost doesn't depend on screen size), so the
+    governor didn't step in.
+  - **Not done:** choosing a monitor. Full screen uses the monitor the window is on.
 

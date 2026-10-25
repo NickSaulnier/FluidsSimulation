@@ -49,7 +49,7 @@ fn transport(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         .on_hover_text("Simulation speed");
 }
 
-fn scene_and_solver(ui: &mut egui::Ui, f: &mut Frame<'_>) {
+pub(super) fn scene_and_solver(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     let world = &mut *f.world;
     ui.label("Scene");
     let mut preset = world.preset_index;

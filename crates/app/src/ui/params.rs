@@ -53,6 +53,57 @@ pub fn float_param(world: &mut sim::World, key: &str, set: Option<f32>) -> Optio
     access.found
 }
 
+/// Read an int parameter by key, or set it (clamped to its range) if `set` is given.
+/// Returns the value before any change.
+pub fn int_param(world: &mut sim::World, key: &str, set: Option<u32>) -> Option<u32> {
+    int_access(world, key, set).map(|(v, _)| v)
+}
+
+/// An int parameter's value and the bottom of its range.
+pub fn int_param_range(world: &mut sim::World, key: &str) -> Option<(u32, u32)> {
+    int_access(world, key, None)
+}
+
+/// A float parameter's value and the top of its range.
+pub fn float_param_range(world: &mut sim::World, key: &str) -> Option<(f32, f32)> {
+    struct Range<'k>(&'k str, Option<(f32, f32)>);
+    impl sim::ParamVisitor for Range<'_> {
+        fn float(&mut self, s: &sim::FloatSpec, v: &mut f32) {
+            if s.key == self.0 {
+                self.1 = Some((*v, *s.range.end()));
+            }
+        }
+        fn int(&mut self, _: &sim::IntSpec, _: &mut u32) {}
+        fn toggle(&mut self, _: &sim::ToggleSpec, _: &mut bool) {}
+    }
+    let mut range = Range(key, None);
+    world.solver.visit_params(&mut range);
+    range.1
+}
+
+fn int_access(world: &mut sim::World, key: &str, set: Option<u32>) -> Option<(u32, u32)> {
+    struct Access<'k> {
+        key: &'k str,
+        set: Option<u32>,
+        found: Option<(u32, u32)>,
+    }
+    impl sim::ParamVisitor for Access<'_> {
+        fn float(&mut self, _: &sim::FloatSpec, _: &mut f32) {}
+        fn int(&mut self, s: &sim::IntSpec, v: &mut u32) {
+            if s.key == self.key {
+                self.found = Some((*v, *s.range.start()));
+                if let Some(new) = self.set {
+                    *v = new.clamp(*s.range.start(), *s.range.end());
+                }
+            }
+        }
+        fn toggle(&mut self, _: &sim::ToggleSpec, _: &mut bool) {}
+    }
+    let mut access = Access { key, set, found: None };
+    world.solver.visit_params(&mut access);
+    access.found
+}
+
 pub struct EguiParams<'u> {
     ui: &'u mut egui::Ui,
     group: Option<egui::frame::Prepared>,

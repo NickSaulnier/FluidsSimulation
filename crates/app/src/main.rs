@@ -4,11 +4,14 @@
 //! closes the cheat sheet, or quits. (Not Tab: egui consumes it for keyboard focus
 //! navigation.)
 //!
-//! Usage: `fluid-toy [TRACK] [--mute] [--live]`. A track (mp3, ogg, flac, wav) can also
-//! be dropped onto the window; its kick drums then make the water jump. `--live` instead
-//! listens to whatever the computer is playing (Spotify, a browser...).
+//! Usage: `fluid-toy [TRACK] [--mute] [--live] [--visualizer]`. A track (mp3, ogg, flac,
+//! wav) can also be dropped onto the window; the music then drives the fluid. `--live`
+//! instead listens to whatever the computer is playing (Spotify, a browser...).
+//! `--visualizer` starts full screen with the controls hidden (F11 toggles it), and
+//! listens live unless a track is given.
 
 mod audio;
+mod governor;
 mod gpu;
 mod input;
 mod render;
@@ -86,6 +89,12 @@ struct State {
     palette_now: render::Palette,
     /// Base values of parameters the music is modulating, for the solver they belong to.
     param_bases: (usize, Vec<(String, f32)>),
+    /// Whether the window is full screen (follows `ui.presenting`), and the cursor shown.
+    fullscreen: bool,
+    cursor_visible: bool,
+    governor: governor::Governor,
+    /// The (solver, scene) the governor is judging.
+    governed: (usize, u64),
     /// The `World::scene_generation` whose gravity the UI last took on.
     gravity_synced: u64,
     last_frame: Instant,
@@ -120,6 +129,9 @@ impl ApplicationHandler for App {
         // egui sees every event first; what it consumes (clicks on the panel, typing
         // in a field) doesn't reach the tools or shortcuts.
         let egui_took_it = state.egui_winit.on_window_event(&state.window, &event).consumed;
+        if matches!(event, WindowEvent::CursorMoved { .. }) && state.ui.presenting {
+            state.ui.reveal();
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => state.gpu.resize(size),
@@ -130,8 +142,9 @@ impl ApplicationHandler for App {
                 ..
             } if !egui_took_it && !state.egui_ctx.egui_wants_keyboard_input() => {
                 if key == KeyCode::Escape {
-                    // Esc closes the cheat sheet first, and quits only from the plain view.
-                    if std::mem::take(&mut state.ui.cheat_sheet) {
+                    // Esc closes the cheat sheet first, then leaves full screen, and quits
+                    // only from the plain view.
+                    if std::mem::take(&mut state.ui.cheat_sheet) || std::mem::take(&mut state.ui.presenting) {
                         return;
                     }
                     event_loop.exit();
@@ -179,7 +192,9 @@ impl State {
         if let Some(track) = args.iter().find(|a| !a.starts_with("--")) {
             music.load(track.into());
         }
-        if args.iter().any(|a| a == "--live") {
+        let track_given = args.iter().any(|a| !a.starts_with("--"));
+        let visualizer = args.iter().any(|a| a == "--visualizer");
+        if args.iter().any(|a| a == "--live") || (visualizer && !track_given) {
             music.set_live(true);
         }
         Ok(Self {
@@ -196,6 +211,7 @@ impl State {
                 if let Some(saved) = ui::settings::load() {
                     saved.apply(&mut ui);
                 }
+                ui.presenting = visualizer;
                 ui
             },
             music,
@@ -205,10 +221,46 @@ impl State {
             canvas: None,
             palette_now: render::Palette::default(),
             param_bases: (usize::MAX, Vec::new()),
+            fullscreen: false,
+            cursor_visible: true,
+            governor: governor::Governor::default(),
+            governed: (usize::MAX, u64::MAX),
             gravity_synced: u64::MAX, // take the first scene's gravity too
             last_frame: Instant::now(),
             perf: PerfCounter::new(),
         })
+    }
+
+    /// Presentation mode: full screen while presenting, the cursor hidden unless the
+    /// overlay is showing, and the resolution governor watching for slow motion.
+    fn sync_presentation(&mut self, real_dt: f32) {
+        let presenting = self.ui.presenting;
+        if presenting != self.fullscreen {
+            self.fullscreen = presenting;
+            self.window.set_fullscreen(presenting.then_some(winit::window::Fullscreen::Borderless(None)));
+            self.governor.reset();
+            if presenting {
+                self.ui.reveal();
+            }
+        }
+        let cursor = !presenting || self.ui.revealed() || self.egui_ctx.is_pointer_over_egui();
+        if cursor != self.cursor_visible {
+            self.cursor_visible = cursor;
+            self.window.set_cursor_visible(cursor);
+        }
+        let scene = (self.world.solver_index, self.world.scene_generation);
+        if scene != self.governed {
+            self.governed = scene;
+            self.governor.reset();
+        }
+        if presenting
+            && !self.ui.paused
+            && self.governor.update(self.perf.latest().slow_motion, real_dt)
+            && let Some(message) = governor::lower_resolution(&mut self.world)
+        {
+            log::info!("{message}");
+            self.ui.show_notice(message);
+        }
     }
 
     /// Parameter reactions: each key is set to its base value times the reaction's
@@ -265,6 +317,7 @@ impl State {
             Action::ToggleMusic => self.music.toggle_play(),
             Action::TogglePanel => ui.panel_open = !ui.panel_open,
             Action::ToggleCheatSheet => ui.cheat_sheet = !ui.cheat_sheet,
+            Action::TogglePresentation => ui.presenting = !ui.presenting,
         }
     }
 
@@ -277,7 +330,8 @@ impl State {
             Some(r) => (glam::Vec2::new(r.min.x, r.min.y) * ppp, glam::Vec2::new(r.width(), r.height()) * ppp),
             None => (glam::Vec2::ZERO, glam::Vec2::new(size.width as f32, size.height as f32)),
         };
-        View::fit_in(self.world.scene.size, min, area, VIEW_MARGIN_PX, size)
+        let margin = if self.ui.presenting { 0.0 } else { VIEW_MARGIN_PX };
+        View::fit_in(self.world.scene.size, min, area, margin, size)
     }
 
     fn frame(&mut self) {
@@ -301,6 +355,8 @@ impl State {
         let view = self.view();
         self.egui_winit.handle_platform_output(&self.window, std::mem::take(&mut egui_out.platform_output));
         self.apply_egui_textures(std::mem::take(&mut egui_out.textures_delta));
+
+        self.sync_presentation(real_dt);
 
         // Tools and gravity, then the simulation step. A freshly loaded preset brings
         // its own gravity (the wind tunnel has none); after that the sliders own it.
