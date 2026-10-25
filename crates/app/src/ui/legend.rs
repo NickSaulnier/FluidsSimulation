@@ -34,7 +34,11 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, field: &FieldInfo, (lo, hi)
 }
 
 fn bar(ui: &mut egui::Ui, kind: FieldKind, (lo, hi): (f32, f32), dye: &[[u8; 3]; 3]) {
-    let values: Vec<f32> = (0..SAMPLES).map(|k| lo + (hi - lo) * k as f32 / (SAMPLES - 1) as f32).collect();
+    let mut values: Vec<f32> = (0..SAMPLES).map(|k| lo + (hi - lo) * k as f32 / (SAMPLES - 1) as f32).collect();
+    if kind == FieldKind::Fire {
+        // The flame ramp alone: (flame, no smoke, no fuel) triples.
+        values = values.iter().flat_map(|&v| [v, 0.0, 0.0]).collect();
+    }
     let mut rgba = Vec::new();
     colormap::colourise(&values, kind, (lo, hi), dye, &mut rgba);
     let (rect, _) = ui.allocate_exact_size(BAR, Sense::hover());

@@ -2,6 +2,7 @@
 //! solvers in other crates (e.g. `sim-gpu`, which needs wgpu) can reuse it.
 
 pub mod ballistic;
+pub mod fire;
 pub mod flip;
 pub mod lbm;
 mod multigrid;

@@ -26,6 +26,10 @@ pub enum FieldKind {
     Categorical,
     /// An amount from 0 to 1 (e.g. dye): drawn fading to transparent where it's zero.
     Concentration,
+    /// Fire: *three* values per cell, interleaved (flame brightness, smoke, unburned
+    /// fuel, each 0 to 1), so `fill_field` returns `3 * nx * ny` values. Drawn as a
+    /// blackbody flame over grey smoke over dim fuel.
+    Fire,
 }
 
 #[derive(Clone, Copy, Debug)]

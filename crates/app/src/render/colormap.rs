@@ -6,6 +6,12 @@ use sim::FieldKind;
 const DIVERGING: [[u8; 3]; 3] = [[59, 76, 192], [235, 235, 235], [180, 4, 38]];
 /// Sequential, viridis-like, from 0 to 1.
 const SEQUENTIAL: [[u8; 3]; 5] = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+/// Flame, from barely glowing to hottest: deep red, orange, yellow, near white (a
+/// blackbody-like ramp; fire keeps its colours whatever the fluid palette).
+const FLAME: [[u8; 3]; 4] = [[120, 18, 2], [222, 64, 8], [255, 160, 28], [255, 242, 196]];
+const SMOKE: [u8; 3] = [168, 168, 176];
+/// Unburned fuel: a dim amber, so you can see what's about to burn.
+const FUEL: [u8; 3] = [120, 78, 34];
 /// Cell types: air, fluid, solid.
 const CATEGORIES: [[u8; 4]; 3] = [[200, 200, 210, 60], [70, 130, 230, 255], [110, 110, 120, 255]];
 
@@ -20,7 +26,7 @@ pub fn range(values: &[f32], kind: FieldKind) -> (f32, f32) {
         }
         FieldKind::NonNegative => (0.0, finite.fold(0.0, f32::max).max(1e-6)),
         FieldKind::Categorical => (0.0, (CATEGORIES.len() - 1) as f32),
-        FieldKind::Concentration => (0.0, 1.0),
+        FieldKind::Concentration | FieldKind::Fire => (0.0, 1.0),
     }
 }
 
@@ -29,6 +35,14 @@ pub fn range(values: &[f32], kind: FieldKind) -> (f32, f32) {
 /// analysis colour maps.
 pub fn colourise(values: &[f32], kind: FieldKind, (lo, hi): (f32, f32), dye: &[[u8; 3]; 3], out: &mut Vec<u8>) {
     out.clear();
+    if kind == FieldKind::Fire {
+        // (flame, smoke, fuel) triples, one pixel each.
+        out.reserve(values.len() / 3 * 4);
+        for &[flame, smoke, fuel] in values.as_chunks::<3>().0 {
+            out.extend_from_slice(&fire_pixel(flame, smoke, fuel));
+        }
+        return;
+    }
     out.reserve(values.len() * 4);
     for &v in values {
         let rgba = if !v.is_finite() {
@@ -36,6 +50,7 @@ pub fn colourise(values: &[f32], kind: FieldKind, (lo, hi): (f32, f32), dye: &[[
         } else {
             match kind {
                 FieldKind::Categorical => CATEGORIES[(v.round().max(0.0) as usize).min(CATEGORIES.len() - 1)],
+                FieldKind::Fire => unreachable!("handled above"),
                 FieldKind::Concentration => {
                     let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
                     let [r, g, b] = ramp(dye, t);
@@ -51,6 +66,32 @@ pub fn colourise(values: &[f32], kind: FieldKind, (lo, hi): (f32, f32), dye: &[[
         };
         out.extend_from_slice(&rgba);
     }
+}
+
+/// Flame over smoke over fuel ("over" compositing), each 0 to 1; NaN is transparent.
+fn fire_pixel(flame: f32, smoke: f32, fuel: f32) -> [u8; 4] {
+    if !(flame.is_finite() && smoke.is_finite() && fuel.is_finite()) {
+        return [0, 0, 0, 0];
+    }
+    let flame = flame.clamp(0.0, 1.0);
+    // Back to front: fuel, then smoke, then flame; premultiplied accumulation.
+    let layers = [
+        (FUEL, 0.5 * fuel.clamp(0.0, 1.0)),
+        (SMOKE, 0.7 * smoke.clamp(0.0, 1.0)),
+        (ramp(&FLAME, flame), flame.powf(0.6)),
+    ];
+    let (mut rgb, mut alpha) = ([0.0f32; 3], 0.0f32);
+    for (colour, a) in layers {
+        for c in 0..3 {
+            rgb[c] = f32::from(colour[c]) * a + rgb[c] * (1.0 - a);
+        }
+        alpha = a + alpha * (1.0 - a);
+    }
+    if alpha <= 0.0 {
+        return [0, 0, 0, 0];
+    }
+    let channel = |c: usize| (rgb[c] / alpha).round() as u8;
+    [channel(0), channel(1), channel(2), (255.0 * alpha).round() as u8]
 }
 
 /// Piecewise-linear interpolation through evenly spaced colour stops, t in [0, 1].
@@ -76,6 +117,21 @@ mod tests {
         assert_eq!(out[7], 255, "full dye is opaque");
         assert_eq!(&out[4..8], &out[8..12], "over-full dye clamps");
         assert_eq!(&out[4..7], &dye[2], "full dye is the palette's highlight");
+    }
+
+    #[test]
+    fn fire_draws_flame_over_smoke_over_fuel_one_pixel_per_triple() {
+        let mut out = Vec::new();
+        let dye = crate::render::Palette::default().dye_ramp();
+        // (flame, smoke, fuel): nothing, smoke only, fuel only, full flame over everything, NaN.
+        let values = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, f32::NAN, f32::NAN, f32::NAN];
+        colourise(&values, FieldKind::Fire, (0.0, 1.0), &dye, &mut out);
+        assert_eq!(out.len(), 20);
+        assert_eq!(out[3], 0, "nothing there: transparent");
+        assert_eq!(&out[4..8], &[168, 168, 176, 179], "smoke is translucent grey");
+        assert_eq!(&out[8..12], &[120, 78, 34, 128], "fuel is a dim amber");
+        assert_eq!(&out[12..16], &[255, 242, 196, 255], "full flame hides what's behind it");
+        assert_eq!(out[19], 0, "NaN (solid) is transparent");
     }
 
     #[test]

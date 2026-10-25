@@ -15,6 +15,7 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Fountain", build: fountain },
     Preset { name: "Martin & Moyce column", build: martin_moyce },
     Preset { name: "Wind tunnel", build: wind_tunnel },
+    Preset { name: "Campfire", build: campfire },
 ];
 
 /// Column width for the Martin & Moyce validation case (height is twice this).
@@ -73,6 +74,18 @@ pub fn wind_tunnel() -> Scene {
     s.drains.push(Rect::new(Vec2::new(inner.max.x - 0.12, inner.min.y), inner.max));
     s.solid.paint_disc(Vec2::new(0.5, 0.52), 0.06, true);
     s.solid.update_derived();
+    s
+}
+
+/// A wide, gentle burner on the floor with a vent across the top: the smoke-and-fire
+/// solver's flame rises and its smoke leaves through the vent. (Other solvers get a slow
+/// upwelling jet.)
+pub fn campfire() -> Scene {
+    let mut s = Scene::empty_box(DOMAIN, MASK_CELLS_Y);
+    let inner = s.solid.interior();
+    // Slow and wide, so buoyancy rather than the jet shapes the flame.
+    s.emitters.push(Emitter { pos: Vec2::new(1.0, inner.min.y + 0.01), dir: Vec2::Y, speed: 0.3, width: 0.24 });
+    s.drains.push(Rect::new(Vec2::new(inner.min.x, inner.max.y - 0.06), inner.max));
     s
 }
 

@@ -16,6 +16,7 @@ pub static SOLVERS: &[SolverEntry] = &[
     SolverEntry { name: "FLIP", make: || Box::new(Flip::default()) },
     SolverEntry { name: "PBF", make: || Box::new(Pbf::default()) },
     SolverEntry { name: "Stable fluids (dye)", make: || Box::new(StableFluids::default()) },
+    SolverEntry { name: "Smoke & fire", make: || Box::new(StableFluids::smoke_and_fire()) },
     SolverEntry { name: "Lattice Boltzmann (dye)", make: || Box::new(Lbm::default()) },
     SolverEntry { name: "Ballistic (debug)", make: || Box::new(Ballistic::default()) },
 ];

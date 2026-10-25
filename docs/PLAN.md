@@ -1102,6 +1102,44 @@ crate is why they can run at all.
     fires when the projection is switched off.
   - **Benchmark on a quiet machine.** A running copy of the app (on 8 threads at
     240 fps) roughly quadrupled one P2G timing.
+- **Smoke and fire** (`solvers/fire.rs`, a mode of stable fluids, registered as "Smoke &
+  fire"):
+  - **Model:** fuel and temperature move with the flow alongside the dye, which is the
+    smoke.
+    - Burning releases heat and soot.
+    - Hot gas rises against gravity through Boussinesq lift. Tilting makes flames lean,
+      and with zero gravity they don't rise (tested).
+    - A little heat diffusion lets fire creep.
+    - It reuses the grid core: MGPCG, open boundaries, MacCormack advection.
+  - **Sources:**
+    - Emitters are lit burners (Fountain is a flamethrower; the faucet is a torch).
+    - Fluid blocks are solid fuel, lit along the bottom.
+    - A new Campfire preset: a slow, wide burner with a vent across the top.
+  - **What tuning taught** (each found in the app or by a failing test):
+    1. *Fuel blocks as gas didn't burn.* The block's own hot air swept it along, and
+       only 21% burned in 2 s. Solid fuel stays put.
+    2. *A fire needs heat release to beat its losses.* At heat 1.5 a burning pile
+       settled barely above ignition and stalled. It's now 6.
+    3. *Burning solid has to stay alight on its own.* The airflow carried heat away
+       faster than burning cells released it, and a pile went out at 2.5 s with 60%
+       unburned. Lit solid fuel now smoulders like embers until it's spent.
+    4. *Exponential cooling couldn't give short flames and a spreading fire at once.*
+       A rate fast enough for short flames stalled the pile, and a slow one gave flames
+       reaching the ceiling. Radiative-style cooling, dT/dt = −k·T² (implicit, so
+       stable at any dt), cools very hot gas fast and warm gas slowly. It solves both.
+    5. *A smooth burner gives a laminar jet, not flames.* Varying the burner's fuel
+       ±40% along the nozzle and over time (a deterministic hash) seeds the buoyant
+       instabilities that make flames flicker.
+    6. *Flame visibility starts at T = 1*, so warm but invisible gas doesn't paint
+       the whole plume orange.
+  - **Rendering:** a new `FieldKind::Fire` carries three values per cell: flame, smoke
+    and fuel.
+    - The flame uses a fixed blackbody ramp, over light-grey smoke, over dim-amber
+      unburned fuel.
+    - Temperature, fuel and smoke are separate overlays.
+    - Fire ignores the fluid palette, since its colours are physical.
+  - **Cost:** 4–6 ms per frame on most presets. The Fountain's fast jet needs about
+    3 substeps, about 14–18 ms per frame.
 - **Live system-audio mode (Spotify or anything else playing):**
   - **Why not Spotify directly:** it exposes neither raw audio (the streams are DRM'd)
     nor, for new apps since late 2024, its audio-analysis data. So the app captures
