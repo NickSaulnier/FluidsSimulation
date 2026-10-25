@@ -21,12 +21,12 @@ mod tests {
     const RATE: u32 = 48_000;
     const FRAME: f32 = 1.0 / 60.0;
 
-    /// One "song": a 15 s verse (a bare 120 bpm beat), a 15 s chorus (the beat over a
+    /// One "song": a soft verse (a bare 120 bpm beat), a chorus (the beat over a
     /// sustained bass line, loud enough to count as energetic), then 3 s of silence (a
     /// gap between songs). Without the chorus the energetic looks would never come up.
-    fn song() -> Vec<f32> {
-        let (verse, _, _) = synthetic_beat(RATE, 15.0, 120.0, 0.8);
-        let (mut chorus, _, _) = synthetic_beat(RATE, 15.0, 120.0, 0.8);
+    fn song(verse_s: f32, chorus_s: f32) -> Vec<f32> {
+        let (verse, _, _) = synthetic_beat(RATE, verse_s, 120.0, 0.3);
+        let (mut chorus, _, _) = synthetic_beat(RATE, chorus_s, 120.0, 0.8);
         for (k, s) in chorus.iter_mut().enumerate() {
             let t = k as f32 / RATE as f32;
             *s += 0.35 * (TAU * 110.0 * t).sin() + 0.15 * (TAU * 220.0 * t).sin();
@@ -37,10 +37,17 @@ mod tests {
         audio
     }
 
+    /// Songs of different shapes, looped. One song on repeat would line the look changes
+    /// up with the same moments every time, and the director's rotation could then miss
+    /// some looks for good.
+    fn playlist() -> Vec<f32> {
+        [(15.0, 15.0), (8.0, 22.0), (20.0, 9.0), (11.0, 17.0)].into_iter().flat_map(|(v, c)| song(v, c)).collect()
+    }
+
     /// Run the visualizer for `seconds` with look changes at least every `interval`
     /// seconds. Returns the looks applied, in order.
     fn soak(seconds: f32, interval: f32) -> Vec<usize> {
-        let audio = song();
+        let audio = playlist();
         let mut world = World::new(0, 0);
         let mut ui = UiState { presenting: true, ..UiState::default() };
         ui.director.interval_s = interval;
@@ -92,11 +99,12 @@ mod tests {
         assert!(visited.len() >= 3, "only {} look changes: {visited:?}", visited.len());
     }
 
-    /// Half an hour, every look visited, all healthy.
+    /// Half an hour, every look visited, all healthy. The interval is shorter than the
+    /// songs, so timed changes land mid-song, in the loud choruses too.
     #[test]
     #[ignore = "slow: run on demand"]
     fn thirty_minute_soak() {
-        let visited = soak(1800.0, 30.0);
+        let visited = soak(1800.0, 20.0);
         for (i, look) in LOOKS.iter().enumerate() {
             assert!(visited.contains(&i), "never showed {}", look.name);
         }

@@ -3,13 +3,15 @@
 //! which look; the app does the applying.
 //!
 //! When it's active (full screen, auto on) it changes look on:
-//! - **A new song:** at least `SONG_GAP_S` of silence, then sound again.
+//! - **A new song:** at least `SONG_GAP_S` of silence, then `LISTEN_S` of sound.
 //! - **A drop:** loudness jumping well above its recent average (`DROP_JUMP`).
 //! - **A timer:** once `interval_s` has passed, on the next kick, so the cut lands on
-//!   the beat.
+//!   the beat; or `KICK_WAIT_S` later if no kick comes (ambient music, say).
 //!
 //! The first two wait at least `MIN_LOOK_S` into a look. The next look suits the
-//! music's energy: calm looks for quiet passages, energetic ones for loud.
+//! music's energy (calm looks for quiet passages, energetic ones for loud) and, of
+//! those, is the one gone longest unseen, so every look keeps coming round. For a new
+//! song that's the energy of its opening seconds, not the end of the song before.
 //!
 //! With auto off (the look locked) it still refreshes the look on new songs and at the
 //! interval: the same look fades back in with a fresh scene. Left alone for long, dye
@@ -21,7 +23,11 @@ use crate::looks::LOOKS;
 const FADE_OUT_S: f32 = 0.5;
 const FADE_IN_S: f32 = 0.8;
 const SONG_GAP_S: f32 = 2.0;
+/// How long a new song is heard before its look is chosen.
+const LISTEN_S: f32 = 2.0;
 const MIN_LOOK_S: f32 = 15.0;
+/// How long past the interval the timer waits for a kick.
+const KICK_WAIT_S: f32 = 4.0;
 /// A drop: the fast loudness average exceeds the slow one by this much (both 0..1).
 const DROP_JUMP: f32 = 0.35;
 const FAST_S: f32 = 0.4;
@@ -51,6 +57,11 @@ pub struct Director {
     /// The timer has run out: change on the next kick.
     due: bool,
     fade: Fade,
+    /// A new song began: seconds of it heard so far, and its loudness summed over them.
+    listening: Option<(f32, f32)>,
+    /// When each look was last applied, counted in looks applied (0: never).
+    shown: [u32; LOOKS.len()],
+    applied: u32,
 }
 
 impl Default for Director {
@@ -65,6 +76,9 @@ impl Default for Director {
             slow: 0.0,
             due: false,
             fade: Fade::None,
+            listening: None,
+            shown: [0; LOOKS.len()],
+            applied: 0,
         }
     }
 }
@@ -114,6 +128,8 @@ impl Director {
                 if t >= FADE_OUT_S {
                     self.fade = Fade::In { t: 0.0 };
                     (self.current, self.elapsed, self.due) = (Some(target), 0.0, false);
+                    self.applied += 1;
+                    self.shown[target] = self.applied;
                     return Some(target);
                 }
                 self.fade = Fade::Out { t, target };
@@ -140,19 +156,42 @@ impl Director {
             }
             return None;
         }
+        if settled && song_change {
+            self.listening = Some((0.0, 0.0));
+        }
+        if let Some((heard, sum)) = self.listening {
+            // Hear the new song's opening before choosing; nothing else cuts in meanwhile.
+            let (heard, sum) = (heard + dt, sum + level * dt);
+            self.listening = if silent {
+                None
+            } else if heard >= LISTEN_S {
+                let target = self.choose(sum / heard > ENERGETIC);
+                self.request(target);
+                None
+            } else {
+                Some((heard, sum))
+            };
+            return None;
+        }
         let drop = settled && self.fast - self.slow > DROP_JUMP;
-        if (settled && song_change) || drop || (self.due && kicked) {
+        let overdue = self.elapsed >= self.interval_s + KICK_WAIT_S;
+        if drop || (self.due && (kicked || overdue)) {
             let target = self.choose(self.slow > ENERGETIC);
             self.request(target);
         }
         None
     }
 
-    /// The next look after the current one that suits the music's energy.
+    /// The look gone longest unseen that suits the music's energy; ties go to the
+    /// first after the current one.
     fn choose(&self, energetic: bool) -> usize {
         let n = LOOKS.len();
         let start = self.current.map_or(0, |c| c + 1);
-        (0..n).map(|k| (start + k) % n).find(|&i| Some(i) != self.current && LOOKS[i].suits(energetic)).unwrap_or(start % n)
+        (0..n)
+            .map(|k| (start + k) % n)
+            .filter(|&i| Some(i) != self.current && LOOKS[i].suits(energetic))
+            .min_by_key(|&i| self.shown[i])
+            .unwrap_or(start % n)
     }
 }
 
@@ -185,19 +224,60 @@ mod tests {
     #[test]
     fn the_timer_changes_look_on_a_kick() {
         let mut d = settled(0.3);
-        assert!(run(&mut d, &music(0.3), None, 80.0).is_empty(), "changed with no kick and no trigger");
+        assert!(run(&mut d, &music(0.3), None, 68.0).is_empty(), "changed with no kick and no trigger");
         // Past the interval, but no kick yet: waits.
-        assert!(run(&mut d, &music(0.3), None, 5.0).is_empty());
+        assert!(run(&mut d, &music(0.3), None, 3.0).is_empty());
         let applied = run(&mut d, &music(0.3), Some(30), 2.0);
         assert_eq!(applied.len(), 1, "{applied:?}");
         assert_ne!(Some(applied[0]), Some(0));
     }
 
     #[test]
+    fn choices_rotate_through_every_look_that_suits() {
+        let mut d = Director { current: Some(0), ..Director::default() };
+        let suitable = LOOKS.iter().filter(|l| l.suits(true)).count();
+        let mut picked = Vec::new();
+        for _ in 0..suitable {
+            let target = d.choose(true);
+            d.request(target);
+            run(&mut d, &silence(), None, 1.5);
+            picked.push(d.current.unwrap());
+        }
+        picked.sort();
+        picked.dedup();
+        assert_eq!(picked.len(), suitable, "repeated a look before showing them all: {picked:?}");
+    }
+
+    #[test]
+    fn the_timer_changes_look_without_kicks_after_a_wait() {
+        let mut d = settled(0.3);
+        assert!(run(&mut d, &music(0.3), None, 72.0).is_empty(), "didn't wait for a kick");
+        assert_eq!(run(&mut d, &music(0.3), None, 4.0).len(), 1, "kickless music never changed look");
+    }
+
+    #[test]
     fn a_new_song_after_silence_changes_look() {
         let mut d = settled(0.3);
         assert!(run(&mut d, &silence(), None, 3.0).is_empty(), "changed during the silence");
-        assert_eq!(run(&mut d, &music(0.3), None, 2.0).len(), 1, "didn't change when the song started");
+        assert_eq!(run(&mut d, &music(0.3), None, 3.0).len(), 1, "didn't change when the song started");
+    }
+
+    #[test]
+    fn a_new_song_is_not_judged_by_the_last_ones_loud_end() {
+        let mut d = settled(0.9);
+        d.current = LOOKS.iter().position(|l| l.name == "Wind tunnel");
+        run(&mut d, &silence(), None, 3.0);
+        let applied = run(&mut d, &music(0.3), None, 3.0);
+        assert_eq!(applied.iter().map(|&i| LOOKS[i].name).collect::<Vec<_>>(), ["Lava lamp"], "the quiet new song didn't get the calm look");
+    }
+
+    #[test]
+    fn a_new_song_that_opens_loud_gets_an_energetic_look() {
+        let mut d = settled(0.2);
+        run(&mut d, &silence(), None, 3.0);
+        let applied = run(&mut d, &music(0.9), None, 3.0);
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert!(LOOKS[applied[0]].suits(true) && !LOOKS[applied[0]].suits(false), "{} isn't an energetic look", LOOKS[applied[0]].name);
     }
 
     #[test]

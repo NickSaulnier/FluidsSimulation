@@ -356,13 +356,25 @@ A–D is the core visualizer; E–G make it good enough to leave running.
     swirl wanders on a Lissajous path and fades in over 2 s. Music stops it at once.
   - **Soak tests** (`app/src/soak.rs`): the analyzer, director, reactions and budget
     drive a world from synthetic songs, checking invariants and the particle budget
-    every half second. Each song is a 15 s verse (a bare beat), a 15 s chorus (the
-    beat over a sustained bass line) and a 3 s gap, looped. The chorus matters: the
-    first 30-minute run used only the bare beat, whose slow level sits right at the
-    energetic threshold, so the two energetic looks never came up.
+    every half second. The songs are a loop of four, each a soft verse (a bare beat),
+    a loud chorus (the beat over a sustained bass line) and a 3 s gap, with different
+    verse and chorus lengths.
     - A 60 s run (15 s interval) is in the normal tests.
-    - A 30-minute run is on demand:
+    - A 30-minute run (20 s interval) is on demand:
       `cargo test --release -p app thirty_minute_soak -- --ignored --nocapture`.
+      It passes: 83 look changes, each of the six looks 13 or 14 times, peak 29,040
+      particles, invariants and budget held throughout.
+    - Getting there found three director faults, now fixed:
+      - It took the next suitable look in list order. The looks that suit any music
+        sit between the energetic ones, so Ink storm and Firestorm only came up by
+        chance. It now takes the suitable look gone longest unseen.
+      - A new song was judged by the slow average, which still held the last song's
+        loud end. It now listens to the new song's first 2 s.
+      - The timer waited for a kick with no limit, so kickless music never changed
+        look. It now changes anyway 4 s past the interval.
+    - Earlier soak music hid these: one bare beat sits right at the energetic
+      threshold, and a single song on repeat lines the changes up with the same
+      moments every time.
     - The soak lives in the app's tests rather than the bench as planned: the bench
       can't reach the app's audio and director code.
   - **Checked in the app:** full screen with no source; after 10 s the settled water
