@@ -1,13 +1,18 @@
-//! The 3D view: an orbit camera and, for now, the scene in outline (domain box, floor
-//! grid, burners, vents, solids). The raymarched volume joins it in a later phase.
+//! The 3D view: an orbit camera, the scene's lines (floor grid, domain box, burners,
+//! vents) and, over them, the gas raymarched from the solver's volume texture, with the
+//! solids shaded where the rays hit them (`march.wgsl`).
+//!
+//! The lines write depth, and the raymarch stops at it: a line in front of the smoke
+//! stays sharp, one behind is seen through it.
 
 mod camera;
 
 pub use camera::OrbitCamera;
 
 use bytemuck::{Pod, Zeroable};
+use crate::render::Palette;
 use glam::{Mat4, Vec3};
-use sim3d::{Scene3d, Shape};
+use sim3d::{Scene3d, Shape, Volume};
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
@@ -22,17 +27,51 @@ const EDGE: [f32; 4] = [0.35, 0.38, 0.45, 1.0];
 const GRID: [f32; 4] = [0.12, 0.13, 0.16, 1.0];
 const BURNER: [f32; 4] = [1.0, 0.35, 0.05, 1.0];
 const VENT: [f32; 4] = [0.15, 0.4, 0.8, 1.0];
-const SOLID: [f32; 4] = [0.55, 0.57, 0.62, 1.0];
 const GRID_STEP: f32 = 0.1;
 const CIRCLE_SEGMENTS: usize = 40;
 /// The colour around and behind the domain, matching the 2D view's letterbox.
 const BACKGROUND: wgpu::Color = wgpu::Color { r: 0.012, g: 0.014, b: 0.022, a: 1.0 };
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Smoke extinction per unit of smoke (the burners' output), 1/m.
+const EXTINCTION: f32 = 20.0;
+/// The shadow probe's: stronger, since two taps can't see everything in the way and
+/// thin smoke should still show its form.
+const SHADOW_EXTINCTION: f32 = 120.0;
+/// March step and shadow probe distance, in cells.
+const STEP_CELLS: f32 = 0.75;
+const PROBE_CELLS: f32 = 6.0;
+/// Toward the light: above, to the side and a little to the front.
+const LIGHT: Vec3 = Vec3::new(0.6, 0.8, 0.3);
+const MAX_SHAPES: usize = 32;
+
+/// Must match `March` in march.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct MarchUniforms {
+    inv_view_proj: [[f32; 4]; 4],
+    eye: [f32; 4],
+    size: [f32; 4],
+    viewport: [f32; 4],
+    lit: [f32; 4],
+    shade: [f32; 4],
+    light: [f32; 4],
+    counts: [u32; 4],
+    shapes: [[f32; 4]; 2 * MAX_SHAPES],
+}
 
 pub struct Renderer3d {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     vertices: Option<(wgpu::Buffer, u32)>,
+    march: wgpu::RenderPipeline,
+    march_layout: wgpu::BindGroupLayout,
+    march_uniforms: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    /// The lines' depth, at the target's size.
+    depth: Option<(wgpu::TextureView, [u32; 2])>,
+    /// Stands in for the volume when the solver has none.
+    empty_volume: wgpu::TextureView,
 }
 
 impl Renderer3d {
@@ -90,16 +129,155 @@ impl Renderer3d {
                 targets: &[Some(format.into())],
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::LineList, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let march_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("march.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("march.wgsl").into()),
+        });
+        let march_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("march uniforms"),
+            size: size_of::<MarchUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let fragment = wgpu::ShaderStages::FRAGMENT;
+        let march_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("march"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(size_of::<MarchUniforms>() as u64),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let march_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("march"),
+            bind_group_layouts: &[Some(&march_layout)],
+            immediate_size: 0,
+        });
+        // Premultiplied: the march's colour plus what's behind, times the light let through.
+        let over = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::SrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let march = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("march"),
+            layout: Some(&march_pipeline_layout),
+            vertex: wgpu::VertexState { module: &march_shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &march_shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState { color: over, alpha: wgpu::BlendComponent::OVER }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, uniforms, bind_group, vertices: None }
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("volume"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let empty_volume = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("empty volume"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D3,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        Self {
+            pipeline,
+            uniforms,
+            bind_group,
+            vertices: None,
+            march,
+            march_layout,
+            march_uniforms,
+            sampler,
+            depth: None,
+            empty_volume,
+        }
     }
 
-    /// Clear the target and draw `scene` from `camera` into the `viewport` (physical
-    /// pixels: x, y, width, height), the canvas left by the UI.
+    fn depth_view(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
+        if self.depth.as_ref().is_none_or(|(_, s)| *s != size) {
+            let view = device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("3d depth"),
+                    size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: DEPTH_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default());
+            self.depth = Some((view, size));
+        }
+        self.depth.as_ref().expect("just made").0.clone()
+    }
+
+    /// Clear the target (`target_size` pixels) and draw `scene` and the solver's
+    /// `volume` from `camera` into the `viewport` (physical pixels: x, y, width,
+    /// height), the canvas left by the UI. The smoke takes its colours from `palette`.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -107,12 +285,32 @@ impl Renderer3d {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
+        target_size: [u32; 2],
         viewport: [f32; 4],
         camera: &OrbitCamera,
         scene: &Scene3d,
+        volume: Option<Volume<'_>>,
+        palette: &Palette,
     ) {
         let [x, y, w, h] = viewport;
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&camera.view_proj(w / h.max(1.0))));
+        let view_proj = camera.view_proj(w / h.max(1.0));
+        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&view_proj));
+        let march = march_uniforms(view_proj, camera.eye(), viewport, scene, volume.as_ref().map(|v| v.cells), palette);
+        queue.write_buffer(&self.march_uniforms, 0, bytemuck::bytes_of(&march));
+        let depth = self.depth_view(device, target_size);
+        let march_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("march"),
+            layout: &self.march_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.march_uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(volume.as_ref().map_or(&self.empty_volume, |v| v.view)),
+                },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&depth) },
+            ],
+        });
         let lines = outline(scene);
         let bytes: &[u8] = bytemuck::cast_slice(&lines);
         match &self.vertices {
@@ -130,26 +328,76 @@ impl Renderer3d {
             *count = lines.len() as u32;
         }
 
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("3d lines"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(BACKGROUND), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            if w < 1.0 || h < 1.0 {
+                return;
+            }
+            pass.set_viewport(x, y, w, h, 0.0, 1.0);
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            if let Some((buffer, count)) = &self.vertices {
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..*count, 0..1);
+            }
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("3d"),
+            label: Some("3d volume"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(BACKGROUND), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })],
             ..Default::default()
         });
-        if w < 1.0 || h < 1.0 {
-            return;
-        }
         pass.set_viewport(x, y, w, h, 0.0, 1.0);
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        if let Some((buffer, count)) = &self.vertices {
-            pass.set_vertex_buffer(0, buffer.slice(..));
-            pass.draw(0..*count, 0..1);
-        }
+        pass.set_pipeline(&self.march);
+        pass.set_bind_group(0, &march_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+/// The raymarch's parameters: camera, domain, step, smoke colours and the solids.
+fn march_uniforms(view_proj: Mat4, eye: Vec3, viewport: [f32; 4], scene: &Scene3d, cells: Option<glam::UVec3>, palette: &Palette) -> MarchUniforms {
+    let cell = cells.map_or(1.0, |n| scene.size.y / n.y as f32);
+    let [deep, _, highlight] = palette.linear();
+    let rgb = |c: [f32; 4]| Vec3::new(c[0], c[1], c[2]);
+    // Lit smoke: the highlight paled toward white; shadowed: the deep colour, dimmed.
+    let lit = rgb(highlight).lerp(Vec3::splat(0.7), 0.5);
+    let shade = 0.25 * rgb(deep) + Vec3::splat(0.015);
+    let mut shapes = [[0.0; 4]; 2 * MAX_SHAPES];
+    let solids = &scene.solids[..scene.solids.len().min(MAX_SHAPES)];
+    for (k, s) in solids.iter().enumerate() {
+        (shapes[2 * k], shapes[2 * k + 1]) = match *s {
+            Shape::Sphere { centre: c, radius } => ([c.x, c.y, c.z, radius], [0.0; 4]),
+            Shape::Cuboid(b) => ([b.min.x, b.min.y, b.min.z, -1.0], [b.max.x, b.max.y, b.max.z, 0.0]),
+        };
+    }
+    MarchUniforms {
+        inv_view_proj: view_proj.inverse().to_cols_array_2d(),
+        eye: eye.extend(0.0).to_array(),
+        size: scene.size.extend(STEP_CELLS * cell).to_array(),
+        viewport,
+        lit: lit.extend(EXTINCTION).to_array(),
+        shade: shade.extend(PROBE_CELLS * cell).to_array(),
+        light: LIGHT.normalize().extend(SHADOW_EXTINCTION).to_array(),
+        counts: [solids.len() as u32, u32::from(cells.is_some()), 0, 0],
+        shapes,
     }
 }
 
@@ -180,16 +428,7 @@ fn outline(scene: &Scene3d) -> Vec<Vertex> {
         let (u, w) = b.dir.any_orthonormal_pair();
         circle(b.pos, u * b.radius, w * b.radius, BURNER, &mut line);
     }
-    for solid in &scene.solids {
-        match *solid {
-            Shape::Sphere { centre, radius } => {
-                for (a, b) in [(Vec3::X, Vec3::Y), (Vec3::Y, Vec3::Z), (Vec3::Z, Vec3::X)] {
-                    circle(centre, a * radius, b * radius, SOLID, &mut line);
-                }
-            }
-            Shape::Cuboid(b) => box_edges(b.min, b.max, SOLID, &mut line),
-        }
-    }
+    // Solids aren't lines: the raymarch shades them.
     v
 }
 
@@ -228,5 +467,24 @@ mod tests {
         for p in sim3d::PRESETS {
             assert_eq!(outline(&(p.build)()).len() % 2, 0, "{}", p.name);
         }
+    }
+
+    /// The march gets every solid in the shader's encoding, a step in cells, and
+    /// marches only when there's a volume.
+    #[test]
+    fn march_parameters_carry_the_solids_and_the_grid() {
+        let scene = sim3d::scene::chimney();
+        let cells = glam::UVec3::new(107, 160, 107);
+        let m = march_uniforms(Mat4::IDENTITY, Vec3::ONE, [0.0, 0.0, 800.0, 600.0], &scene, Some(cells), &Palette::default());
+        assert_eq!(m.counts, [scene.solids.len() as u32, 1, 0, 0]);
+        for k in 0..scene.solids.len() {
+            assert_eq!(m.shapes[2 * k][3], -1.0, "the chimney's solids are boxes");
+            assert!(Vec3::from_slice(&m.shapes[2 * k + 1][..3]).cmpge(Vec3::from_slice(&m.shapes[2 * k][..3])).all(), "max below min");
+        }
+        assert!((m.size[3] - STEP_CELLS * 1.5 / 160.0).abs() < 1e-6);
+        let twin = sim3d::scene::twin_burners();
+        let none = march_uniforms(Mat4::IDENTITY, Vec3::ONE, [0.0; 4], &twin, None, &Palette::default());
+        assert_eq!(none.counts[1], 0, "marched with no volume");
+        assert!(none.shapes[0][3] > 0.0, "a sphere keeps its radius");
     }
 }

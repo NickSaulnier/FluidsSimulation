@@ -13,7 +13,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     widgets::group(ui, "Display", |ui| {
         colours(ui, &mut s.palette);
         if in_3d {
-            ui.weak("The 3D view shows the scene in outline for now.");
+            ui.weak("In 3D the smoke takes its tint from these colours.");
             return;
         }
         // Grid solvers have no particles to draw: they show a field (the dye) instead.

@@ -1,4 +1,4 @@
-// Coloured lines in 3D: the domain box, floor grid, burners, vents and solid outlines.
+// Coloured lines in 3D: the domain box, floor grid, burners and vents.
 struct Uniforms {
     view_proj: mat4x4f,
 };

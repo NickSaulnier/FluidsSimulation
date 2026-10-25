@@ -7,23 +7,28 @@
 //!    burners' gas in their cells; Boussinesq buoyancy (heat rises, smoke is a little
 //!    heavy).
 //! 2. **Advect velocity:** semi-Lagrangian with an RK2 backtrace.
-//! 3. **Pressure:** divergence, then warm-started red-black SOR for ∇²φ = ∇·u. Vents
-//!    hold φ = 0 (open to the outside); walls, solids and burners are Neumann.
+//! 3. **Pressure:** divergence, then warm-started red-black SOR for ∇²φ = ∇·u. Where
+//!    a vent touches the domain's wall the wall is open, with φ = 0 beyond it; other
+//!    walls, solids and burners are Neumann.
 //! 4. **Project:** u -= ∇φ on the free faces.
 //! 5. **Advect smoke and heat:** MacCormack with the min/max limiter, then cooling
-//!    (dT/dt = -k·T², implicit) and fading. Gas reaching a vent leaves.
+//!    (dT/dt = -k·T², implicit) and fading. Gas leaves through the open walls.
 //!
 //! Burners are inflow cells: every face of theirs carries the exit velocity, so a
 //! burner off the floor pushes gas through (as much in as out) and one on the floor
-//! adds it; the vents let it out.
+//! adds it; the open walls let it out (and let air back in elsewhere). Vent cells are
+//! ordinary fluid: only the wall beside them changes, so the flow carries straight on
+//! out instead of stalling at the vent. A vent away from the walls has no effect.
 //!
 //! Fields live in storage buffers, sampled trilinearly in the shader: plain buffers
 //! need no filterable float textures and fit wgpu's default limit of eight storage
-//! buffers per stage. Nothing is read back except the pass timings (timestamp
-//! queries, a frame or two late, when the device supports them).
+//! buffers per stage. After each step the smoke and temperature are copied into a
+//! 3D texture (`Solver3d::volume`) for the renderer to sample with hardware
+//! filtering. Nothing is read back except the pass timings (timestamp queries, a
+//! frame or two late, when the device supports them).
 
 use crate::scene::{Scene3d, Shape};
-use crate::solver::{Solver3d, StepInput3d};
+use crate::solver::{Solver3d, StepInput3d, Volume};
 use bytemuck::{Pod, Zeroable};
 use glam::{UVec3, Vec3};
 use sim::{FloatSpec, IntSpec, Metric, ParamVisitor, Stats};
@@ -41,7 +46,8 @@ const MAX_SHAPES: usize = 32;
 const MAX_VENTS: usize = 16;
 const MAX_BURNERS: usize = 64;
 const WORKGROUP: UVec3 = UVec3::new(8, 8, 4);
-const PHASES: [&str; 5] = ["sources + forces", "advect velocity", "pressure", "project", "advect smoke"];
+const PHASES: [&str; 6] = ["sources + forces", "advect velocity", "pressure", "project", "advect smoke", "volume copy"];
+const VOLUME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 #[derive(Clone, Debug)]
 pub struct SmokeParams {
@@ -192,6 +198,7 @@ struct Pipelines {
     project: wgpu::ComputePipeline,
     advect_forward: wgpu::ComputePipeline,
     advect_correct: wgpu::ComputePipeline,
+    export_volume: wgpu::ComputePipeline,
 }
 
 /// The grid's GPU buffers.
@@ -207,6 +214,8 @@ struct Fields {
     scal_tmp: wgpu::Buffer,
     pd: wgpu::Buffer,
     flags: wgpu::Buffer,
+    /// (smoke, temperature) as a filterable texture, for drawing.
+    volume: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
 }
 
@@ -285,6 +294,16 @@ impl Smoke3d {
         }];
         entries.extend((1..=7).map(|b| storage(b, false)));
         entries.push(storage(8, true));
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 9,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: VOLUME_FORMAT,
+                view_dimension: wgpu::TextureViewDimension::D3,
+            },
+            count: None,
+        });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("smoke3d"), entries: &entries });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("smoke3d"),
@@ -312,6 +331,7 @@ impl Smoke3d {
             project: pipeline("project", &[]),
             advect_forward: pipeline("advect_forward", &[]),
             advect_correct: pipeline("advect_correct", &[]),
+            export_volume: pipeline("export_volume", &[]),
         };
         let buffer = |label: &str, size: u64, usage: wgpu::BufferUsages| {
             device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
@@ -359,6 +379,18 @@ impl Smoke3d {
         let scal_tmp = buffer("smoke, temperature (corrected)", cells * 8);
         let pd = buffer("pressure, divergence", cells * 8);
         let flags = buffer("cell types", cells * 4);
+        let volume = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("smoke volume"),
+                size: wgpu::Extent3d { width: n.x, height: n.y, depth_or_array_layers: n.z },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D3,
+                format: VOLUME_FORMAT,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("smoke3d"),
             layout: &self.layout,
@@ -372,9 +404,10 @@ impl Smoke3d {
                 wgpu::BindGroupEntry { binding: 6, resource: pd.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: flags.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: self.geom.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&volume) },
             ],
         });
-        self.fields = Some(Fields { n, h, nu, nv, vel, vel_tmp, scal, _scal_hat: scal_hat, scal_tmp, pd, flags, bind_group });
+        self.fields = Some(Fields { n, h, nu, nv, vel, vel_tmp, scal, _scal_hat: scal_hat, scal_tmp, pd, flags, volume, bind_group });
     }
 
     /// The scene's shapes, vents and burners (plus the frame's extra burners) for the
@@ -538,8 +571,8 @@ impl Smoke3d {
         bytemuck::cast_slice(&read(gpu, &self.fields.as_ref().expect("reset ran").pd)).to_vec()
     }
 
-    /// Cell types (0 fluid, 1 solid, 2 vent, 3 burner, with the burner's index above
-    /// bit 8).
+    /// Cell types (0 fluid, 1 solid, 3 burner, with the burner's index above bit 8;
+    /// bit 4 marks fluid in a vent).
     pub fn read_flags(&self, gpu: &GpuContext) -> Vec<u32> {
         bytemuck::cast_slice(&read(gpu, &self.fields.as_ref().expect("reset ran").flags)).to_vec()
     }
@@ -604,6 +637,7 @@ impl Solver3d for Smoke3d {
         for _ in 0..substeps {
             self.record_substep(encoder);
         }
+        self.pass(encoder, 5, |pass, p, f| dispatch(pass, &p.export_volume, f.cell_groups()));
         self.collect_timings(encoder);
     }
 
@@ -620,6 +654,10 @@ impl Solver3d for Smoke3d {
 
     fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
         self.params.visit(v);
+    }
+
+    fn volume(&self) -> Option<Volume<'_>> {
+        self.fields.as_ref().map(|f| Volume { view: &f.volume, cells: f.n })
     }
 
     fn stats(&self) -> &Stats {

@@ -34,14 +34,18 @@ struct Params {
 // Shapes (2 each: a sphere is (centre, radius), a box (min, -1) then (max, 0)), then
 // vents (min, max), then burners ((pos, radius), (dir, speed)).
 @group(0) @binding(8) var<storage, read> geom: array<vec4<f32>>;
+// (smoke, temperature, solid) for drawing: a filterable copy of `scal`, with solid cells
+// marked so the renderer can shadow with them.
+@group(0) @binding(9) var volume: texture_storage_3d<rgba16float, write>;
 
 // Red-black Gauss-Seidel colour, set per pipeline.
 override PARITY: u32 = 0u;
 
 const FLUID: u32 = 0u;
 const SOLID: u32 = 1u;
-const VENT: u32 = 2u;
 const INFLOW: u32 = 3u;
+/// A fluid cell inside a vent: where it touches the domain's wall, the wall is open.
+const OPEN: u32 = 0x10u;
 
 fn dims() -> vec3<i32> {
     return vec3<i32>(P.n);
@@ -56,12 +60,16 @@ fn cell_index(c: vec3<i32>) -> u32 {
     return u32(c.x + n.x * (c.y + n.y * c.z));
 }
 
-/// Outside the domain counts as solid: the box walls.
+/// Outside the domain counts as solid: the box walls (open only at vents).
 fn cell_type(c: vec3<i32>) -> u32 {
     if !inside(c) {
         return SOLID;
     }
-    return flags[cell_index(c)] & 0xffu;
+    return flags[cell_index(c)] & 0x0fu;
+}
+
+fn is_open(c: vec3<i32>) -> bool {
+    return inside(c) && (flags[cell_index(c)] & OPEN) != 0u;
 }
 
 fn axis_unit(axis: u32) -> vec3<i32> {
@@ -92,10 +100,14 @@ fn burner_base(b: u32) -> u32 {
 
 /// A face with a prescribed velocity returns (1, that velocity); a free one (0, 0).
 /// `c1` is the cell on the face's positive side, `c0` the one below it on `axis`.
+/// The domain's wall is open where a vent meets it (the projection sets those faces).
 fn fixed_face(axis: u32, c1: vec3<i32>) -> vec2<f32> {
     let c0 = c1 - axis_unit(axis);
     let t0 = cell_type(c0);
     let t1 = cell_type(c1);
+    if (!inside(c0) && is_open(c1)) || (!inside(c1) && is_open(c0)) {
+        return vec2<f32>(0.0, 0.0);
+    }
     if t0 == SOLID || t1 == SOLID {
         return vec2<f32>(1.0, 0.0);
     }
@@ -239,11 +251,11 @@ fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
             }
         }
         if t == FLUID && in_vent(p) {
-            t = VENT;
+            t = FLUID | OPEN;
         }
     }
     flags[i] = t;
-    let kind = t & 0xffu;
+    let kind = t & 0x0fu;
     if kind == INFLOW {
         scal[i] = vec2<f32>(1.0, P.burner_temp);
     } else if kind == SOLID {
@@ -275,7 +287,9 @@ fn forces(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = vec3<i32>(id);
     for (var axis = 0u; axis < 3u; axis++) {
         if all(c < comp_dims(axis)) && fixed_face(axis, c).x == 0.0 {
-            let s = 0.5 * (scal[cell_index(c)] + scal[cell_index(c - axis_unit(axis))]);
+            // (One side may be outside, at a vent's open wall: take the inside cell.)
+            let edge = dims() - 1;
+            let s = 0.5 * (scal[cell_index(clamp(c, vec3<i32>(0), edge))] + scal[cell_index(clamp(c - axis_unit(axis), vec3<i32>(0), edge))]);
             let a = P.gravity[axis] * (P.heaviness * s.x - P.rise * s.y);
             vel[comp_index(axis, c)] += P.dt * a;
         }
@@ -315,24 +329,29 @@ fn divergence(@builtin(global_invocation_id) id: vec3<u32>) {
     pd[cell_index(c)].y = div;
 }
 
-/// One colour of a red-black SOR sweep for ∇²φ = div: fluid neighbours couple, vents
-/// hold φ = 0, walls, solids and burners are Neumann.
+/// One colour of a red-black SOR sweep for ∇²φ = div: fluid neighbours couple, the
+/// outside beyond an open wall holds φ = 0, walls, solids and burners are Neumann.
 @compute @workgroup_size(8, 8, 4)
 fn pressure(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = vec3<i32>(id);
-    if !inside(c) || u32(c.x + c.y + c.z) % 2u != PARITY || cell_type(c) != FLUID {
+    if !inside(c) || u32(c.x + c.y + c.z) % 2u != PARITY {
         return;
     }
+    let i = cell_index(c);
+    let f = flags[i];
+    if (f & 0x0fu) != FLUID {
+        return;
+    }
+    let open = (f & OPEN) != 0u;
     var sum = 0.0;
     var count = 0.0;
     for (var axis = 0u; axis < 3u; axis++) {
         for (var side = -1; side <= 1; side += 2) {
             let nb = c + side * axis_unit(axis);
-            let t = cell_type(nb);
-            if t == FLUID {
+            if cell_type(nb) == FLUID {
                 sum += pd[cell_index(nb)].x;
                 count += 1.0;
-            } else if t == VENT {
+            } else if open && !inside(nb) {
                 count += 1.0;
             }
         }
@@ -340,7 +359,6 @@ fn pressure(@builtin(global_invocation_id) id: vec3<u32>) {
     if count == 0.0 {
         return;
     }
-    let i = cell_index(c);
     let gs = (sum - P.h * P.h * pd[i].y) / count;
     pd[i].x = mix(pd[i].x, gs, P.omega);
 }
@@ -371,8 +389,7 @@ fn advect_forward(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let i = cell_index(c);
-    let t = cell_type(c);
-    if t == FLUID || t == VENT {
+    if cell_type(c) == FLUID {
         scal_hat[i] = sample_scal(backtrace(centre(c))).value;
     } else {
         scal_hat[i] = scal[i];
@@ -380,7 +397,7 @@ fn advect_forward(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 /// MacCormack, second half: correct by half the round-trip error, clamped to the cells
-/// the value came from; then cooling and fading. Gas in a vent has left.
+/// the value came from; then cooling and fading.
 @compute @workgroup_size(8, 8, 4)
 fn advect_correct(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = vec3<i32>(id);
@@ -388,9 +405,8 @@ fn advect_correct(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let i = cell_index(c);
-    let t = cell_type(c);
-    if t != FLUID {
-        scal_tmp[i] = select(scal[i], vec2<f32>(0.0), t == VENT);
+    if cell_type(c) != FLUID {
+        scal_tmp[i] = scal[i];
         return;
     }
     let p = centre(c);
@@ -400,4 +416,15 @@ fn advect_correct(@builtin(global_invocation_id) id: vec3<u32>) {
     s = max(s, vec2<f32>(0.0));
     let temp = s.y / (1.0 + P.cooling * s.y * P.dt);
     scal_tmp[i] = vec2<f32>(s.x * exp(-P.fade * P.dt), temp);
+}
+
+/// Copy the scalars into the volume texture the renderer samples.
+@compute @workgroup_size(8, 8, 4)
+fn export_volume(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec3<i32>(id);
+    if !inside(c) {
+        return;
+    }
+    let s = scal[cell_index(c)];
+    textureStore(volume, c, vec4<f32>(s, select(0.0, 1.0, cell_type(c) == SOLID), 0.0));
 }

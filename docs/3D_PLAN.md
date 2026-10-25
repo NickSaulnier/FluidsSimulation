@@ -1,6 +1,6 @@
 # 3D Simulation Plan
 
-Status: **approved; phases A and B done.** Decisions (§8), taken as recommended
+Status: **approved; phases A to C done.** Decisions (§8), taken as recommended
 (2026-10-24):
 - 128³ with automatic step-down;
 - a separate `World3d` with an app mode switch;
@@ -269,6 +269,36 @@ A–D get 3D fire on screen; E makes it part of the visualizer.
     and mirroring x (closely). An ignored test prints the pass timings.
   - Not yet: brushes (`StepInput3d::brushes`) wait for phase E; the extra burners in
     `StepInput3d::burners` already work. Nothing draws the smoke until phase C.
+- **Phase C (done):** the smoke is drawn (`app/src/render3d/march.wgsl`).
+  - After each step the solver copies (smoke, temperature, solid) into an
+    `Rgba16Float` 3D texture (`Solver3d::volume`), which the renderer samples with
+    hardware filtering.
+  - The lines (floor grid, box, burners, vents) are drawn first and write depth. A
+    full-screen pass over the canvas then marches each pixel's ray front to back
+    through the box, three quarters of a cell per step, from a per-pixel jittered
+    start. It stops at the lines' depth, at the nearest solid, or once 99% opaque,
+    and blends over the lines premultiplied.
+  - Solids are shaded where the rays hit them (spheres and boxes, intersected
+    analytically), so they're no longer outlines.
+  - Lighting: a directional light from above and to the side. Each sample's light
+    comes from a two-tap probe toward it, through smoke and solids (solid cells are
+    marked in the texture), with stronger extinction than the view's so that even
+    thin smoke shows its form. It's a stand-in for the self-shadowing light volume of
+    phase F. Lit smoke is the palette's highlight paled toward white; shadowed smoke
+    its deep colour, dimmed.
+  - Found on the way: the vents stalled the flow. Vent cells held φ = 0 but their
+    own velocity stayed at rest (semi-Lagrangian advection can't carry motion into a
+    region at rest), so the plume turned and spread in a thin sheet under the vent,
+    which looked like a solid lid at a grazing angle. Vent cells are now ordinary
+    fluid, and the domain's wall beside them is open with φ = 0 beyond it: the flow
+    carries on out of the box, and air comes back in elsewhere. The CPU reference
+    test follows the new rule.
+  - Checked in the app at 240 fps: Campfire 3D's column leaving through the top,
+    Twin burners' plumes curling round the shaded ball, Chimney's roof shadowing the
+    smoke below it and the flue carrying smoke out. Orbiting is still only
+    unit-tested (synthetic drags can't be driven here); the wheel zoom works.
+  - Test: the march gets every solid in the shader's encoding, a step in cells, and
+    marches only with a volume.
 
 ## 8. Decisions for you
 

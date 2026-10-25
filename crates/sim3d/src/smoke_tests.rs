@@ -245,8 +245,8 @@ mod cpu {
 
     const FLUID: u32 = 0;
     const SOLID: u32 = 1;
-    const VENT: u32 = 2;
     const INFLOW: u32 = 3;
+    const OPEN: u32 = 0x10;
 
     pub struct Grid {
         n: UVec3,
@@ -256,7 +256,7 @@ mod cpu {
     }
 
     impl Grid {
-        /// The shader's classification rules: spheres are open, boxes and vents closed,
+        /// The shader's classification rules: spheres are open sets, boxes and vents closed,
         /// burners are discs at least a cell thick and a cell across.
         pub fn new(n: UVec3, h: f32, scene: &Scene3d) -> Self {
             let mut flags = vec![FLUID; n.element_product() as usize];
@@ -277,7 +277,7 @@ mod cpu {
                         flags[index(n, i, j, k)] = match (solid, burner, vent) {
                             (true, _, _) => SOLID,
                             (false, Some(b), _) => INFLOW | ((b as u32) << 8),
-                            (false, None, true) => VENT,
+                            (false, None, true) => FLUID | OPEN,
                             _ => FLUID,
                         };
                     }
@@ -291,7 +291,11 @@ mod cpu {
             if c.cmplt(IVec3::ZERO).any() || c.cmpge(self.n.as_ivec3()).any() {
                 return SOLID;
             }
-            self.flags[index(self.n, c.x as u32, c.y as u32, c.z as u32)] & 0xff
+            self.flags[index(self.n, c.x as u32, c.y as u32, c.z as u32)] & 0x0f
+        }
+
+        fn open(&self, c: IVec3) -> bool {
+            self.inside(c) && self.flags[index(self.n, c.x as u32, c.y as u32, c.z as u32)] & OPEN != 0
         }
 
         fn comp_dims(&self, axis: usize) -> UVec3 {
@@ -311,11 +315,18 @@ mod cpu {
             })
         }
 
-        /// The prescribed velocity of a face, if it has one.
+        fn inside(&self, c: IVec3) -> bool {
+            c.cmpge(IVec3::ZERO).all() && c.cmplt(self.n.as_ivec3()).all()
+        }
+
+        /// The prescribed velocity of a face, if it has one. Walls are open at vents.
         pub fn fixed(&self, axis: usize, face: UVec3) -> Option<f32> {
             let c1 = face.as_ivec3();
             let c0 = c1 - IVec3::AXES[axis];
             let (t0, t1) = (self.kind(c0), self.kind(c1));
+            if (!self.inside(c0) && self.open(c1)) || (!self.inside(c1) && self.open(c0)) {
+                return None;
+            }
             if t0 == SOLID || t1 == SOLID {
                 return Some(0.0);
             }
@@ -352,13 +363,11 @@ mod cpu {
                         for a in 0..3 {
                             for side in [-1, 1] {
                                 let nb = c.as_ivec3() + side * IVec3::AXES[a];
-                                match self.kind(nb) {
-                                    FLUID => {
-                                        sum += phi[index(n, nb.x as u32, nb.y as u32, nb.z as u32)];
-                                        count += 1.0;
-                                    }
-                                    VENT => count += 1.0,
-                                    _ => {}
+                                if self.kind(nb) == FLUID {
+                                    sum += phi[index(n, nb.x as u32, nb.y as u32, nb.z as u32)];
+                                    count += 1.0;
+                                } else if self.open(c.as_ivec3()) && !self.inside(nb) {
+                                    count += 1.0;
                                 }
                             }
                         }

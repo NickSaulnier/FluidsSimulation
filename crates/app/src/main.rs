@@ -526,7 +526,9 @@ impl State {
         if let Some(world) = &self.world3d {
             let viewport = self.viewport_3d();
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
-            self.renderer3d.render(device, queue, &mut encoder, &target, viewport, &self.camera, &world.scene);
+            let size = [self.gpu.config.width, self.gpu.config.height];
+            let volume = world.solver.volume();
+            self.renderer3d.render(device, queue, &mut encoder, &target, size, viewport, &self.camera, &world.scene, volume, &self.ui.palette);
             self.field_range = None;
         } else {
             self.render_2d(&mut encoder, &target, view);

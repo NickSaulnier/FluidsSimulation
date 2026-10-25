@@ -14,5 +14,5 @@ pub use glam::Vec3;
 pub use scene::{Aabb, Burner, PRESETS, Preset3d, Scene3d, Shape};
 pub use sim_gpu::GpuContext;
 pub use smoke::{Smoke3d, SmokeParams};
-pub use solver::{Brush3d, SOLVERS, Solver3d, Solver3dEntry, StepInput3d};
+pub use solver::{Brush3d, SOLVERS, Solver3d, Solver3dEntry, StepInput3d, Volume};
 pub use world::World3d;

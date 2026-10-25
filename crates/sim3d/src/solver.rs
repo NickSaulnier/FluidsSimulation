@@ -2,7 +2,7 @@
 //! compute passes into the caller's encoder, and results stay on the GPU.
 
 use crate::scene::Scene3d;
-use glam::Vec3;
+use glam::{UVec3, Vec3};
 use sim::{ParamVisitor, Stats};
 use sim_gpu::GpuContext;
 
@@ -16,6 +16,13 @@ pub struct Brush3d {
     pub spin: Vec3,
     /// Blend rate, 1/s.
     pub strength: f32,
+}
+
+/// A solver's gas for drawing: an `Rgba16Float` 3D texture of (smoke, temperature,
+/// solid: 1 in solid cells) with one texel per cell, spanning the scene's domain.
+pub struct Volume<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub cells: UVec3,
 }
 
 /// Per-frame interaction: brushes, and extra burners (the torch tool, reactions).
@@ -36,6 +43,10 @@ pub trait Solver3d {
     /// Parameters, through the same visitor (and so the same panel) as 2D solvers.
     fn visit_params(&mut self, _v: &mut dyn ParamVisitor) {}
     fn stats(&self) -> &Stats;
+    /// The gas to draw, updated by each step.
+    fn volume(&self) -> Option<Volume<'_>> {
+        None
+    }
 }
 
 #[derive(Clone, Copy)]
