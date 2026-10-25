@@ -3,6 +3,7 @@
 
 use crate::render::Palette;
 use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
+use crate::render::waves::{WaveMode, WaveSettings};
 use crate::render::palette::PALETTES;
 use crate::ui::Frame;
 use crate::ui::shortcuts::{Action, tip};
@@ -42,6 +43,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     });
     widgets::group(ui, "Picture", |ui| picture(ui, f.state));
     widgets::group(ui, "Feedback", |ui| feedback(ui, &mut f.state.feedback));
+    widgets::group(ui, "Waves", |ui| waves(ui, &mut f.state.waves));
     if !in_3d {
         widgets::group(ui, "Overlay", |ui| overlay(ui, f));
     }
@@ -86,6 +88,53 @@ fn feedback(ui: &mut egui::Ui, s: &mut FeedbackSettings) {
                 }
             });
         });
+    }
+}
+
+/// The sound drawn on screen: a scope, the spectrum or a left-right figure, and shapes.
+fn waves(ui: &mut egui::Ui, s: &mut WaveSettings) {
+    let slider = |ui: &mut egui::Ui, label: &str, help: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>| {
+        row(ui, label, help, |ui| {
+            ui.add(egui::Slider::new(value, range));
+        });
+    };
+    row(ui, "Wave", "The sound drawn on screen. With feedback on, it streaks into trails and tunnels.", |ui| {
+        egui::ComboBox::from_id_salt("wave_mode").selected_text(s.mode.label()).width(150.0).show_ui(ui, |ui| {
+            for mode in WaveMode::ALL {
+                ui.selectable_value(&mut s.mode, mode, mode.label());
+            }
+        });
+    });
+    if s.mode != WaveMode::Off {
+        slider(ui, "Swing", "How far the sound moves the wave.", &mut s.scale, 0.0..=2.0);
+        if matches!(s.mode, WaveMode::Circle | WaveMode::Spectrum | WaveMode::MirrorSpectrum) {
+            slider(ui, "Size", "The ring's radius, or the bars' height.", &mut s.size, 0.05..=1.0);
+        }
+        if matches!(s.mode, WaveMode::Line | WaveMode::MirrorSpectrum) {
+            slider(ui, "Height", "Where the line sits, from the middle.", &mut s.y, -1.0..=1.0);
+        }
+        slider(ui, "Line width", "Pixels.", &mut s.thickness, 0.5..=12.0);
+        if matches!(s.mode, WaveMode::Line | WaveMode::Circle) {
+            slider(ui, "Push", "The wave pushes the fluid as the sound moves it.", &mut s.push, 0.0..=1.0);
+        }
+    }
+    for (k, shape) in s.shapes.iter_mut().enumerate() {
+        widgets::toggle(ui, &mut shape.enabled, &format!("Shape {}", k + 1), "A spinning polygon that pulses with the bass.");
+        if shape.enabled {
+            row(ui, "Sides", "", |ui| {
+                ui.add(egui::Slider::new(&mut shape.sides, 3..=12));
+            });
+            slider(ui, "Radius", "", &mut shape.radius, 0.02..=1.0);
+            slider(ui, "Across", "", &mut shape.centre[0], -1.5..=1.5);
+            slider(ui, "Up", "", &mut shape.centre[1], -1.0..=1.0);
+            slider(ui, "Spin", "Radians per second.", &mut shape.spin, -3.0..=3.0);
+            slider(ui, "Outline", "Pixels (0: none).", &mut shape.thickness, 0.0..=12.0);
+            slider(ui, "Bass pulse", "", &mut shape.bass_pulse, 0.0..=1.0);
+            slider(ui, "Fill", "", &mut shape.fill, 0.0..=1.0);
+        }
+    }
+    if s.any() {
+        slider(ui, "Brightness", "Light added: above 1 glows.", &mut s.brightness, 0.0..=4.0);
     }
 }
 

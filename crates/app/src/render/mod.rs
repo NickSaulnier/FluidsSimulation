@@ -11,6 +11,7 @@ mod particles;
 pub mod post;
 mod solid;
 pub mod timer;
+pub mod waves;
 
 use crate::view::View;
 use bytemuck::{Pod, Zeroable};

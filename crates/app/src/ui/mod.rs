@@ -95,6 +95,8 @@ pub struct UiState {
     pub palette: crate::render::Palette,
     /// How each frame carries the last one (trails, tunnels, echo).
     pub feedback: crate::render::feedback::FeedbackSettings,
+    /// The sound drawn on screen (scopes, spectrum, shapes).
+    pub waves: crate::render::waves::WaveSettings,
     /// How the music drives the fluid.
     pub reactions: Vec<crate::audio::reactions::Reaction>,
     /// The full-screen visualizer: no controls, the scene filling the screen.
@@ -136,6 +138,7 @@ impl Default for UiState {
             cheat_sheet: false,
             palette: crate::render::Palette::default(),
             feedback: crate::render::feedback::FeedbackSettings::OFF,
+            waves: crate::render::waves::WaveSettings::OFF,
             reactions: crate::audio::reactions::default_reactions(),
             presenting: false,
             reveal_until: None,

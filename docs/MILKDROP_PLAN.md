@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phases A and B done.** Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A to C done.** Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -398,3 +398,37 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
   - Not yet: the trails' character depends on the scene's brightness against its
     background; brightest mode with long trails lets dim smoke pile up (the looks use
     0.5–0.6 left per second, close to MilkDrop's usual fade).
+- **Phase C (done):** waves and shapes (`app/src/render/waves.rs`, `waves.wgsl`), drawn
+  from analyzer phase B's outputs.
+  - Wave modes: a line scope, a circular scope (its seam blended shut), spectrum bars
+    along the bottom, mirrored bars about a centre line, and left against right (a
+    goniometer, turned 45° so mono is vertical and width spreads it). Up to two shapes
+    per look: polygons that spin, pulse with MilkDrop's `bass_att`, and are outlined
+    and optionally filled.
+  - Built on the CPU each frame as triangles (a quad per line segment) in canvas units,
+    and added onto the scene texture at a brightness above white, before the feedback:
+    the feedback streaks them, and the bloom makes them glow. With feedback off they
+    simply sit on the scene.
+  - The waveform is scaled by its own recent peak (rising at once, falling over 2 s),
+    so quiet and loud music fill the shapes alike; below 0.02 it isn't scaled up, so
+    silence stays flat.
+  - Pushes: a line or circle can push the fluid along its path, through 12 brushes
+    pushing away from the wave's rest position as far as the sound has moved it. In 2D
+    they go into the step's brushes; in 3D through the reactions' front-view lift.
+  - Settings: a Waves group in the View tab (mode, swing, size, height, line width,
+    push, two shapes, brightness), saved; each look carries its own. Ocean pulse has a
+    line, Ink storm a pushing circle, Lava lamp a slow hexagon, Mercury rain the
+    left-against-right figure, Inferno a ring that the feedback stacks into a tunnel,
+    Smoke dance spectrum bars and a spinning triangle.
+  - Found while checking: a look's feedback lingered into the next (Inferno's swirls
+    were still visible 7 s into Smoke dance), so a look change now restarts the
+    feedback from the scene, under the director's fade.
+  - Tests: nothing drawn when off; the circle is a closed ring within its swing; mono
+    is vertical and opposite channels horizontal in the left-against-right view; bars
+    follow the spectrum; shapes fill, outline and pulse with the bass; quiet waves fill
+    like loud ones but silence stays flat; a pushing circle pushes outward from its
+    ring.
+  - Checked in the app, full screen, with a generated stereo test track (muted): Ink
+    storm's ring tangles into glowing filaments in the ink, Inferno's ring becomes a
+    tunnel of rings, Smoke dance's bars run along the bottom (its echo mirrors them at
+    the top), Mercury rain's figure shows the track's slight width.

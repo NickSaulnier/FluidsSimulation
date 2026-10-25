@@ -100,6 +100,9 @@ struct State {
     velocity: Vec<sim::Vec2>,
     /// This frame's time for the feedback (0 while paused, which holds the picture).
     frame_dt: f32,
+    /// Waves and shapes, and this frame's waveform (reused).
+    waves: render::waves::WavesLayer,
+    waveform: Vec<audio::analyzer::Frame>,
     ui: UiState,
     music: Music,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
@@ -200,6 +203,7 @@ impl State {
         let post = render::post::PostProcess::new(&gpu.device, gpu.config.format);
         let timer = render::timer::GpuTimer::new(&gpu.device, &gpu.queue);
         let feedback = render::feedback::FeedbackLayer::new(&gpu.device);
+        let waves = render::waves::WavesLayer::new(&gpu.device);
 
         let egui_ctx = egui::Context::default();
         ui::theme::apply(&egui_ctx);
@@ -243,6 +247,8 @@ impl State {
             feedback,
             velocity: Vec::new(),
             frame_dt: 0.0,
+            waves,
+            waveform: Vec::new(),
             ui: {
                 let mut ui = UiState::default();
                 if let Some(saved) = ui::settings::load() {
@@ -308,8 +314,10 @@ impl State {
     /// Switch to look `index`, moving between the 2D and 3D worlds if it needs to.
     fn apply_look(&mut self, index: usize) {
         let look = &looks::LOOKS[index];
-        // Put back any parameters the last look's reactions were modulating.
+        // Put back any parameters the last look's reactions were modulating, and start
+        // the feedback afresh (the old look's trails would linger for seconds).
         self.modulate_params(&[]);
+        self.feedback.pause();
         match look.solver_3d() {
             Some(solver) => {
                 self.choose_solver(ui::SolverChoice::ThreeD(solver));
@@ -435,6 +443,8 @@ impl State {
         let perf = self.perf.latest();
         let render_times = self.timer.as_ref().map(|t| t.latest().to_vec()).unwrap_or_default();
         self.music.update();
+        self.music.waveform(&mut self.waveform);
+        self.waves.update(&self.waveform, self.frame_dt);
         let mut frame = ui::Frame {
             world: &mut self.world,
             world3d: self.world3d.as_mut(),
@@ -512,6 +522,7 @@ impl State {
         }
         self.world.scene.gravity = reaction.gravity;
         step_input.brushes.extend(reaction.brushes);
+        render::waves::wave_brushes(&self.ui.waves, &self.waveform, self.waves.peak(), self.world.scene.size, &mut step_input.brushes);
         step_input.emitters.extend(reaction.emitters);
         self.modulate_params(&reaction.params);
         self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
@@ -539,13 +550,15 @@ impl State {
             self.camera.yaw += self.ui.orbit * (1.0 + level) * real_dt;
         }
         let mut input = self.input.apply_3d(&self.camera, viewport, size, &self.ui, real_dt);
-        let reaction = self.music.react(
+        let mut reaction = self.music.react(
             &self.ui.reactions,
             react3d::front_view(size),
             react3d::front_gravity(base_gravity),
             self.ui.presenting,
             real_dt,
         );
+        let front = react3d::front_view(size);
+        render::waves::wave_brushes(&self.ui.waves, &self.waveform, self.waves.peak(), front, &mut reaction.brushes);
         let (music, gravity) = react3d::lift(&reaction, size, self.camera.right(), base_gravity);
         input.brushes.extend(music.brushes);
         input.burners.extend(music.burners);
@@ -647,6 +660,17 @@ impl State {
             if feedback.enabled {
                 self.draw_flow_2d(&mut encoder, view, scene_size);
             }
+        }
+        if self.ui.waves.any() {
+            let viewport = self.viewport_3d().map(|v| v * scale);
+            let features = self.music.features();
+            let sound = render::waves::Sound {
+                waveform: &self.waveform,
+                spectrum: features.map_or(&[][..], |f| &f.spectrum_smooth[..]),
+                bass: features.map_or(1.0, |f| f.milk.bass_att),
+            };
+            let (device, queue) = (&self.gpu.device, &self.gpu.queue);
+            self.waves.draw(device, queue, &mut encoder, &scene, viewport, &self.ui.waves, &sound, &self.palette_now);
         }
         mark(&self.timer, &mut encoder, Stage::Feedback);
         let picture = if feedback.enabled {

@@ -7,6 +7,7 @@
 use crate::audio::reactions::{Effect, Reaction, Trigger};
 use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
 use crate::render::palette::PALETTES;
+use crate::render::waves::{ShapeSettings, WaveMode, WaveSettings};
 use crate::ui::{UiState, params};
 use sim::{PRESETS, World};
 
@@ -31,6 +32,8 @@ pub struct Look {
     pub orbit: f32,
     /// How each frame carries the last one.
     pub feedback: FeedbackSettings,
+    /// The sound drawn on screen.
+    pub waves: WaveSettings,
     pub energy: Energy,
     /// Solver parameters, by key (ints are rounded).
     pub params: &'static [(&'static str, f32)],
@@ -74,6 +77,7 @@ pub static LOOKS: &[Look] = &[
         liquid: true,
         orbit: 0.0,
         feedback: FeedbackSettings { flow: 1.0, ..fb(FeedbackMode::Smear, 0.5) },
+        waves: WaveSettings { mode: WaveMode::Line, y: 0.55, scale: 0.6, brightness: 1.2, ..WaveSettings::OFF },
         energy: Energy::Any,
         params: &[],
         reactions: || {
@@ -94,6 +98,7 @@ pub static LOOKS: &[Look] = &[
         liquid: false,
         orbit: 0.0,
         feedback: FeedbackSettings { flow: 1.5, rotation: 0.15, ..fb(FeedbackMode::Brightest, 0.5) },
+        waves: WaveSettings { mode: WaveMode::Circle, size: 0.45, push: 0.5, brightness: 0.9, ..WaveSettings::OFF },
         energy: Energy::Energetic,
         params: &[("buoyancy", 0.2), ("vorticity", 0.3)],
         reactions: || {
@@ -114,6 +119,7 @@ pub static LOOKS: &[Look] = &[
         liquid: false,
         orbit: 0.0,
         feedback: FeedbackSettings { zoom: 1.25, drift: [0.0, 0.12], bass_zoom: 0.4, ..fb(FeedbackMode::Brightest, 0.55) },
+        waves: WaveSettings::OFF,
         energy: Energy::Energetic,
         params: &[],
         reactions: || {
@@ -133,6 +139,7 @@ pub static LOOKS: &[Look] = &[
         liquid: false,
         orbit: 0.0,
         feedback: FeedbackSettings { flow: 2.0, ..fb(FeedbackMode::Smear, 0.6) },
+        waves: WaveSettings::OFF,
         energy: Energy::Any,
         params: &[],
         reactions: || {
@@ -152,6 +159,7 @@ pub static LOOKS: &[Look] = &[
         liquid: false,
         orbit: 0.0,
         feedback: FeedbackSettings { flow: 1.0, warp: 0.01, warp_speed: 0.5, ..fb(FeedbackMode::Smear, 0.85) },
+        waves: WaveSettings { shapes: [ShapeSettings { enabled: true, sides: 6, radius: 0.35, spin: 0.15, bass_pulse: 0.4, ..ShapeSettings::OFF }, ShapeSettings::OFF], brightness: 0.8, ..WaveSettings::OFF },
         energy: Energy::Calm,
         params: &[("buoyancy", 0.4), ("vorticity", 0.05)],
         reactions: || {
@@ -170,7 +178,8 @@ pub static LOOKS: &[Look] = &[
         palette: "Mercury",
         liquid: false,
         orbit: 0.0,
-        feedback: FeedbackSettings { echo: 0.35, echo_zoom: 1.6, echo_flip: EchoFlip::Horizontal, ..fb(FeedbackMode::Smear, 0.4) },
+        feedback: FeedbackSettings { echo: 0.2, echo_zoom: 1.25, echo_flip: EchoFlip::Horizontal, ..fb(FeedbackMode::Smear, 0.4) },
+        waves: WaveSettings { mode: WaveMode::Xy, scale: 1.2, brightness: 1.4, ..WaveSettings::OFF },
         energy: Energy::Any,
         params: &[],
         reactions: || {
@@ -190,6 +199,7 @@ pub static LOOKS: &[Look] = &[
         liquid: false,
         orbit: 0.12,
         feedback: FeedbackSettings { flow: 1.2, drift: [0.0, 0.05], bass_zoom: 0.3, ..fb(FeedbackMode::Brightest, 0.5) },
+        waves: WaveSettings::OFF,
         energy: Energy::Any,
         params: &[],
         reactions: || {
@@ -210,6 +220,7 @@ pub static LOOKS: &[Look] = &[
         liquid: false,
         orbit: 0.25,
         feedback: FeedbackSettings { zoom: 1.15, rotation: 0.25, warp: 0.006, bass_zoom: 0.5, ..fb(FeedbackMode::Brightest, 0.55) },
+        waves: WaveSettings { mode: WaveMode::Circle, size: 0.3, scale: 0.8, brightness: 1.3, ..WaveSettings::OFF },
         energy: Energy::Energetic,
         params: &[("vorticity", 0.8)],
         reactions: || {
@@ -230,6 +241,7 @@ pub static LOOKS: &[Look] = &[
         liquid: false,
         orbit: 0.08,
         feedback: FeedbackSettings { flow: 1.0, echo: 0.25, echo_zoom: 1.3, echo_flip: EchoFlip::Both, ..fb(FeedbackMode::Smear, 0.7) },
+        waves: WaveSettings { mode: WaveMode::Spectrum, size: 0.35, brightness: 1.2, shapes: [ShapeSettings { enabled: true, sides: 3, radius: 0.2, spin: -0.4, bass_pulse: 0.5, fill: 0.3, ..ShapeSettings::OFF }, ShapeSettings::OFF], ..WaveSettings::OFF },
         energy: Energy::Calm,
         params: &[],
         reactions: || {
@@ -290,6 +302,7 @@ fn apply_ui(look: &Look, ui: &mut UiState) {
     }
     ui.reactions = (look.reactions)();
     ui.feedback = look.feedback;
+    ui.waves = look.waves;
 }
 
 #[cfg(test)]

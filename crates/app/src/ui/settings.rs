@@ -36,6 +36,7 @@ pub struct Settings {
     pub glow: f32,
     pub render_scale: f32,
     pub feedback: crate::render::feedback::FeedbackSettings,
+    pub waves: crate::render::waves::WaveSettings,
 }
 
 impl Default for Settings {
@@ -67,6 +68,7 @@ impl Settings {
             glow: s.glow,
             render_scale: s.render_scale,
             feedback: s.feedback,
+            waves: s.waves,
         }
     }
 
@@ -105,6 +107,26 @@ impl Settings {
             echo: clamp(f.echo, 0.0, 1.0),
             echo_zoom: clamp(f.echo_zoom, 0.5, 3.0),
             ..*f
+        };
+        let w = &self.waves;
+        s.waves = crate::render::waves::WaveSettings {
+            scale: clamp(w.scale, 0.0, 2.0),
+            size: clamp(w.size, 0.05, 1.0),
+            y: clamp(w.y, -1.0, 1.0),
+            thickness: clamp(w.thickness, 0.5, 12.0),
+            brightness: clamp(w.brightness, 0.0, 4.0),
+            push: clamp(w.push, 0.0, 1.0),
+            shapes: w.shapes.map(|sh| crate::render::waves::ShapeSettings {
+                sides: sh.sides.clamp(3, 12),
+                radius: clamp(sh.radius, 0.02, 1.0),
+                centre: sh.centre.map(|c| clamp(c, -1.5, 1.5)),
+                spin: clamp(sh.spin, -3.0, 3.0),
+                thickness: clamp(sh.thickness, 0.0, 12.0),
+                bass_pulse: clamp(sh.bass_pulse, 0.0, 1.0),
+                fill: clamp(sh.fill, 0.0, 1.0),
+                ..sh
+            }),
+            ..*w
         };
         for r in &mut s.reactions {
             r.gain = clamp(r.gain, 0.0, 3.0);
