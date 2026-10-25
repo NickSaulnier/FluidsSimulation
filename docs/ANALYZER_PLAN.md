@@ -1,6 +1,7 @@
 # Audio Analyzer Plan
 
-Status: **approved; phases A and B done.** Decisions (§8) taken as recommended (2026-10-25):
+Status: **approved; phases A to C done** (C with generated songs and recorded drums from
+the Groove MIDI Dataset, see its notes). Decisions (§8) taken as recommended (2026-10-25):
 - `rtrb` for the lock-free hand-over from the audio thread;
 - `ebur128` for loudness;
 - a second, longer FFT for the low bands;
@@ -269,3 +270,52 @@ before or with MilkDrop phase E.
   - Checked in the app with a generated stereo track (a beat, plus a tone on the right
     only), muted: the spectrum spikes at the tone, the scope shows it on the right
     trace only, balance reads +0.57, MilkDrop's levels sit near 1, and hits count.
+- **Phase C (done):** measuring (`app/src/audio/eval.rs`,
+  `songs.rs`, `tests/fixtures/audio/`).
+  - The harness scores hit detection per kind with a 50 ms tolerance (each hit matched
+    at most once; precision, recall, F-measure; the first 1.5 s not scored), feeding
+    the audio in frame-loop-sized chunks. The test `hit_detection_holds_its_baseline`
+    prints the table and fails if any score falls more than 0.02 below
+    `tests/fixtures/audio/baseline.txt`; `UPDATE_ANALYZER_BASELINE=1` records new
+    scores.
+  - Changed from decision 4: the hits aren't hand-marked, and the clips are drums
+    alone, not full music. Five generated songs (`songs.rs`)
+    mix drum kits, bass lines, pads and leads in stereo, with exact hit times: house
+    (124 BPM), a swung breakbeat with ghost notes and a gliding bass with vibrato
+    (92), distorted rock (140), ambient with hardly any drums (70), and a loud hit
+    followed by quiet bars (110). Beside them, six 20 s clips of a real drummer from
+    the Groove MIDI Dataset (CC BY 4.0, attributed in the fixtures README): funk 138,
+    soul 102, hip-hop 87, rock 135, samba 116, breakbeat 170. They were played on an
+    electronic kit, so the MIDI it recorded gives the hit times (aligned within a few
+    ms; checked against the audio). Kick is note 36, snare 38/40/37, hat the hi-hats,
+    ride and crashes; toms are left out. The clips were cut from the dataset's zip with
+    range requests (about 37 MB of its 4.8 GB), trimmed and mixed to mono (1.7 MB each).
+    The STAR Drums preview (full songs with exact annotations) was downloaded too but
+    none of its four songs may be used: all are CC BY-NC-SA.
+  - Today's baseline (F-measure: kick, snare, hat):
+
+    | Song | Kick | Snare | Hat |
+    |---|---|---|---|
+    | house 124 | 1.00 | 0.56 | 0.67 |
+    | breakbeat 92 | 0.96 | 0.78 | 0.90 |
+    | rock 140 | 0.48 | 0.57 | 0.91 |
+    | ambient 70 | 0.00 | 0.00 | 1.00 |
+    | dynamics 110 | 1.00 | 1.00 | 0.42 |
+    | Groove funk 138 | 0.82 | 0.53 | 0.70 |
+    | Groove soul 102 | 0.78 | 0.42 | 0.99 |
+    | Groove hip-hop 87 | 0.99 | 0.28 | 0.67 |
+    | Groove rock 135 | 0.85 | 0.38 | 0.78 |
+    | Groove samba 116 | 0.96 | 0.49 | 0.92 |
+    | Groove breakbeat 170 | 0.82 | 0.62 | 0.55 |
+
+    The weak spots: snares are heard where there are none (house 49 found for 19,
+    rock 50 for 20, ambient 16 for none), from kick clicks, hats and the lead's attacks
+    reaching the snare band; rock's kicks are unreliable (precision 0.36, recall 0.73)
+    with the distorted bass and chords in the same band; quiet hats after a loud hit
+    are lost (dynamics). These are phase D's targets. (The ambient zeros are false hits
+    where there were none to find: 2 kicks and 16 snares.) The recorded drums agree:
+    snares are the weakest everywhere, mostly false hits (hip-hop 64 found for 14, rock
+    92 for 30); quick hats are under-counted (breakbeat finds 84 of 155, hip-hop 52 of
+    91); kicks hold up (0.78 to 0.99).
+  - Tests: scoring matches each hit once within the tolerance; hit lists parse; the
+    generated songs are well formed; the baseline holds.

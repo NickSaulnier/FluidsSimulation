@@ -8,8 +8,12 @@
 //! background thread so a long track doesn't freeze the window.
 
 pub mod analyzer;
+#[cfg(test)]
+pub mod eval;
 pub mod live;
 pub mod reactions;
+#[cfg(test)]
+pub mod songs;
 
 use analyzer::{Analyzer, AudioFeatures, Onset, OnsetKind};
 use reactions::{Reaction, ReactionEngine, ReactionOutput};
