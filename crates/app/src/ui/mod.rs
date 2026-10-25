@@ -76,6 +76,10 @@ pub struct UiState {
     /// to a solver that lists its fields in a different order, or not at all).
     pub overlay: Option<&'static str>,
     pub overlay_opacity: f32,
+    /// Bloom added to the picture, 0 (none) to 1.
+    pub glow: f32,
+    /// The scene's resolution relative to the window; 0 picks automatically.
+    pub render_scale: f32,
     pub show_particles: bool,
     pub faucet_speed: f32,
     /// Draw particles as a continuous liquid surface.
@@ -117,6 +121,8 @@ impl Default for UiState {
             keep_particles: true,
             overlay: None,
             overlay_opacity: 0.85,
+            glow: 0.35,
+            render_scale: 0.0,
             show_particles: true,
             faucet_speed: 2.0,
             liquid: true,
@@ -200,6 +206,8 @@ pub struct Frame<'a> {
     pub perf: &'a Perf,
     /// Value range of the overlay field drawn last frame, for its legend.
     pub field_range: Option<(f32, f32)>,
+    /// GPU time per stage of a recent frame (empty without timestamp queries).
+    pub render_times: &'a [(&'static str, std::time::Duration)],
 }
 
 /// Lay out the whole interface and return the rect (points) to fit the scene into: the

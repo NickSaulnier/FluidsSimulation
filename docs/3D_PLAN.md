@@ -367,7 +367,9 @@ A–D get 3D fire on screen; E makes it part of the visualizer.
   - Soak: 3D looks run on a headless GPU world with the reactions lifted as in the
     app, checked every 10 s (finite values, smoke within 0..1, no negative heat or
     fuel, nothing faster than 50 m/s; `World3d::check`). Reading 1.8M cells back every
-    half second would dominate the run.
+    half second would dominate the run. The 30-minute soak passes with the 3D looks
+    in: 83 look changes, all nine looks 9 or 10 times, 55 healthy 3D checks, peak
+    29,040 particles.
   - Tests: brushes push and spin the gas; the health check passes a running fire and
     catches a NaN; screen points land on the camera's target plane; a right drag
     pushes along the drag on screen, or with the torch holds an upright burner; the
@@ -379,6 +381,26 @@ A–D get 3D fire on screen; E makes it part of the visualizer.
     then Inferno and Smoke dance, with the camera circling. Not checked here: music
     driving the 3D looks (no audio source in this session), and the right-drag tools
     (synthetic drags are cut short), which unit tests cover.
+- **Long-run fixes (found during the MilkDrop plan's phase A):** left running, the
+  campfire filled with haze, its flame was blown flat along the floor, and at the app's
+  4 ms steps it went out after about 30 s with the velocity blowing up. Four causes:
+  - **Open walls fed back on themselves:** where air flows in through an open wall, a
+    backtrace leaves the box and brings the wall face's own velocity back, so nothing
+    restored it; on the fine grid it crept up step by step. Open-wall faces now copy
+    the face just inside (zero gradient). Vents also open only the wall they lie flat
+    against (their thinnest axis), so a vent reaching a corner doesn't open the floor.
+  - **Heat collected:** the T² cooling barely touches merely warm gas, so the box
+    warmed up and turned over in big convection cells. New `heat_loss` (0.3/s).
+  - **Stray fuel collected** and flared up along the floor: fuel too cool to burn now
+    thins out at 1/s (a burner's fuel leaves it alight, so flames lose nothing).
+  - **Soot never left** where the vent didn't catch it: fire soot fades at 0.3/s.
+  - A light `drag` (0.3/s for fire, 0.2 for smoke) keeps the box's slow churning weak.
+  - Tried and dropped: opening the side walls (so a fire draws air from all round)
+    made inflow through open walls unstable ("backflow"); a proper open-boundary
+    treatment would be its own job.
+  - Test (on demand, about a minute): a fire at the app's grid and step burns for 60 s
+    on its burner (within 10 cm), with calm air (under 1 m/s rms) and a clean health
+    check every 15 s.
 
 ## 8. Decisions for you
 

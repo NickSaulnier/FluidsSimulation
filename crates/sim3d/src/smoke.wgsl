@@ -31,8 +31,10 @@ struct Params {
     burner_smoke: f32,
     flicker: f32,
     n_brushes: u32,
-    _pad0: u32,
-    _pad1: u32,
+    /// Heat lost to the surroundings, 1/s: warm gas cools away instead of collecting.
+    heat_loss: f32,
+    /// Air drag, 1/s: velocity decays at this rate.
+    drag: f32,
     _pad2: u32,
 }
 
@@ -58,8 +60,15 @@ override PARITY: u32 = 0u;
 const FLUID: u32 = 0u;
 const SOLID: u32 = 1u;
 const INFLOW: u32 = 3u;
-/// A fluid cell inside a vent: where it touches the domain's wall, the wall is open.
-const OPEN: u32 = 0x10u;
+/// A fluid cell inside a vent, open toward x (then y, z: shifted by the axis): where it
+/// touches the domain's wall across that axis, the wall is open. A vent opens only the
+/// wall it lies flat against (its thinnest direction), so a side vent reaching down to
+/// the floor doesn't open the floor too.
+const OPEN_X: u32 = 0x10u;
+/// Fuel too cool to burn thins out at this rate, 1/s: stray fuel that drifts back down
+/// would otherwise collect and flare up along the floor. (A burner's fuel leaves it
+/// already alight, so the flames themselves don't lose any.)
+const FUEL_DILUTION: f32 = 1.0;
 
 fn dims() -> vec3<i32> {
     return vec3<i32>(P.n);
@@ -82,8 +91,8 @@ fn cell_type(c: vec3<i32>) -> u32 {
     return flags[cell_index(c)] & 0x0fu;
 }
 
-fn is_open(c: vec3<i32>) -> bool {
-    return inside(c) && (flags[cell_index(c)] & OPEN) != 0u;
+fn is_open(c: vec3<i32>, axis: u32) -> bool {
+    return inside(c) && (flags[cell_index(c)] & (OPEN_X << axis)) != 0u;
 }
 
 fn axis_unit(axis: u32) -> vec3<i32> {
@@ -119,7 +128,7 @@ fn fixed_face(axis: u32, c1: vec3<i32>) -> vec2<f32> {
     let c0 = c1 - axis_unit(axis);
     let t0 = cell_type(c0);
     let t1 = cell_type(c1);
-    if (!inside(c0) && is_open(c1)) || (!inside(c1) && is_open(c0)) {
+    if (!inside(c0) && is_open(c1, axis)) || (!inside(c1) && is_open(c0, axis)) {
         return vec2<f32>(0.0, 0.0);
     }
     if t0 == SOLID || t1 == SOLID {
@@ -234,15 +243,25 @@ fn in_solid(p: vec3<f32>) -> bool {
     return false;
 }
 
-fn in_vent(p: vec3<f32>) -> bool {
+/// The open bits for a cell at `p`: for each vent it's in, the vent's thinnest axis.
+fn vent_open_bits(p: vec3<f32>) -> u32 {
+    var bits = 0u;
     for (var v = 0u; v < P.n_vents; v++) {
-        let lo = geom[2u * (P.n_shapes + v)];
-        let hi = geom[2u * (P.n_shapes + v) + 1u];
-        if all(p >= lo.xyz) && all(p <= hi.xyz) {
-            return true;
+        let lo = geom[2u * (P.n_shapes + v)].xyz;
+        let hi = geom[2u * (P.n_shapes + v) + 1u].xyz;
+        if all(p >= lo) && all(p <= hi) {
+            let extent = hi - lo;
+            var axis = 0u;
+            if extent.y < extent[axis] {
+                axis = 1u;
+            }
+            if extent.z < extent[axis] {
+                axis = 2u;
+            }
+            bits |= OPEN_X << axis;
         }
     }
-    return false;
+    return bits;
 }
 
 /// A burner cell's output relative to steady, varying by up to ±`flicker` from cell to
@@ -278,8 +297,8 @@ fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
                 break;
             }
         }
-        if t == FLUID && in_vent(p) {
-            t = FLUID | OPEN;
+        if t == FLUID {
+            t |= vent_open_bits(p);
         }
     }
     flags[i] = t;
@@ -319,7 +338,8 @@ fn forces(@builtin(global_invocation_id) id: vec3<u32>) {
             let edge = dims() - 1;
             let s = 0.5 * (scal[cell_index(clamp(c, vec3<i32>(0), edge))] + scal[cell_index(clamp(c - axis_unit(axis), vec3<i32>(0), edge))]);
             let a = P.gravity[axis] * (P.heaviness * s.x - P.rise * s.y);
-            vel[comp_index(axis, c)] += P.dt * a;
+            let i = comp_index(axis, c);
+            vel[i] = (vel[i] + P.dt * a) * exp(-P.drag * P.dt);
         }
     }
 }
@@ -416,7 +436,11 @@ fn brushes(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
-/// Semi-Lagrangian advection of the velocity into `vel_tmp`.
+/// Semi-Lagrangian advection of the velocity into `vel_tmp`. A face in an open wall
+/// copies the face just inside instead (zero gradient across the wall): where air flows
+/// in, a backtrace would leave the box and bring the face's own value back, so nothing
+/// would ever restore it, and on a fine grid with an unconverged pressure it crept up
+/// step by step until the velocity blew up (a campfire died after 30 s at 4 ms steps).
 @compute @workgroup_size(8, 8, 4)
 fn advect_velocity(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = vec3<i32>(id);
@@ -424,7 +448,12 @@ fn advect_velocity(@builtin(global_invocation_id) id: vec3<u32>) {
         if all(c < comp_dims(axis)) {
             let fix = fixed_face(axis, c);
             var value = fix.y;
-            if fix.x == 0.0 {
+            let below = c - axis_unit(axis);
+            if fix.x == 0.0 && !inside(below) {
+                value = load_comp(axis, c + axis_unit(axis));
+            } else if fix.x == 0.0 && !inside(c) {
+                value = load_comp(axis, below);
+            } else if fix.x == 0.0 {
                 let p = (vec3<f32>(c) + comp_origin(axis)) * P.h;
                 value = sample_comp(axis, backtrace(p));
             }
@@ -462,7 +491,6 @@ fn pressure(@builtin(global_invocation_id) id: vec3<u32>) {
     if (f & 0x0fu) != FLUID {
         return;
     }
-    let open = (f & OPEN) != 0u;
     var sum = 0.0;
     var count = 0.0;
     for (var axis = 0u; axis < 3u; axis++) {
@@ -471,7 +499,7 @@ fn pressure(@builtin(global_invocation_id) id: vec3<u32>) {
             if cell_type(nb) == FLUID {
                 sum += pd[cell_index(nb)].x;
                 count += 1.0;
-            } else if open && !inside(nb) {
+            } else if !inside(nb) && (f & (OPEN_X << axis)) != 0u {
                 count += 1.0;
             }
         }
@@ -543,9 +571,12 @@ fn advect_correct(@builtin(global_invocation_id) id: vec3<u32>) {
         fuel -= burned;
         temp += P.heat * burned;
         smoke = min(smoke + P.soot * burned, 1.0);
+    } else {
+        fuel *= exp(-FUEL_DILUTION * P.dt);
     }
-    // dT/dt = -cooling·T², implicitly: stable at any step.
+    // dT/dt = -cooling·T² - heat_loss·T, implicitly: stable at any step.
     temp /= 1.0 + P.cooling * temp * P.dt;
+    temp *= exp(-P.heat_loss * P.dt);
     scal_tmp[i] = vec4<f32>(smoke * exp(-P.fade * P.dt), temp, fuel, 0.0);
 }
 

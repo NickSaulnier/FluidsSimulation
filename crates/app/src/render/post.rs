@@ -1,0 +1,377 @@
+//! Post-processing (`post.wgsl`): the scene is drawn into an offscreen HDR texture at a
+//! render scale, then bloomed and composited onto the screen through a tone curve.
+//!
+//! The tone curve leaves colours up to `TONE_KNEE` (0.85, linear) alone, so the 2D
+//! scenes look as they did when they drew straight to the screen; only highlights above
+//! it (fire, glows, bloom) roll off toward white (Reinhard-style) instead of clipping.
+
+use super::timer::{GpuTimer, Stage};
+use bytemuck::{Pod, Zeroable};
+
+/// The scene texture's format: linear, and able to hold light brighter than white.
+pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Bloom starts at this linear brightness, fading in over `KNEE` either side.
+const THRESHOLD: f32 = 0.8;
+const KNEE: f32 = 0.3;
+/// At most this many half-size levels, and none smaller than `MIN_LEVEL` pixels.
+const MAX_LEVELS: usize = 7;
+const MIN_LEVEL: u32 = 8;
+/// Above this many pixels (1440p) the automatic render scale draws the scene smaller.
+const AUTO_FULL_PIXELS: u32 = 2560 * 1440;
+const AUTO_SCALE: f32 = 0.75;
+
+/// Must match `Post` in post.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Uniforms {
+    threshold: f32,
+    knee: f32,
+    strength: f32,
+    _pad: f32,
+}
+
+/// The render scale to draw the scene at for a `size` surface: `setting` if it's
+/// positive, otherwise automatic (full size up to 1440p, three quarters above).
+pub fn render_scale(setting: f32, size: [u32; 2]) -> f32 {
+    if setting > 0.0 {
+        setting
+    } else if size[0] * size[1] > AUTO_FULL_PIXELS {
+        AUTO_SCALE
+    } else {
+        1.0
+    }
+}
+
+/// The scene texture's size for a `size` surface at `scale`.
+pub fn scene_size(size: [u32; 2], scale: f32) -> [u32; 2] {
+    size.map(|v| ((v as f32 * scale).round() as u32).max(1))
+}
+
+struct Targets {
+    size: [u32; 2],
+    scene: wgpu::TextureView,
+    /// Half size, quarter size... The first holds the finished bloom.
+    levels: Vec<wgpu::TextureView>,
+    /// Bind groups: the prefilter reads the scene; `down[i]` reads level i (writing
+    /// i + 1); `up[i]` reads level i + 1 (adding onto i); the composite reads the
+    /// scene and level 0.
+    prefilter: wgpu::BindGroup,
+    down: Vec<wgpu::BindGroup>,
+    up: Vec<wgpu::BindGroup>,
+    composite: wgpu::BindGroup,
+}
+
+pub struct PostProcess {
+    layout: wgpu::BindGroupLayout,
+    uniforms: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    /// Stands in for the bloom texture in the passes that don't read it.
+    blank: wgpu::TextureView,
+    prefilter: wgpu::RenderPipeline,
+    down: wgpu::RenderPipeline,
+    up: wgpu::RenderPipeline,
+    composite: wgpu::RenderPipeline,
+    targets: Option<Targets>,
+}
+
+impl PostProcess {
+    /// `output`: the format the composite writes (the surface's).
+    pub fn new(device: &wgpu::Device, output: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("post.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()),
+        });
+        let texture = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(size_of::<Uniforms>() as u64),
+                    },
+                    count: None,
+                },
+                texture(1),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                texture(3),
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("post"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = |entry: &str, format: wgpu::TextureFormat, blend: Option<wgpu::BlendState>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("post uniforms"),
+            size: size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("post"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let blank = texture_2d(device, "blank", [1, 1]);
+        Self {
+            prefilter: pipeline("fs_prefilter", SCENE_FORMAT, None),
+            down: pipeline("fs_down", SCENE_FORMAT, None),
+            up: pipeline("fs_up", SCENE_FORMAT, Some(wgpu::BlendState { color: add, alpha: add })),
+            composite: pipeline("fs_composite", output, None),
+            layout,
+            uniforms,
+            sampler,
+            blank,
+            targets: None,
+        }
+    }
+
+    /// The texture to draw the scene into, `size` pixels (made or remade as needed).
+    pub fn scene_target(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
+        if self.targets.as_ref().is_none_or(|t| t.size != size) {
+            self.targets = Some(self.make_targets(device, size));
+        }
+        self.targets.as_ref().expect("just made").scene.clone()
+    }
+
+    fn make_targets(&self, device: &wgpu::Device, size: [u32; 2]) -> Targets {
+        let scene = texture_2d(device, "scene", size);
+        let mut levels = Vec::new();
+        let mut level = size.map(|v| (v / 2).max(1));
+        while levels.len() < MAX_LEVELS && level[0].min(level[1]) >= MIN_LEVEL {
+            levels.push(texture_2d(device, "bloom level", level));
+            level = level.map(|v| (v / 2).max(1));
+        }
+        if levels.is_empty() {
+            levels.push(texture_2d(device, "bloom level", size.map(|v| (v / 2).max(1))));
+        }
+        let group = |src: &wgpu::TextureView, bloom: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("post"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(bloom) },
+                ],
+            })
+        };
+        let prefilter = group(&scene, &self.blank);
+        let down = levels.windows(2).map(|w| group(&w[0], &self.blank)).collect();
+        let up = levels.windows(2).map(|w| group(&w[1], &self.blank)).collect();
+        let composite = group(&scene, &levels[0]);
+        Targets { size, scene, levels, prefilter, down, up, composite }
+    }
+
+    /// Record the bloom (skipped at `strength` 0) and the composite into `output`.
+    /// Call after drawing the scene into `scene_target`.
+    pub fn run(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, output: &wgpu::TextureView, strength: f32, timer: Option<&GpuTimer>) {
+        let t = self.targets.as_ref().expect("scene_target first");
+        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&Uniforms { threshold: THRESHOLD, knee: KNEE, strength, _pad: 0.0 }));
+        if strength > 0.0 {
+            fullscreen(encoder, "bloom prefilter", &t.levels[0], false, &self.prefilter, &t.prefilter);
+            for (k, group) in t.down.iter().enumerate() {
+                fullscreen(encoder, "bloom down", &t.levels[k + 1], false, &self.down, group);
+            }
+            for (k, group) in t.up.iter().enumerate().rev() {
+                fullscreen(encoder, "bloom up", &t.levels[k], true, &self.up, group);
+            }
+        }
+        if let Some(timer) = timer {
+            timer.mark(encoder, Stage::Composite);
+        }
+        fullscreen(encoder, "composite", output, false, &self.composite, &t.composite);
+    }
+}
+
+fn texture_2d(device: &wgpu::Device, label: &str, size: [u32; 2]) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SCENE_FORMAT,
+            // (Copies: for tests and, later, screenshots.)
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
+/// One full-target triangle into `target`, keeping its contents when `keep` (for the
+/// additive upsample) or replacing them.
+fn fullscreen(encoder: &mut wgpu::CommandEncoder, label: &str, target: &wgpu::TextureView, keep: bool, pipeline: &wgpu::RenderPipeline, group: &wgpu::BindGroup) {
+    let load = if keep { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) };
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+        })],
+        ..Default::default()
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, group, &[]);
+    pass.draw(0..3, 0..1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_automatic_scale_draws_4k_smaller() {
+        assert_eq!(render_scale(0.0, [1920, 1080]), 1.0);
+        assert_eq!(render_scale(0.0, [3840, 2160]), AUTO_SCALE);
+        assert_eq!(render_scale(0.5, [3840, 2160]), 0.5);
+        assert_eq!(scene_size([3840, 2160], 0.75), [2880, 1620]);
+    }
+
+    /// The composite and bloom on a headless GPU: ordinary colours pass unchanged,
+    /// bright ones roll off below white, and a bright dot glows onto its surroundings
+    /// while a dim scene doesn't glow at all.
+    #[test]
+    fn composite_keeps_colours_and_blooms_highlights() {
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let mut post = PostProcess::new(device, SCENE_FORMAT);
+        let size = [64u32, 64];
+        let scene = post.scene_target(device, size);
+        let render = |pixels: &dyn Fn(u32, u32) -> f32, strength: f32| -> Vec<[f32; 4]> {
+            let data: Vec<half_float::F16x4> = (0..size[1]).flat_map(|y| (0..size[0]).map(move |x| (x, y))).map(|(x, y)| half_float::F16x4::grey(pixels(x, y))).collect();
+            let texture = scene.texture();
+            queue.write_texture(
+                texture.as_image_copy(),
+                bytemuck::cast_slice(&data),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: None },
+                wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+            );
+            let output = texture_2d(device, "output", size);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            post.run(queue, &mut encoder, &output, strength, None);
+            queue.submit([encoder.finish()]);
+            half_float::read(device, queue, output.texture(), size)
+        };
+        let flat = render(&|_, _| 0.5, 0.4);
+        assert!(flat.iter().all(|p| (p[0] - 0.5).abs() < 2e-3), "0.5 changed: {:?}", flat[0]);
+        let bright = render(&|_, _| 4.0, 0.0);
+        assert!(bright.iter().all(|p| p[0] > 0.95 && p[0] < 1.0), "4.0 became {:?}", bright[0]);
+        let dot = |x, y| if (x, y) == (32, 32) { 50.0 } else { 0.1 };
+        let glowing = render(&dot, 0.4);
+        let near = glowing[(32 * size[0] + 36) as usize][0];
+        assert!(near > 0.12, "no glow 4 px from a bright dot: {near}");
+        let dim = render(&|_, _| 0.1, 0.4);
+        assert!(dim.iter().all(|p| (p[0] - 0.1).abs() < 2e-3), "a dim scene glowed: {:?}", dim[0]);
+    }
+
+    /// Half floats for the test's uploads and readbacks.
+    mod half_float {
+        use bytemuck::{Pod, Zeroable};
+
+        #[repr(C)]
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        pub struct F16x4([u16; 4]);
+
+        impl F16x4 {
+            pub fn grey(v: f32) -> Self {
+                let h = to_f16(v);
+                Self([h, h, h, to_f16(1.0)])
+            }
+        }
+
+        /// f32 to f16 for the normal positive values the test uses.
+        fn to_f16(v: f32) -> u16 {
+            let bits = v.to_bits();
+            let exp = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+            if v == 0.0 || exp <= 0 {
+                return 0;
+            }
+            ((exp as u16) << 10) | ((bits >> 13) & 0x3ff) as u16
+        }
+
+        fn from_f16(h: u16) -> f32 {
+            let exp = ((h >> 10) & 0x1f) as i32;
+            let mantissa = (h & 0x3ff) as f32 / 1024.0;
+            if exp == 0 {
+                return mantissa * 2f32.powi(-14);
+            }
+            (1.0 + mantissa) * 2f32.powi(exp - 15)
+        }
+
+        pub fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, size: [u32; 2]) -> Vec<[f32; 4]> {
+            let row = (size[0] * 8).next_multiple_of(256);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("readback"),
+                size: u64::from(row * size[1]),
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None },
+                },
+                wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+            );
+            queue.submit([encoder.finish()]);
+            buffer.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+            device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+            let data = buffer.slice(..).get_mapped_range().expect("mapped");
+            let mut out = Vec::new();
+            for y in 0..size[1] {
+                let start = (y * row) as usize;
+                let halves: &[u16] = bytemuck::cast_slice(&data[start..start + (size[0] * 8) as usize]);
+                out.extend(halves.chunks(4).map(|c| [from_f16(c[0]), from_f16(c[1]), from_f16(c[2]), from_f16(c[3])]));
+            }
+            out
+        }
+    }
+}

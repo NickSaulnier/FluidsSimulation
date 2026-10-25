@@ -7,6 +7,22 @@ use egui::{Sense, vec2};
 use crate::ui::shortcuts::{Action, MOUSE, SHORTCUTS, tip};
 use crate::ui::widgets::{self, row};
 
+/// Time per phase, as bars sharing out the total.
+fn breakdown(ui: &mut egui::Ui, phases: &[(&'static str, std::time::Duration)]) {
+    let total: f64 = phases.iter().map(|(_, d)| d.as_secs_f64()).sum();
+    for (name, d) in phases {
+        let share = if total > 0.0 { (d.as_secs_f64() / total) as f32 } else { 0.0 };
+        row(ui, name, "", |ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(80.0, 10.0), Sense::hover());
+            ui.painter().rect_filled(rect, 2, theme::GROUP_FILL.gamma_multiply(1.6));
+            let filled = egui::Rect::from_min_size(rect.min, vec2(rect.width() * share, rect.height()));
+            ui.painter().rect_filled(filled, 2, theme::ACCENT);
+            ui.label(format!("{:.2} ms", d.as_secs_f64() * 1e3));
+        });
+    }
+    row(ui, "total", "", |ui| ui.strong(format!("{:.2} ms", total * 1e3)));
+}
+
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     let perf = f.perf;
     let in_3d = f.world3d.is_some();
@@ -43,20 +59,10 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         }
     });
 
-    widgets::group(ui, "Step breakdown", |ui| {
-        let total: f64 = stats.phases.iter().map(|(_, d)| d.as_secs_f64()).sum();
-        for (name, d) in &stats.phases {
-            let share = if total > 0.0 { (d.as_secs_f64() / total) as f32 } else { 0.0 };
-            row(ui, name, "", |ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(80.0, 10.0), Sense::hover());
-                ui.painter().rect_filled(rect, 2, theme::GROUP_FILL.gamma_multiply(1.6));
-                let filled = egui::Rect::from_min_size(rect.min, vec2(rect.width() * share, rect.height()));
-                ui.painter().rect_filled(filled, 2, theme::ACCENT);
-                ui.label(format!("{:.2} ms", d.as_secs_f64() * 1e3));
-            });
-        }
-        row(ui, "total", "", |ui| ui.strong(format!("{:.2} ms", total * 1e3)));
-    });
+    widgets::group(ui, "Step breakdown", |ui| breakdown(ui, &stats.phases));
+    if !f.render_times.is_empty() {
+        widgets::group(ui, "Render breakdown (GPU)", |ui| breakdown(ui, f.render_times));
+    }
 
     widgets::group(ui, "Shortcuts", |ui| {
         for sc in SHORTCUTS {

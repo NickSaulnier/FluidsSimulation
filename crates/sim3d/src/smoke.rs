@@ -70,8 +70,16 @@ pub struct SmokeParams {
     pub rise: f32,
     /// Acceleration along gravity per unit smoke, as a fraction of g.
     pub heaviness: f32,
-    /// dT/dt = -cooling · T².
+    /// dT/dt = -cooling · T² - heat_loss · T: the first keeps flames short, the second
+    /// stops merely warm gas collecting in the box (which otherwise heats up, and turns
+    /// over in big convection cells that blow the flames about).
     pub cooling: f32,
+    pub heat_loss: f32,
+    /// Air drag: velocity decays at this rate, 1/s. A box with only its top open turns
+    /// over slowly as a whole (the plume's air comes back down the walls and across the
+    /// floor), and that circulation grows until it blows a flame flat; a little drag
+    /// keeps it weak while buoyancy keeps driving the plume.
+    pub drag: f32,
     /// Fraction of the smoke lost per second.
     pub fade: f32,
     /// Vorticity confinement strength.
@@ -109,6 +117,8 @@ impl SmokeParams {
             rise: 0.15,
             heaviness: 0.02,
             cooling: 0.6,
+            heat_loss: 0.3,
+            drag: 0.2,
             fade: 0.0,
             vorticity: 0.3,
             burner_temp: 1.0,
@@ -123,9 +133,21 @@ impl SmokeParams {
     }
 
     /// Burners release lit fuel: flames, then smoke from the soot. The 2D fire's
-    /// model and values, with a flickering burner.
+    /// model and values, with a flickering burner. The soot fades (about 25% a second):
+    /// a fire burns for good, and without it the soot the vent doesn't catch fills the
+    /// box with haze within half a minute.
     pub fn fire() -> Self {
-        Self { rise: 0.12, cooling: 1.5, vorticity: 0.5, burner_smoke: 0.0, burner_fuel: 1.0, flicker: 0.4, ..Self::smoke() }
+        Self {
+            rise: 0.12,
+            cooling: 1.5,
+            fade: 0.3,
+            drag: 0.3,
+            vorticity: 0.5,
+            burner_smoke: 0.0,
+            burner_fuel: 1.0,
+            flicker: 0.4,
+            ..Self::smoke()
+        }
     }
 
     fn is_fire(&self) -> bool {
@@ -178,6 +200,22 @@ const COOLING: FloatSpec = FloatSpec {
     log: false,
     restart: false,
     help: "How fast hot gas cools (dT/dt = -k·T²): the plume slows and spreads once cool.",
+};
+const HEAT_LOSS: FloatSpec = FloatSpec {
+    key: "heat_loss",
+    label: "Heat loss (1/s)",
+    range: 0.0..=2.0,
+    log: false,
+    restart: false,
+    help: "Warm gas losing heat to the surroundings. Without it a closed-in fire heats its whole box and the air starts churning.",
+};
+const DRAG: FloatSpec = FloatSpec {
+    key: "drag",
+    label: "Air drag (1/s)",
+    range: 0.0..=2.0,
+    log: false,
+    restart: false,
+    help: "Slows all motion. Keeps the box's slow overall churning from blowing flames about.",
 };
 const FADE: FloatSpec = FloatSpec {
     key: "dissipation",
@@ -267,6 +305,8 @@ impl SmokeParams {
         v.float(&RISE, &mut self.rise);
         v.float(&HEAVINESS, &mut self.heaviness);
         v.float(&COOLING, &mut self.cooling);
+        v.float(&HEAT_LOSS, &mut self.heat_loss);
+        v.float(&DRAG, &mut self.drag);
         v.float(&FADE, &mut self.fade);
         v.float(&VORTICITY, &mut self.vorticity);
         v.advanced_section("Burners");
@@ -312,7 +352,9 @@ struct Uniforms {
     burner_smoke: f32,
     flicker: f32,
     n_brushes: u32,
-    _pad: [u32; 3],
+    heat_loss: f32,
+    drag: f32,
+    _pad: u32,
 }
 
 struct Pipelines {
@@ -599,7 +641,9 @@ impl Smoke3d {
             burner_smoke: p.burner_smoke,
             flicker: p.flicker,
             n_brushes: brushes.len() as u32,
-            _pad: [0; 3],
+            heat_loss: p.heat_loss,
+            drag: p.drag,
+            _pad: 0,
         };
         gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniforms));
         if !geom.is_empty() {
@@ -733,7 +777,7 @@ impl Smoke3d {
     }
 
     /// Cell types (0 fluid, 1 solid, 3 burner, with the burner's index above bit 8;
-    /// bit 4 marks fluid in a vent).
+    /// bits 4 to 6 mark fluid in a vent, open toward x, y or z).
     pub fn read_flags(&self, gpu: &GpuContext) -> Vec<u32> {
         bytemuck::cast_slice(&read(gpu, &self.fields.as_ref().expect("reset ran").flags)).to_vec()
     }

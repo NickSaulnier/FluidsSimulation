@@ -176,6 +176,6 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         colour += through * SOLID * (0.25 + 0.75 * diffuse);
         through = 0.0;
     }
-    // Flames are bright: roll them off toward white rather than clipping.
-    return vec4f(colour + (1.0 - exp(-glow)), through);
+    // Flames are brighter than white: the composite blooms them and rolls them off.
+    return vec4f(colour + glow, through);
 }

@@ -1,4 +1,4 @@
-//! View tab: how the fluid is drawn, and the field overlay.
+//! View tab: how the fluid is drawn, the picture as a whole, and the field overlay.
 
 use crate::render::Palette;
 use crate::render::palette::PALETTES;
@@ -38,9 +38,25 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         }
         widgets::toggle(ui, &mut s.show_particles, &tip("Show particles", Action::ToggleParticles), "");
     });
+    widgets::group(ui, "Picture", |ui| picture(ui, f.state));
     if !in_3d {
         widgets::group(ui, "Overlay", |ui| overlay(ui, f));
     }
+}
+
+/// Glow and the render scale: they apply to every scene, 2D or 3D.
+fn picture(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
+    row(ui, "Glow", "Bloom: bright parts of the picture glow onto their surroundings.", |ui| {
+        ui.add(egui::Slider::new(&mut s.glow, 0.0..=1.0));
+    });
+    let label = |scale: f32| if scale > 0.0 { format!("{:.0}%", 100.0 * scale) } else { "Automatic".to_string() };
+    row(ui, "Render scale", "The scene's resolution relative to the window. Automatic draws 4K at 75%.", |ui| {
+        egui::ComboBox::from_id_salt("render_scale").selected_text(label(s.render_scale)).width(150.0).show_ui(ui, |ui| {
+            for scale in [0.0, 1.0, 0.75, 0.5] {
+                ui.selectable_value(&mut s.render_scale, scale, label(scale));
+            }
+        });
+    });
 }
 
 /// A preset menu, then the palette's three colours, each editable (which makes it a

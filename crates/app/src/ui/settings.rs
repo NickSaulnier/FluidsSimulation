@@ -33,6 +33,8 @@ pub struct Settings {
     pub reactions: Vec<crate::audio::reactions::Reaction>,
     pub auto_looks: bool,
     pub look_interval_s: f32,
+    pub glow: f32,
+    pub render_scale: f32,
 }
 
 impl Default for Settings {
@@ -61,6 +63,8 @@ impl Settings {
             reactions: s.reactions.clone(),
             auto_looks: s.director.auto,
             look_interval_s: s.director.interval_s,
+            glow: s.glow,
+            render_scale: s.render_scale,
         }
     }
 
@@ -84,6 +88,8 @@ impl Settings {
         s.reactions = self.reactions.clone();
         s.director.auto = self.auto_looks;
         s.director.interval_s = clamp(self.look_interval_s, 30.0, 300.0);
+        s.glow = clamp(self.glow, 0.0, 1.0);
+        s.render_scale = if self.render_scale > 0.0 { clamp(self.render_scale, 0.5, 1.0) } else { 0.0 };
         for r in &mut s.reactions {
             r.gain = clamp(r.gain, 0.0, 3.0);
         }

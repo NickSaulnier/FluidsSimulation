@@ -1,11 +1,15 @@
 //! Frame orchestration: shared uniforms, the domain backdrop, and the particle layer.
+//! The 2D scene draws into the post-processing's HDR scene texture (`post`), not the
+//! screen.
 
 pub mod colormap;
 mod liquid;
 pub mod palette;
 mod overlay;
 mod particles;
+pub mod post;
 mod solid;
+pub mod timer;
 
 use crate::view::View;
 use bytemuck::{Pod, Zeroable};
@@ -39,8 +43,10 @@ pub struct DrawOptions<'a> {
     pub show_particles: bool,
     /// Draw particles as a continuous liquid surface instead of discs.
     pub liquid: Option<LiquidStyle>,
-    /// Surface size in pixels (the liquid pass renders offscreen at this size).
+    /// Target size in pixels (the liquid pass renders offscreen at this size).
     pub target_size: (u32, u32),
+    /// Target pixels per window pixel (the render scale), for sizes set in pixels.
+    pub pixel_scale: f32,
     /// The fluid's colours (particles, liquid surface, dye).
     pub palette: Palette,
 }
@@ -133,7 +139,7 @@ impl Renderer {
         target: &wgpu::TextureView,
         options: DrawOptions<'_>,
     ) -> Option<(f32, f32)> {
-        let DrawOptions { view, world, field, show_particles, liquid, target_size, palette } = options;
+        let DrawOptions { view, world, field, show_particles, liquid, target_size, pixel_scale, palette } = options;
         let particles = world.solver.particles();
         let globals = Globals {
             scale: view.scale.into(),
@@ -151,7 +157,7 @@ impl Renderer {
         let field_range = self.overlay.upload(device, queue, field, &palette);
         let liquid = liquid.filter(|_| show_particles && particles.is_some());
         if let Some(style) = liquid {
-            let splat_px = globals.radius * style.splat_scale * view.px_per_metre;
+            let splat_px = globals.radius * style.splat_scale * view.px_per_metre * pixel_scale;
             self.liquid.prepare(device, queue, target_size, style, splat_px);
             self.liquid.splat(encoder, &self.bind_group, &self.particles);
         }

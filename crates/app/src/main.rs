@@ -90,6 +90,9 @@ struct State {
     world3d: Option<sim3d::World3d>,
     camera: OrbitCamera,
     renderer3d: Renderer3d,
+    /// The scene texture, bloom and composite, and the GPU time of each stage.
+    post: render::post::PostProcess,
+    timer: Option<render::timer::GpuTimer>,
     ui: UiState,
     music: Music,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
@@ -184,8 +187,11 @@ impl State {
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 760.0));
         let window = Arc::new(event_loop.create_window(attrs)?);
         let gpu = pollster::block_on(Gpu::new(window.clone(), event_loop.owned_display_handle()))?;
-        let renderer = Renderer::new(&gpu.device, gpu.config.format);
-        let renderer3d = Renderer3d::new(&gpu.device, gpu.config.format);
+        // The scenes draw into the HDR scene texture; the composite writes the surface.
+        let renderer = Renderer::new(&gpu.device, render::post::SCENE_FORMAT);
+        let renderer3d = Renderer3d::new(&gpu.device, render::post::SCENE_FORMAT);
+        let post = render::post::PostProcess::new(&gpu.device, gpu.config.format);
+        let timer = render::timer::GpuTimer::new(&gpu.device, &gpu.queue);
 
         let egui_ctx = egui::Context::default();
         ui::theme::apply(&egui_ctx);
@@ -224,6 +230,8 @@ impl State {
             world3d: None,
             camera: OrbitCamera::framing(glam::Vec3::ONE),
             renderer3d,
+            post,
+            timer,
             ui: {
                 let mut ui = UiState::default();
                 if let Some(saved) = ui::settings::load() {
@@ -413,6 +421,7 @@ impl State {
         let raw_input = self.egui_winit.take_egui_input(&self.window);
         let cursor = self.input.cursor().map(|pos| ui::Cursor { pos, px_per_metre: view.px_per_metre });
         let perf = self.perf.latest();
+        let render_times = self.timer.as_ref().map(|t| t.latest().to_vec()).unwrap_or_default();
         self.music.update();
         let mut frame = ui::Frame {
             world: &mut self.world,
@@ -421,6 +430,7 @@ impl State {
             music: &mut self.music,
             perf: &perf,
             field_range: self.field_range,
+            render_times: &render_times,
         };
         let mut canvas = None;
         let mut egui_out = self.egui_ctx.run_ui(raw_input, |ui| canvas = Some(ui::layout(ui, &mut frame, cursor)));
@@ -580,19 +590,34 @@ impl State {
         [x, y, (r.width() * ppp).min(w - x).max(0.0), (r.height() * ppp).min(h - y).max(0.0)]
     }
 
+    /// The frame: the scene into the HDR scene texture (at the render scale), then the
+    /// glow and the composite onto the surface, then the interface.
     fn render(&mut self, frame: wgpu::SurfaceTexture, view: &View, egui_out: egui::FullOutput) {
+        use render::timer::Stage;
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let surface = [self.gpu.config.width, self.gpu.config.height];
+        let scale = render::post::render_scale(self.ui.render_scale, surface);
+        let scene_size = render::post::scene_size(surface, scale);
+        let scene = self.post.scene_target(&self.gpu.device, scene_size);
+        let mark = |timer: &Option<render::timer::GpuTimer>, encoder: &mut wgpu::CommandEncoder, stage| {
+            if let Some(t) = timer {
+                t.mark(encoder, stage);
+            }
+        };
+        mark(&self.timer, &mut encoder, Stage::Scene);
         if let Some(world) = &self.world3d {
-            let viewport = self.viewport_3d();
+            let viewport = self.viewport_3d().map(|v| v * scale);
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
-            let size = [self.gpu.config.width, self.gpu.config.height];
             let volume = world.solver.volume();
-            self.renderer3d.render(device, queue, &mut encoder, &target, size, viewport, &self.camera, &world.scene, volume, &self.palette_now);
+            self.renderer3d.render(device, queue, &mut encoder, &scene, scene_size, viewport, &self.camera, &world.scene, volume, &self.palette_now);
             self.field_range = None;
         } else {
-            self.render_2d(&mut encoder, &target, view);
+            self.render_2d(&mut encoder, &scene, view, scene_size, scale);
         }
+        mark(&self.timer, &mut encoder, Stage::Glow);
+        self.post.run(&self.gpu.queue, &mut encoder, &target, self.ui.glow, self.timer.as_ref());
+        mark(&self.timer, &mut encoder, Stage::Interface);
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
 
         // egui on top, in its own pass that keeps the scene underneath.
@@ -621,13 +646,21 @@ impl State {
             // compile-time borrow of the encoder for a runtime check.
             self.egui_renderer.render(&mut pass.forget_lifetime(), &paint_jobs, &screen);
         }
+        if let Some(timer) = &mut self.timer {
+            timer.mark(&mut encoder, Stage::End);
+            timer.finish(&mut encoder);
+        }
         queue.submit(egui_commands.into_iter().chain([encoder.finish()]));
+        if let Some(timer) = &mut self.timer {
+            timer.submitted(device);
+        }
 
         self.window.pre_present_notify();
         queue.present(frame);
     }
 
-    fn render_2d(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, view: &View) {
+    /// The 2D scene into `target`, `size` pixels, `scale` of the window's.
+    fn render_2d(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, view: &View, size: [u32; 2], scale: f32) {
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
         // The selected overlay field, looked up by key in whatever the solver offers. A
         // solver without particles (pure grid) is drawn through its first field. A key
@@ -651,7 +684,8 @@ impl State {
             field,
             show_particles: self.ui.show_particles,
             liquid: self.ui.liquid_style(),
-            target_size: (self.gpu.config.width, self.gpu.config.height),
+            target_size: (size[0], size[1]),
+            pixel_scale: scale,
             palette: self.palette_now,
         };
         self.field_range = self.renderer.render(device, queue, encoder, target, options);

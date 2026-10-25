@@ -348,7 +348,7 @@ mod cpu {
     const FLUID: u32 = 0;
     const SOLID: u32 = 1;
     const INFLOW: u32 = 3;
-    const OPEN: u32 = 0x10;
+    const OPEN_X: u32 = 0x10;
 
     pub struct Grid {
         n: UVec3,
@@ -375,12 +375,22 @@ mod cpu {
                             let along = r.dot(b.dir);
                             along.abs() <= 0.75 * h && (r - along * b.dir).length() <= b.radius.max(0.75 * h)
                         });
-                        let vent = scene.vents.iter().any(|v| p.cmpge(v.min).all() && p.cmple(v.max).all());
-                        flags[index(n, i, j, k)] = match (solid, burner, vent) {
-                            (true, _, _) => SOLID,
-                            (false, Some(b), _) => INFLOW | ((b as u32) << 8),
-                            (false, None, true) => FLUID | OPEN,
-                            _ => FLUID,
+                        // Each vent opens its thinnest axis.
+                        let open = scene
+                            .vents
+                            .iter()
+                            .filter(|v| p.cmpge(v.min).all() && p.cmple(v.max).all())
+                            .map(|v| {
+                                let e = v.max - v.min;
+                                let axis = if e.y < e.x { 1 } else { 0 };
+                                let axis = if e.z < e[axis] { 2 } else { axis };
+                                OPEN_X << axis
+                            })
+                            .fold(0, |a, b| a | b);
+                        flags[index(n, i, j, k)] = match (solid, burner) {
+                            (true, _) => SOLID,
+                            (false, Some(b)) => INFLOW | ((b as u32) << 8),
+                            (false, None) => FLUID | open,
                         };
                     }
                 }
@@ -396,8 +406,8 @@ mod cpu {
             self.flags[index(self.n, c.x as u32, c.y as u32, c.z as u32)] & 0x0f
         }
 
-        fn open(&self, c: IVec3) -> bool {
-            self.inside(c) && self.flags[index(self.n, c.x as u32, c.y as u32, c.z as u32)] & OPEN != 0
+        fn open(&self, c: IVec3, axis: usize) -> bool {
+            self.inside(c) && self.flags[index(self.n, c.x as u32, c.y as u32, c.z as u32)] & (OPEN_X << axis) != 0
         }
 
         fn comp_dims(&self, axis: usize) -> UVec3 {
@@ -426,7 +436,7 @@ mod cpu {
             let c1 = face.as_ivec3();
             let c0 = c1 - IVec3::AXES[axis];
             let (t0, t1) = (self.kind(c0), self.kind(c1));
-            if (!self.inside(c0) && self.open(c1)) || (!self.inside(c1) && self.open(c0)) {
+            if (!self.inside(c0) && self.open(c1, axis)) || (!self.inside(c1) && self.open(c0, axis)) {
                 return None;
             }
             if t0 == SOLID || t1 == SOLID {
@@ -468,7 +478,7 @@ mod cpu {
                                 if self.kind(nb) == FLUID {
                                     sum += phi[index(n, nb.x as u32, nb.y as u32, nb.z as u32)];
                                     count += 1.0;
-                                } else if self.open(c.as_ivec3()) && !self.inside(nb) {
+                                } else if self.open(c.as_ivec3(), a) && !self.inside(nb) {
                                     count += 1.0;
                                 }
                             }
@@ -493,5 +503,49 @@ mod cpu {
             }
             phi
         }
+    }
+}
+
+/// A minute of fire at the app's grid and step (4 ms, as at 240 fps): it keeps burning,
+/// on its burner, with calm air and nothing blown up. Two bugs only showed like this:
+/// open walls fed back on themselves and blew the velocity up after half a minute, and
+/// heat and stray fuel collected until the box churned and flattened the flame. Slow:
+/// run on demand.
+#[test]
+#[ignore = "slow: run on demand"]
+fn a_fire_burns_steadily_for_a_minute() {
+    let Some(gpu) = gpu() else { return };
+    let scene = scene::campfire();
+    let mut s = solver(&gpu, &scene, SmokeParams::fire());
+    for second in 1..=60 {
+        for _ in 0..240 {
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            s.step(&gpu, &mut encoder, 1.0 / 240.0, &scene, &StepInput3d::default());
+            gpu.queue.submit([encoder.finish()]);
+        }
+        if second % 15 != 0 {
+            continue;
+        }
+        assert_eq!(s.check(&gpu), Vec::<String>::new(), "at {second} s");
+        let (n, h) = s.dims().unwrap();
+        let scal = s.read_scalars(&gpu);
+        let (mut weight, mut moment) = (0.0f32, Vec3::ZERO);
+        for k in 0..n.z {
+            for j in 0..n.y {
+                for i in 0..n.x {
+                    let t = scal[index(n, i, j, k)][1];
+                    if t > 1.2 {
+                        weight += t;
+                        moment += t * centre(h, i, j, k);
+                    }
+                }
+            }
+        }
+        assert!(weight > 0.0, "the fire went out by {second} s");
+        let flame = moment / weight;
+        let drift = Vec3::new(flame.x - 0.5, 0.0, flame.z - 0.5).length();
+        assert!(drift < 0.1, "the flame drifted {drift} m off its burner by {second} s");
+        let rms = (s.read_velocity(&gpu).iter().map(|v| v * v).sum::<f32>() / scal.len() as f32).sqrt();
+        assert!(rms < 1.0, "the air churns at {rms} m/s rms by {second} s");
     }
 }
