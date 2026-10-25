@@ -1,4 +1,4 @@
-﻿//! Combustion for the smoke-and-fire mode of the stable-fluids solver: fuel and
+//! Combustion for the smoke-and-fire mode of the stable-fluids solver: fuel and
 //! temperature fields alongside the dye, which plays the smoke.
 //!
 //! Two kinds of fuel:
@@ -16,7 +16,7 @@
 //! - Gas fuel burns at `burn_rate` where the gas is at least `ignition` hot. Solid
 //!   fuel catches there and then burns at `SOLID_BURN` times that rate until it's gone.
 //!   Either way the burned fuel releases `heat` (temperature) and `soot` (smoke).
-//! - Hot gas cools as dT/dt = -cooling * TÂ²: like radiation, much faster when very
+//! - Hot gas cools as dT/dt = -cooling * T²: like radiation, much faster when very
 //!   hot. That keeps flames short (burning gas at T = 5 dims below visibility within a
 //!   few tenths of a second) while merely warm gas stays above ignition long enough to
 //!   light the fuel above it. A single exponential rate couldn't do both: one short
@@ -30,7 +30,7 @@
 //! without gravity they don't rise at all.
 //!
 //! Heat release has to beat the losses for a fire to spread: a burning cell gains heat
-//! at `heat * SOLID_BURN * burn_rate` and loses `cooling * TÂ²` plus whatever the airflow
+//! at `heat * SOLID_BURN * burn_rate` and loses `cooling * T²` plus whatever the airflow
 //! carries off. With heat 1.5 (and linear cooling) it settled barely above ignition and
 //! fires stalled; at 6 the hot gas rising off burning fuel reliably lights the fuel
 //! above.
@@ -48,13 +48,13 @@ pub struct FireParams {
     pub burn_rate: f32,
     /// Temperature released per unit of fuel burned.
     pub heat: f32,
-    /// Radiative-style cooling: dT/dt = -cooling * TÂ².
+    /// Radiative-style cooling: dT/dt = -cooling * T².
     pub cooling: f32,
     /// Smoke released per unit of fuel burned.
     pub soot: f32,
     /// Upward acceleration per unit temperature, as a fraction of g.
     pub rise: f32,
-    /// Heat diffusivity, mÂ²/s.
+    /// Heat diffusivity, m²/s.
     pub diffusion: f32,
     /// Temperature of the gas leaving a burner (an emitter), so it's alight.
     pub burner: f32,
@@ -116,7 +116,7 @@ const IGNITION: FloatSpec = FloatSpec {
 };
 const DIFFUSION: FloatSpec = FloatSpec {
     key: "heat_diffusion",
-    label: "Heat diffusion (mÂ²/s)",
+    label: "Heat diffusion (m²/s)",
     range: 0.0..=0.003,
     log: false,
     restart: false,
@@ -177,7 +177,7 @@ impl Combustion {
     }
 
     /// How much fuel a burner releases at cell `i` on substep `step`, relative to its
-    /// steady output: it varies by up to Â±`FLICKER` along the nozzle and over time,
+    /// steady output: it varies by up to ±`FLICKER` along the nozzle and over time,
     /// which seeds the buoyant instabilities that make flames flicker. A hash, not a
     /// random generator, so runs are reproducible.
     pub fn flicker(i: usize, step: u64) -> f32 {
@@ -243,7 +243,7 @@ impl Combustion {
                     }
                     temp[i] += p.heat * burned;
                     smoke[i] = (smoke[i] + p.soot * burned).min(1.0);
-                    // dT/dt = -cooling TÂ², integrated implicitly: stable at any dt.
+                    // dT/dt = -cooling T², integrated implicitly: stable at any dt.
                     temp[i] /= 1.0 + p.cooling * temp[i].max(0.0) * dt;
                 }
             });

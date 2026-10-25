@@ -1,17 +1,15 @@
-//! Live input: capture what the computer is playing (Spotify, a browser, anything) and
-//! detect its kicks as they happen.
+//! Live input: capture what the computer is playing (Spotify, a browser, anything).
 //!
 //! On Windows, opening the default *output* device as an input stream makes cpal's
 //! WASAPI backend capture it in loopback mode: the mix as it goes to the speakers. The
 //! capture callback runs on cpal's audio thread; it downmixes to mono and appends to a
-//! shared buffer, which the frame loop drains into the `LiveDetector`.
+//! shared buffer, which the frame loop drains into the analyzer.
 
-use super::kicks::{Kick, LiveDetector};
 use rodio::cpal;
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
 
-/// Captured audio waiting for the detector is capped at this many seconds (the frame
+/// Captured audio waiting for the analyzer is capped at this many seconds (the frame
 /// loop drains it every frame, so it only fills while the window is stalled).
 const MAX_BACKLOG_S: f32 = 1.0;
 
@@ -19,12 +17,8 @@ pub struct LiveInput {
     /// Capturing stops when this is dropped.
     _stream: cpal::Stream,
     pub device_name: String,
+    pub sample_rate: u32,
     buffer: Arc<Mutex<Vec<f32>>>,
-    detector: LiveDetector,
-    scratch: Vec<f32>,
-    /// Recent loudness (RMS of the last drained audio, smoothed), for a level meter.
-    pub level: f32,
-    pub kicks_detected: usize,
 }
 
 impl LiveInput {
@@ -72,33 +66,14 @@ impl LiveInput {
         .map_err(|e| format!("{device_name}: {e}"))?;
         stream.play().map_err(|e| format!("{device_name}: {e}"))?;
         log::info!("capturing {device_name} ({rate} Hz, {channels} channels)");
-        Ok(Self {
-            _stream: stream,
-            device_name,
-            buffer,
-            detector: LiveDetector::new(rate),
-            scratch: Vec::new(),
-            level: 0.0,
-            kicks_detected: 0,
-        })
+        Ok(Self { _stream: stream, device_name, sample_rate: rate, buffer })
     }
 
-    /// Drain the captured audio through the detector; returns the kicks found.
-    pub fn poll(&mut self, sensitivity: f32) -> Vec<Kick> {
-        self.scratch.clear();
+    /// Move the captured mono samples into `out`. (WASAPI delivers nothing while the
+    /// system is silent.)
+    pub fn drain(&mut self, out: &mut Vec<f32>) {
         if let Ok(mut b) = self.buffer.lock() {
-            std::mem::swap(&mut self.scratch, &mut b);
+            out.append(&mut b);
         }
-        let mut kicks = Vec::new();
-        self.detector.process(&self.scratch, sensitivity, &mut kicks);
-        self.kicks_detected += kicks.len();
-        // A meter that falls smoothly when the audio stops (no samples arrive then).
-        let rms = if self.scratch.is_empty() {
-            0.0
-        } else {
-            (self.scratch.iter().map(|x| x * x).sum::<f32>() / self.scratch.len() as f32).sqrt()
-        };
-        self.level = rms.max(self.level * 0.9);
-        kicks
     }
 }

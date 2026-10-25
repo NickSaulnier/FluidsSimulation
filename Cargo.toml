@@ -21,6 +21,7 @@ egui-wgpu  = "=0.36.2"
 egui-winit = "=0.36.2"
 egui-phosphor = "=0.14.0"
 rodio      = "=0.22.2"
+rustfft    = "6"
 rayon      = "1.12"
 glam       = { version = "0.34", features = ["bytemuck"] }
 bytemuck   = { version = "1", features = ["derive"] }

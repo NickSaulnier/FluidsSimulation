@@ -1,15 +1,15 @@
-//! Audio-reactive mode: fire fluid pulses on the kick drums of either a track file
-//! played by the app, or whatever the computer is playing (live, see `live`).
+//! Audio-reactive mode: analyse the music (see `analyzer`) from either a track file
+//! played by the app or whatever the computer is playing (live, see `live`), and fire
+//! fluid pulses on its kick drums.
 //!
-//! Loading (decode + kick analysis) runs on a background thread so a long track doesn't
-//! freeze the window. A track's kicks are detected offline (see `kicks`), so during
-//! playback the only work is comparing their times against the player's position. Live
-//! audio is analysed as it arrives.
+//! Both sources go through the same streaming analyzer: live audio as it's captured,
+//! a track's decoded samples as playback passes them. Decoding runs on a background
+//! thread so a long track doesn't freeze the window.
 
-pub mod kicks;
+pub mod analyzer;
 pub mod live;
 
-use kicks::{Kick, Onsets};
+use analyzer::{Analyzer, AudioFeatures, OnsetKind};
 use rodio::Source;
 use sim::{Emitter, ForceBrush, Vec2};
 use std::num::NonZero;
@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 /// How long one kick keeps pushing, and where successive kicks land across the floor.
 const PULSE: Duration = Duration::from_millis(90);
 const LANES: [f32; 3] = [0.3, 0.7, 0.5];
+/// Track playback that jumps further than this (seeking) restarts the feed there
+/// instead of analysing everything skipped.
+const MAX_FEED_S: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KickAction {
@@ -32,17 +35,14 @@ pub enum KickAction {
 pub struct Track {
     pub name: String,
     pub duration: f32,
-    pub kicks: Vec<Kick>,
-    onsets: Onsets,
 }
 
-/// Decoded audio and its analysis, produced by the loader thread.
+/// Decoded audio, produced by the loader thread.
 struct Loaded {
     name: String,
     channels: NonZero<u16>,
     rate: NonZero<u32>,
     samples: Vec<f32>,
-    onsets: Onsets,
 }
 
 struct Pulse {
@@ -56,20 +56,27 @@ pub struct Music {
     /// Capturing the computer's audio output instead of playing the track.
     pub live: Option<live::LiveInput>,
     pub error: Option<String>,
+    /// Onset threshold, in standard deviations above the recent onset activity.
     pub sensitivity: f32,
     pub gain: f32,
     pub action: KickAction,
     pub muted: bool,
-    pub last_kick: Option<Instant>,
+    /// Hits counted since the source started, and when each kind last hit
+    /// (`OnsetKind::ALL` order).
+    pub hits: [usize; 3],
+    pub last_hit: [Option<Instant>; 3],
+    /// The analyzer for the current source (its sample rate is the source's).
+    analyzer: Option<Analyzer>,
     /// The output device, opened on first load (playback stops if it's dropped).
     device: Option<rodio::MixerDeviceSink>,
     player: Option<rodio::Player>,
-    /// Interleaved samples, kept so the track can be restarted after it ends.
+    /// Interleaved samples, kept so the track can be restarted and analysed as it plays.
     samples: Option<(NonZero<u16>, NonZero<u32>, Vec<f32>)>,
     loading: Option<(String, Receiver<Result<Loaded, String>>)>,
-    picked_with: f32,
-    next_kick: usize,
-    last_pos: f32,
+    /// Track frames already fed to the analyzer.
+    fed_frames: usize,
+    /// Scratch: mono samples for the analyzer.
+    mono: Vec<f32>,
     pulses: Vec<Pulse>,
     lane: usize,
 }
@@ -84,14 +91,15 @@ impl Default for Music {
             gain: 1.0,
             action: KickAction::Splash,
             muted: false,
-            last_kick: None,
+            hits: [0; 3],
+            last_hit: [None; 3],
+            analyzer: None,
             device: None,
             player: None,
             samples: None,
             loading: None,
-            picked_with: f32::NAN,
-            next_kick: 0,
-            last_pos: 0.0,
+            fed_frames: 0,
+            mono: Vec::new(),
             pulses: Vec::new(),
             lane: 0,
         }
@@ -120,6 +128,7 @@ impl Music {
         }
         if !on {
             self.live = None;
+            self.restart_analysis(self.samples.as_ref().map(|(_, rate, _)| rate.get()));
             return;
         }
         if let Some(p) = &self.player {
@@ -127,6 +136,7 @@ impl Music {
         }
         match live::LiveInput::open() {
             Ok(input) => {
+                self.restart_analysis(Some(input.sample_rate));
                 self.live = Some(input);
                 self.error = None;
             }
@@ -136,6 +146,11 @@ impl Music {
 
     pub fn is_live(&self) -> bool {
         self.live.is_some()
+    }
+
+    /// The latest analysis of the current source, if there is one.
+    pub fn features(&self) -> Option<&AudioFeatures> {
+        self.analyzer.as_ref().map(Analyzer::features)
     }
 
     pub fn loading_name(&self) -> Option<&str> {
@@ -164,8 +179,7 @@ impl Music {
             player.clear();
             player.append(rodio::buffer::SamplesBuffer::new(*channels, *rate, samples.clone()));
             player.play();
-            self.next_kick = 0;
-            self.last_pos = 0.0;
+            self.fed_frames = 0;
         }
     }
 
@@ -175,8 +189,8 @@ impl Music {
         }
     }
 
-    /// Poll the loader, keep the kick list in sync with the sensitivity, and fire any
-    /// kicks the playback position has passed since last frame.
+    /// Poll the loader, feed the analyzer whatever the source produced since last frame,
+    /// and turn kicks into pulses.
     pub fn update(&mut self) {
         if let Some((_, rx)) = &self.loading {
             match rx.try_recv() {
@@ -195,38 +209,33 @@ impl Music {
                 }
             }
         }
+
+        self.mono.clear();
         if let Some(input) = &mut self.live {
-            for kick in input.poll(self.sensitivity) {
-                self.pulses.push(Pulse { started: Instant::now(), strength: kick.strength, lane: LANES[self.lane % LANES.len()] });
-                self.lane += 1;
-                self.last_kick = Some(Instant::now());
+            input.drain(&mut self.mono);
+        } else if let (Some((channels, rate, samples)), true) = (&self.samples, self.is_playing()) {
+            // The frames playback has passed since last frame, downmixed.
+            let c = usize::from(channels.get());
+            let rate = rate.get() as f32;
+            let now = ((self.position() * rate) as usize).min(samples.len() / c);
+            if now < self.fed_frames || now - self.fed_frames > (MAX_FEED_S * rate) as usize {
+                self.fed_frames = now; // restarted or skipped: pick up from here
             }
-            return;
+            let frames = &samples[self.fed_frames * c..now * c];
+            self.mono.extend(frames.chunks(c).map(|f| f.iter().sum::<f32>() / c as f32));
+            self.fed_frames = now;
         }
-        // Read the player before borrowing the track: `position()` borrows all of `self`.
-        let playing = self.player.as_ref().is_some_and(|p| !p.is_paused());
-        let pos = self.position();
-        let Some(track) = &mut self.track else { return };
-        if self.sensitivity != self.picked_with {
-            track.kicks = kicks::pick_kicks(&track.onsets, self.sensitivity);
-            self.picked_with = self.sensitivity;
-            self.next_kick = track.kicks.partition_point(|k| k.time <= self.last_pos);
+        let Some(analyzer) = &mut self.analyzer else { return };
+        analyzer.process(&self.mono, self.sensitivity);
+        for onset in analyzer.take_onsets() {
+            let k = OnsetKind::ALL.iter().position(|&kind| kind == onset.kind).unwrap_or(0);
+            self.hits[k] += 1;
+            self.last_hit[k] = Some(Instant::now());
+            if onset.kind == OnsetKind::Kick {
+                self.pulses.push(Pulse { started: Instant::now(), strength: onset.strength, lane: LANES[self.lane % LANES.len()] });
+                self.lane += 1;
+            }
         }
-        if !playing {
-            return;
-        }
-        if pos + 0.05 < self.last_pos {
-            // Jumped backwards (restart): resynchronise.
-            self.next_kick = track.kicks.partition_point(|k| k.time <= pos);
-        }
-        while let Some(kick) = track.kicks.get(self.next_kick).filter(|k| k.time <= pos) {
-            let now = Instant::now();
-            self.pulses.push(Pulse { started: now, strength: kick.strength, lane: LANES[self.lane % LANES.len()] });
-            self.lane += 1;
-            self.last_kick = Some(now);
-            self.next_kick += 1;
-        }
-        self.last_pos = pos;
     }
 
     /// This frame's forces from recent kicks, for a domain of the given size.
@@ -254,11 +263,19 @@ impl Music {
         (brushes, emitters)
     }
 
+    /// A fresh analyzer at `rate` (or none), with the hit counters reset.
+    fn restart_analysis(&mut self, rate: Option<u32>) {
+        self.analyzer = rate.map(Analyzer::new);
+        self.hits = [0; 3];
+        self.last_hit = [None; 3];
+        self.fed_frames = 0;
+    }
+
     fn start(&mut self, loaded: Loaded) {
-        let Loaded { name, channels, rate, samples, onsets } = loaded;
+        let Loaded { name, channels, rate, samples } = loaded;
+        let duration = samples.len() as f32 / (f32::from(channels.get()) * rate.get() as f32);
         // Dropping a file means "play this": leave live mode.
         self.live = None;
-        let duration = samples.len() as f32 / (f32::from(channels.get()) * rate.get() as f32);
         if self.device.is_none() {
             match rodio::DeviceSinkBuilder::open_default_sink() {
                 Ok(device) => self.device = Some(device),
@@ -273,21 +290,16 @@ impl Music {
         }
         log::info!("loaded {name}: {duration:.1} s");
         self.samples = Some((channels, rate, samples));
-        self.track = Some(Track { name, duration, kicks: Vec::new(), onsets });
-        self.picked_with = f32::NAN;
-        self.next_kick = 0;
-        self.last_pos = 0.0;
+        self.track = Some(Track { name, duration });
+        self.restart_analysis(Some(rate.get()));
     }
 }
 
-/// Decode a whole file and analyse it (runs on the loader thread).
+/// Decode a whole file (runs on the loader thread).
 fn decode(path: &PathBuf, name: String) -> Result<Loaded, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{name}: {e}"))?;
     let decoder = rodio::Decoder::try_from(file).map_err(|e| format!("{name}: {e}"))?;
     let (channels, rate) = (decoder.channels(), decoder.sample_rate());
     let samples: Vec<f32> = decoder.collect();
-    let c = usize::from(channels.get());
-    let mono: Vec<f32> = samples.chunks(c).map(|frame| frame.iter().sum::<f32>() / c as f32).collect();
-    let onsets = kicks::onset_function(&mono, rate.get());
-    Ok(Loaded { name, channels, rate, samples, onsets })
+    Ok(Loaded { name, channels, rate, samples })
 }
