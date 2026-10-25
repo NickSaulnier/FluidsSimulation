@@ -5,6 +5,10 @@ struct Globals {
     domain: vec2f,     // metres
     radius: f32,       // particle radius, metres
     max_speed: f32,    // speed that maps to the top of the colour ramp
+    // Fluid palette, linear RGB (alpha unused).
+    deep: vec4f,
+    base: vec4f,
+    highlight: vec4f,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 
@@ -60,10 +64,8 @@ fn fs_particle(i: ParticleOut) -> @location(0) vec4f {
         discard;
     }
     let t = clamp(i.speed / g.max_speed, 0.0, 1.0);
-    // Linear-space colours (the surface is sRGB): deep blue at rest, near-white when fast.
-    let slow = vec3f(0.01, 0.08, 0.6);
-    let fast = vec3f(0.7, 0.9, 1.0);
-    return vec4f(mix(slow, fast, t), alpha);
+    // The palette's base colour at rest, its highlight when fast (linear; the surface is sRGB).
+    return vec4f(mix(g.base.rgb, g.highlight.rgb, t), alpha);
 }
 
 // ---- Walls: the solid mask texture over the domain --------------------------------

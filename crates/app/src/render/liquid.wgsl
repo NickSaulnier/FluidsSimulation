@@ -7,6 +7,10 @@ struct Globals {
     domain: vec2f,
     radius: f32,
     max_speed: f32,
+    // Fluid palette, linear RGB (alpha unused).
+    deep: vec4f,
+    base: vec4f,
+    highlight: vec4f,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 
@@ -101,10 +105,10 @@ fn fs_composite(@builtin(position) frag: vec4f) -> @location(0) vec4f {
     let halfway = normalize(light + vec3f(0.0, 0.0, 1.0));
     let spec = 0.45 * pow(max(dot(n, halfway), 0.0), 40.0);
 
-    // Linear-space colours (the surface is sRGB).
-    let shallow = vec3f(0.03, 0.20, 0.70);
-    let deep = vec3f(0.004, 0.035, 0.28);
-    let foam = vec3f(0.70, 0.86, 1.0);
+    // The fluid palette (linear; the surface is sRGB).
+    let shallow = g.base.rgb;
+    let deep = g.deep.rgb;
+    let foam = g.highlight.rgb;
     let sample = textureLoad(accum, p, 0);
     let speed = sample.g / max(sample.r, 1e-4);
     var colour = mix(shallow, deep, interior);                                  // thicker reads darker

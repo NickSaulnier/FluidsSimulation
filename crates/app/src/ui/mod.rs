@@ -70,6 +70,8 @@ pub struct UiState {
     pub tab: Tab,
     pub panel_open: bool,
     pub cheat_sheet: bool,
+    /// The fluid's colours.
+    pub palette: crate::render::Palette,
 }
 
 impl Default for UiState {
@@ -94,6 +96,7 @@ impl Default for UiState {
             tab: Tab::Simulate,
             panel_open: true,
             cheat_sheet: false,
+            palette: crate::render::Palette::default(),
         }
     }
 }
@@ -160,7 +163,7 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
     let canvas = ui.available_rect_before_wrap();
     tool_strip::show(ui.ctx(), canvas, f.state);
     if let Some((field, range)) = overlay_legend(f) {
-        legend::show(ui.ctx(), canvas, field, range);
+        legend::show(ui.ctx(), canvas, field, range, &f.state.palette);
     }
     if f.state.cheat_sheet {
         cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);

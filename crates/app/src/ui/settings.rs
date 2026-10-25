@@ -1,4 +1,5 @@
-//! UI settings remembered between runs: the tool and brush, the look, and the panel.
+//! UI settings remembered between runs: the tool and brush, the look (including the
+//! fluid's colours), and the panel.
 //! Saved as JSON on exit, loaded at start. The scene, solver and gravity are not part
 //! of it: a preset brings its own.
 //!
@@ -6,6 +7,7 @@
 //! doesn't invalidate old files, and out-of-range values are clamped on load.
 
 use super::{BRUSH_RADIUS, Tab, Tool, UiState};
+use crate::render::Palette;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -27,6 +29,7 @@ pub struct Settings {
     pub overlay_opacity: f32,
     pub panel_open: bool,
     pub tab: Tab,
+    pub palette: Palette,
 }
 
 impl Default for Settings {
@@ -51,6 +54,7 @@ impl Settings {
             overlay_opacity: s.overlay_opacity,
             panel_open: s.panel_open,
             tab: s.tab,
+            palette: s.palette,
         }
     }
 
@@ -70,6 +74,7 @@ impl Settings {
         s.overlay_opacity = clamp(self.overlay_opacity, 0.1, 1.0);
         s.panel_open = self.panel_open;
         s.tab = self.tab;
+        s.palette = self.palette;
     }
 }
 
@@ -113,7 +118,9 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let mut state = UiState { tool: Tool::Faucet, brush_radius: 0.15, liquid: false, tab: Tab::Info, ..UiState::default() };
+        let palette = crate::render::palette::PALETTES[1].1;
+        let mut state =
+            UiState { tool: Tool::Faucet, brush_radius: 0.15, liquid: false, tab: Tab::Info, palette, ..UiState::default() };
         state.panel_open = false;
         let json = serde_json::to_string(&Settings::from_state(&state)).unwrap();
         let mut back = UiState::default();

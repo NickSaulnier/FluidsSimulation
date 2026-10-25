@@ -2,7 +2,7 @@
 //! same colour map as the overlay itself, with its range and unit, or swatches for
 //! categorical fields.
 
-use crate::render::colormap;
+use crate::render::{Palette, colormap};
 use egui::{Align2, Color32, Frame, Margin, RichText, Sense, vec2};
 use sim::{FieldInfo, FieldKind};
 
@@ -10,7 +10,7 @@ const INSET: f32 = 10.0;
 const BAR: egui::Vec2 = vec2(180.0, 12.0);
 const SAMPLES: usize = 64;
 
-pub fn show(ctx: &egui::Context, canvas: egui::Rect, field: &FieldInfo, (lo, hi): (f32, f32)) {
+pub fn show(ctx: &egui::Context, canvas: egui::Rect, field: &FieldInfo, (lo, hi): (f32, f32), palette: &Palette) {
     egui::Area::new(egui::Id::new("legend"))
         .order(egui::Order::Middle)
         .pivot(Align2::RIGHT_BOTTOM)
@@ -27,16 +27,16 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, field: &FieldInfo, (lo, hi)
                     if field.kind == FieldKind::Categorical {
                         swatches(ui, (lo, hi));
                     } else {
-                        bar(ui, field.kind, (lo, hi));
+                        bar(ui, field.kind, (lo, hi), &palette.dye_ramp());
                     }
                 });
         });
 }
 
-fn bar(ui: &mut egui::Ui, kind: FieldKind, (lo, hi): (f32, f32)) {
+fn bar(ui: &mut egui::Ui, kind: FieldKind, (lo, hi): (f32, f32), dye: &[[u8; 3]; 3]) {
     let values: Vec<f32> = (0..SAMPLES).map(|k| lo + (hi - lo) * k as f32 / (SAMPLES - 1) as f32).collect();
     let mut rgba = Vec::new();
-    colormap::colourise(&values, kind, (lo, hi), &mut rgba);
+    colormap::colourise(&values, kind, (lo, hi), dye, &mut rgba);
     let (rect, _) = ui.allocate_exact_size(BAR, Sense::hover());
     let painter = ui.painter();
     // Transparent ends (dye) read against the canvas background, as on the canvas.
@@ -62,7 +62,7 @@ fn bar(ui: &mut egui::Ui, kind: FieldKind, (lo, hi): (f32, f32)) {
 
 fn swatches(ui: &mut egui::Ui, (lo, hi): (f32, f32)) {
     let mut rgba = Vec::new();
-    colormap::colourise(&[0.0, 1.0, 2.0], FieldKind::Categorical, (lo, hi), &mut rgba);
+    colormap::colourise(&[0.0, 1.0, 2.0], FieldKind::Categorical, (lo, hi), &[[0; 3]; 3], &mut rgba);
     ui.horizontal(|ui| {
         for (c, name) in rgba.as_chunks::<4>().0.iter().zip(["air", "fluid", "solid"]) {
             let (rect, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());

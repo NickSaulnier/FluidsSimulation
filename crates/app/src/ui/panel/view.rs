@@ -1,5 +1,7 @@
 //! View tab: how the fluid is drawn, and the field overlay.
 
+use crate::render::Palette;
+use crate::render::palette::PALETTES;
 use crate::ui::Frame;
 use crate::ui::shortcuts::{Action, tip};
 use crate::ui::widgets::{self, row};
@@ -8,6 +10,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     let s = &mut *f.state;
     let solver = &f.world.solver;
     widgets::group(ui, "Display", |ui| {
+        colours(ui, &mut s.palette);
         // Grid solvers have no particles to draw: they show a field (the dye) instead.
         if solver.particles().is_none() {
             let field = solver.fields().first().map_or("grid", |f| f.label);
@@ -31,6 +34,30 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         widgets::toggle(ui, &mut s.show_particles, &tip("Show particles", Action::ToggleParticles), "");
     });
     widgets::group(ui, "Overlay", |ui| overlay(ui, f));
+}
+
+/// A preset menu, then the palette's three colours, each editable (which makes it a
+/// custom palette). They colour particles, the liquid surface and dye alike.
+fn colours(ui: &mut egui::Ui, palette: &mut Palette) {
+    row(ui, "Colours", "The fluid's colours, for every solver", |ui| {
+        egui::ComboBox::from_id_salt("palette").selected_text(palette.name().unwrap_or("Custom")).width(150.0).show_ui(
+            ui,
+            |ui| {
+                for (name, preset) in PALETTES {
+                    ui.selectable_value(palette, *preset, *name);
+                }
+            },
+        );
+    });
+    row(ui, "", "", |ui| {
+        for (colour, what) in [
+            (&mut palette.deep, "Deep: thick liquid"),
+            (&mut palette.base, "Base: the fluid's own colour"),
+            (&mut palette.highlight, "Highlight: fast flow, foam and dense dye"),
+        ] {
+            ui.color_edit_button_srgb(colour).on_hover_text(what);
+        }
+    });
 }
 
 fn overlay(ui: &mut egui::Ui, f: &mut Frame<'_>) {

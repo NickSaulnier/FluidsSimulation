@@ -6,6 +6,10 @@ struct Globals {
     domain: vec2f,
     radius: f32,
     max_speed: f32,
+    // Fluid palette, linear RGB (alpha unused).
+    deep: vec4f,
+    base: vec4f,
+    highlight: vec4f,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 

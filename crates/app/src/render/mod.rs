@@ -2,6 +2,7 @@
 
 pub mod colormap;
 mod liquid;
+pub mod palette;
 mod overlay;
 mod particles;
 mod solid;
@@ -10,13 +11,14 @@ use crate::view::View;
 use bytemuck::{Pod, Zeroable};
 pub use liquid::LiquidStyle;
 pub use overlay::FieldFrame;
+pub use palette::Palette;
 use liquid::LiquidLayer;
 use overlay::OverlayLayer;
 use particles::ParticleLayer;
 use solid::SolidLayer;
 
-/// Must match `Globals` in scene.wgsl byte for byte (32 bytes, a multiple of 16 as
-/// uniform buffers require).
+/// Must match `Globals` in scene.wgsl (and its copies) byte for byte (80 bytes, a
+/// multiple of 16 as uniform buffers require).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Globals {
@@ -25,6 +27,8 @@ struct Globals {
     domain: [f32; 2],
     radius: f32,
     max_speed: f32,
+    /// The fluid palette in linear RGB: deep, base, highlight.
+    fluid: [[f32; 4]; 3],
 }
 
 /// Everything one frame draws.
@@ -37,6 +41,8 @@ pub struct DrawOptions<'a> {
     pub liquid: Option<LiquidStyle>,
     /// Surface size in pixels (the liquid pass renders offscreen at this size).
     pub target_size: (u32, u32),
+    /// The fluid's colours (particles, liquid surface, dye).
+    pub palette: Palette,
 }
 
 pub struct Renderer {
@@ -127,7 +133,7 @@ impl Renderer {
         target: &wgpu::TextureView,
         options: DrawOptions<'_>,
     ) -> Option<(f32, f32)> {
-        let DrawOptions { view, world, field, show_particles, liquid, target_size } = options;
+        let DrawOptions { view, world, field, show_particles, liquid, target_size, palette } = options;
         let particles = world.solver.particles();
         let globals = Globals {
             scale: view.scale.into(),
@@ -135,13 +141,14 @@ impl Renderer {
             domain: world.scene.size.into(),
             radius: particles.map_or(0.0, |p| p.radius),
             max_speed: MAX_SPEED_COLOUR,
+            fluid: palette.linear(),
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
         if let Some(p) = particles {
             self.particles.upload(device, queue, p);
         }
         self.solid.upload(device, queue, &world.scene.solid);
-        let field_range = self.overlay.upload(device, queue, field);
+        let field_range = self.overlay.upload(device, queue, field, &palette);
         let liquid = liquid.filter(|_| show_particles && particles.is_some());
         if let Some(style) = liquid {
             let splat_px = globals.radius * style.splat_scale * view.px_per_metre;

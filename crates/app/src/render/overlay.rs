@@ -116,13 +116,19 @@ impl OverlayLayer {
 
     /// Upload this frame's field, or hide the overlay with `None`. Returns the value
     /// range the colours were normalised over, for the legend.
-    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, field: Option<FieldFrame<'_>>) -> Option<(f32, f32)> {
+    pub fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        field: Option<FieldFrame<'_>>,
+        palette: &super::Palette,
+    ) -> Option<(f32, f32)> {
         let Some(f) = field else {
             self.visible = false;
             return None;
         };
         let range = colormap::range(f.values, f.kind);
-        colormap::colourise(f.values, f.kind, range, &mut self.rgba);
+        colormap::colourise(f.values, f.kind, range, &palette.dye_ramp(), &mut self.rgba);
 
         let size = wgpu::Extent3d { width: f.layout.nx as u32, height: f.layout.ny as u32, depth_or_array_layers: 1 };
         let smooth = f.kind == FieldKind::Concentration;

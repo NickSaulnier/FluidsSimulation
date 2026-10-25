@@ -340,6 +340,7 @@ impl State {
             show_particles: self.ui.show_particles,
             liquid: self.ui.liquid_style(),
             target_size: (self.gpu.config.width, self.gpu.config.height),
+            palette: self.ui.palette,
         };
         self.field_range = self.renderer.render(device, queue, &mut encoder, &target, options);
 
