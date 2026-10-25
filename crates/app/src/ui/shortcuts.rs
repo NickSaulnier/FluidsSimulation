@@ -23,6 +23,9 @@ pub enum Action {
     TogglePanel,
     ToggleCheatSheet,
     TogglePresentation,
+    PreviousLook,
+    NextLook,
+    ToggleAutoLooks,
 }
 
 /// Cheat-sheet columns.
@@ -75,6 +78,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s(KeyCode::Backquote, "`", A::TogglePanel, "hide / show the side panel", G::View),
     s(KeyCode::F1, "F1", A::ToggleCheatSheet, "this cheat sheet", G::View),
     s(KeyCode::F11, "F11", A::TogglePresentation, "full-screen visualizer", G::View),
+    s(KeyCode::Comma, ",", A::PreviousLook, "previous visualizer look", G::View),
+    s(KeyCode::Period, ".", A::NextLook, "next visualizer look", G::View),
+    s(KeyCode::KeyA, "A", A::ToggleAutoLooks, "change looks automatically", G::View),
 ];
 
 /// Mouse actions, for the cheat sheet and the Info tab.

@@ -3,6 +3,7 @@
 
 use super::shortcuts::{Action, tip};
 use super::{Frame, theme, top_bar};
+use crate::looks::LOOKS;
 use egui::{Align2, Color32, Frame as EguiFrame, Margin, RichText, vec2};
 use egui_phosphor::regular as icon;
 
@@ -21,6 +22,8 @@ pub fn overlay(ctx: &egui::Context, canvas: egui::Rect, f: &mut Frame<'_>) {
                         f.state.presenting = false;
                     }
                     ui.separator();
+                    looks(ui, f);
+                    ui.separator();
                     top_bar::scene_and_solver(ui, f);
                     ui.separator();
                     music(ui, f);
@@ -31,6 +34,27 @@ pub fn overlay(ctx: &egui::Context, canvas: egui::Rect, f: &mut Frame<'_>) {
                 });
             });
         });
+}
+
+/// The look on screen, with previous / next and the automatic-change lock.
+fn looks(ui: &mut egui::Ui, f: &mut Frame<'_>) {
+    let d = &mut f.state.director;
+    if ui.button(icon::CARET_LEFT).on_hover_text(tip("Previous look", Action::PreviousLook)).clicked() {
+        d.request(d.neighbour(-1));
+    }
+    let name = d.current.map_or("Custom", |i| LOOKS[i].name);
+    ui.add_sized([110.0, 20.0], egui::Label::new(RichText::new(name).strong()).truncate());
+    if ui.button(icon::CARET_RIGHT).on_hover_text(tip("Next look", Action::NextLook)).clicked() {
+        d.request(d.neighbour(1));
+    }
+    let (glyph, what) = if d.auto {
+        (icon::LOCK_OPEN, "Looks change with the music: click to keep this one")
+    } else {
+        (icon::LOCK, "This look stays: click to let looks change with the music")
+    };
+    if ui.button(glyph).on_hover_text(tip(what, Action::ToggleAutoLooks)).clicked() {
+        d.auto = !d.auto;
+    }
 }
 
 /// What's driving the reactions, and a way to start listening if nothing is.

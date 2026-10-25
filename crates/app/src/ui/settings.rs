@@ -31,6 +31,8 @@ pub struct Settings {
     pub tab: Tab,
     pub palette: Palette,
     pub reactions: Vec<crate::audio::reactions::Reaction>,
+    pub auto_looks: bool,
+    pub look_interval_s: f32,
 }
 
 impl Default for Settings {
@@ -57,6 +59,8 @@ impl Settings {
             tab: s.tab,
             palette: s.palette,
             reactions: s.reactions.clone(),
+            auto_looks: s.director.auto,
+            look_interval_s: s.director.interval_s,
         }
     }
 
@@ -78,6 +82,8 @@ impl Settings {
         s.tab = self.tab;
         s.palette = self.palette;
         s.reactions = self.reactions.clone();
+        s.director.auto = self.auto_looks;
+        s.director.interval_s = clamp(self.look_interval_s, 30.0, 300.0);
         for r in &mut s.reactions {
             r.gain = clamp(r.gain, 0.0, 3.0);
         }

@@ -10,6 +10,7 @@
 use crate::audio::Music;
 use crate::audio::analyzer::{AudioFeatures, BAND_NAMES, OnsetKind};
 use crate::audio::reactions::{Effect, Reaction, Trigger, default_reactions};
+use crate::looks::LOOKS;
 use crate::ui::Frame;
 use crate::ui::params::live_float_params;
 use crate::ui::shortcuts::{Action, tip};
@@ -30,8 +31,39 @@ const DIM: Color32 = Color32::from_gray(90);
 
 pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
     source(ui, f.music);
+    looks(ui, f);
     analysis(ui, f.music);
     reactions(ui, f);
+}
+
+/// Visualizer looks: pick one, and whether the director changes them by itself.
+fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
+    let d = &mut f.state.director;
+    widgets::group(ui, "Looks", |ui| {
+        row(ui, "Look", "A tuned solver, scene, colours and reactions. Picking one fades to it.", |ui| {
+            let current = d.current.map_or("Custom", |i| LOOKS[i].name);
+            let mut pick = None;
+            egui::ComboBox::from_id_salt("look").selected_text(current).width(150.0).truncate().show_ui(ui, |ui| {
+                for (i, look) in LOOKS.iter().enumerate() {
+                    if ui.selectable_label(d.current == Some(i), look.name).clicked() {
+                        pick = Some(i);
+                    }
+                }
+            });
+            if let Some(i) = pick {
+                d.request(i);
+            }
+        });
+        widgets::toggle(
+            ui,
+            &mut d.auto,
+            &tip("Change looks automatically", Action::ToggleAutoLooks),
+            "In full screen, change look on new songs, drops, and at least every interval (on a kick).",
+        );
+        row(ui, "Change every", "The longest a look stays (in full screen, with automatic changes)", |ui| {
+            ui.add(egui::Slider::new(&mut d.interval_s, 30.0..=300.0).suffix(" s").fixed_decimals(0));
+        });
+    });
 }
 
 /// The source switch, then the card for the chosen source.

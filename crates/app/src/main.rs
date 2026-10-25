@@ -11,7 +11,9 @@
 //! listens live unless a track is given.
 
 mod audio;
+mod director;
 mod governor;
+mod looks;
 mod gpu;
 mod input;
 mod render;
@@ -318,6 +320,9 @@ impl State {
             Action::TogglePanel => ui.panel_open = !ui.panel_open,
             Action::ToggleCheatSheet => ui.cheat_sheet = !ui.cheat_sheet,
             Action::TogglePresentation => ui.presenting = !ui.presenting,
+            Action::PreviousLook => ui.director.request(ui.director.neighbour(-1)),
+            Action::NextLook => ui.director.request(ui.director.neighbour(1)),
+            Action::ToggleAutoLooks => ui.director.auto = !ui.director.auto,
         }
     }
 
@@ -357,6 +362,13 @@ impl State {
         self.apply_egui_textures(std::mem::take(&mut egui_out.textures_delta));
 
         self.sync_presentation(real_dt);
+        // The director: change looks with the music (by itself only in full screen).
+        let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
+        let active = self.ui.presenting && self.ui.director.auto;
+        if let Some(look) = self.ui.director.update(active, self.music.features(), kicked, real_dt) {
+            looks::apply(&looks::LOOKS[look], &mut self.world, &mut self.ui);
+            log::info!("look: {}", looks::LOOKS[look].name);
+        }
 
         // Tools and gravity, then the simulation step. A freshly loaded preset brings
         // its own gravity (the wind tunnel has none); after that the sliders own it.

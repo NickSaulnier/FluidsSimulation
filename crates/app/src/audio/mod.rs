@@ -133,6 +133,11 @@ impl Music {
         self.live.is_some()
     }
 
+    /// This frame's hits.
+    pub fn onsets(&self) -> &[Onset] {
+        &self.frame_onsets
+    }
+
     /// The latest analysis of the current source, if there is one.
     pub fn features(&self) -> Option<&AudioFeatures> {
         self.analyzer.as_ref().map(Analyzer::features)

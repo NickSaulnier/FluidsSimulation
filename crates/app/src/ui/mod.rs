@@ -87,6 +87,8 @@ pub struct UiState {
     pub reveal_until: Option<Instant>,
     /// A brief message (e.g. the resolution was lowered), until then.
     pub notice: Option<(String, Instant)>,
+    /// Picks visualizer looks and changes them with the music.
+    pub director: crate::director::Director,
 }
 
 impl Default for UiState {
@@ -116,6 +118,7 @@ impl Default for UiState {
             presenting: false,
             reveal_until: None,
             notice: None,
+            director: crate::director::Director::default(),
         }
     }
 }
@@ -194,6 +197,12 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
         } else {
             f.state.notice = None;
         }
+    }
+    // A look change fades the scene through black.
+    let darkness = f.state.director.darkness();
+    if darkness > 0.0 {
+        let area = if f.state.presenting { ui.max_rect() } else { ui.available_rect_before_wrap() };
+        ui.painter().rect_filled(area, 0, egui::Color32::from_black_alpha((255.0 * darkness) as u8));
     }
     if f.state.presenting {
         // The whole window is canvas; the overlay shows while the mouse is active (or on

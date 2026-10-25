@@ -1,6 +1,6 @@
 # Music Visualizer Plan
 
-Status: **approved; Phases A–C done** (see §9). Decisions (§8):
+Status: **approved; Phases A–D done** (see §9). Decisions (§8):
 - live system audio first, track files second;
 - an automatic director, with a lock;
 - `rustfft` for the FFT;
@@ -301,4 +301,46 @@ A–D is the core visualizer; E–G make it good enough to leave running.
     window. FLIP kept up at 4K (simulation cost doesn't depend on screen size), so the
     governor didn't step in.
   - **Not done:** choosing a monitor. Full screen uses the monitor the window is on.
+- **Phase D, looks and the director (done).**
+  - **Looks** (`app/src/looks.rs`): six hand-tuned bundles of solver, scene, palette,
+    look settings, solver parameters and reactions, each tagged calm, energetic or
+    either. Solvers and scenes are named, not indexed.
+
+    | Look | Solver and scene |
+    |---|---|
+    | Ocean pulse | FLIP liquid, tank |
+    | Ink storm | stable dye, energetic |
+    | Firestorm | smoke and fire, campfire |
+    | Wind tunnel | LBM |
+    | Lava lamp | stable dye, calm |
+    | Mercury rain | PBF discs |
+
+    Applying a look switches solver, sets parameters, loads the scene (which applies
+    restart-only parameters), and sets the palette, look and reactions.
+  - **Director** (`app/src/director.rs`, pure logic): active in full screen with auto
+    on. It changes look on any of:
+    - a new song: 2 s of silence, then sound;
+    - a drop: fast loudness 0.35 above its 8 s average;
+    - a timer: the interval, default 90 s, landing on the next kick.
+
+    The first two wait 15 s into a look. The next look suits the energy of the
+    8-second loudness average.
+  - **Transitions:** 0.5 s fade out, switch at black, 0.8 s fade in.
+  - **Controls:**
+    - the Music tab's Looks group: pick, auto, interval (auto and interval are saved);
+    - the full-screen overlay: previous, the look's name, next, and a lock;
+    - shortcuts `,` and `.` for previous and next, `A` for auto.
+  - **Tests:**
+    - the timer changes on a kick and not before;
+    - a new song after silence changes look, a short pause doesn't, and a drop does;
+    - the energy choice;
+    - inactive means requests only;
+    - the fade switches at black and comes back;
+    - next and previous wrap;
+    - every look refers to a real solver, scene, palette and parameters.
+  - **Checked in the app:** stepped through all six looks with `.`, including a frame
+    mid-fade.
+  - **Tuning note:** on the bass-heavy test beat, Hue reactions shift colours a long way
+    (low brightness). Wind tunnel's Hue gain is halved; real music sits nearer the
+    middle.
 
