@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phases A to C done.** Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A to D done** (and the analyzer plan, which covers phase E's audio work). Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -432,3 +432,92 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
     storm's ring tangles into glowing filaments in the ink, Inferno's ring becomes a
     tunnel of rings, Smoke dance's bars run along the bottom (its echo mirrors them at
     the top), Mercury rain's figure shows the track's slight width.
+- **Phase D (done):** looks as data (`app/src/expr/`, `app/src/looks/`, `app/looks/`).
+  - Naming: the files are called looks, as the UI calls them, in a `looks` folder:
+    "presets" already means scenes in the simulation crates.
+  - The equation language (`expr`): MilkDrop-like assignments with `+ - * / %`,
+    comparisons, `&&`, `||`, `!`, `if(c, a, b)`, 26 maths functions, `rand()` per frame
+    only, and `//` comments. The names, tokenizer, Pratt parser and name resolution take
+    about 570 lines.
+    - Maths is safe: dividing by 0 gives 0, and `sqrt`, `log`, `pow`, `asin` and `acos`
+      keep to their domains. Each function has a WGSL twin in `math.wgsl`.
+    - Names: the inputs (clock, MilkDrop's levels, bands, loudness, hit and beat
+      pulses, beat and bar phase, tempo) are read-only. The motion (`zoom`, `rot`, `dx`,
+      `dy`, `cx`, `cy`, `sx`, `sy`, `warp`) is shared by both stages. Frame-only outputs
+      cover the rest of the feedback, the waves and shapes, gravity tilt and reaction
+      intensity, plus `param_<key>` for solver parameters. `q1` to `q8` go from frame
+      to pixel.
+    - A name that's read but never assigned is an error, with the closest known name
+      suggested. Errors carry line and column.
+  - Two back ends:
+    - A stack-machine interpreter for per-frame code, allocation-free per run.
+    - A WGSL generator for per-pixel code, spliced into the feedback shader (now a
+      template) and validated by naga when the look loads.
+    - A headless-GPU test checks that the generated code computes what the interpreter
+      does, on 64 random inputs for each of five programs that use every function.
+  - Changed from §4.3: the warp stays per second (zoom per second, radians and screen
+    heights per second), as the View tab's settings already were. The shader applies
+    the frame time, so an equation behaves the same at any frame rate. The shader also
+    replaces any non-finite motion with a safe value, since a NaN would stay in the
+    feedback picture for good.
+  - Changed from §4.2: one per-frame program drives everything, waves and shapes
+    included, rather than separate equation sections per wave and shape. `init` runs
+    once and shares its variables with `frame`.
+  - Files (TOML): `[meta]`, `[sim]`, `[feedback]`, `[waves]`, `[[shape]]`, `[code]`.
+    - A missing setting takes its default. An unknown key, a solver, scene, palette,
+      trigger or effect that doesn't exist, or an equation that doesn't compile is an
+      error with its line. A typo that's quietly ignored is worse than one that's
+      reported.
+    - The format is documented in `crates/app/looks/README.md`.
+  - The nine built-in looks are now files, compiled in. A test (since removed, with the
+    old table) checked each loads exactly as the Rust table had it. Three gained
+    equations:
+    - Inferno twists its tunnel into spirals (per pixel: the outer rings turn faster)
+      and zooms on each beat.
+    - Ink storm has a slow three-petalled wobble (per pixel) and a turn that swings with
+      the music.
+    - Lava lamp's wobble breathes, and its hexagon spins up on beats.
+  - User looks: `%APPDATA%/fluid-toy/looks`, read at start and checked every second.
+    - A look named like a built-in replaces it, and a file that doesn't load is listed
+      and skipped.
+    - When the look on screen changes on disk, it takes the change at once. Only a
+      change to its solver, scene, parameters or liquid restarts the scene.
+    - The director follows its looks by name across reloads.
+    - The Music tab's Looks group has buttons to open the folder and to copy the
+      built-ins into it, and lists files that didn't load with their errors. A user look
+      shows a pencil in the list. Load errors also show as a notice.
+  - In the app: equation-set parameters combine with the reactions' multiples on the
+    same remembered base value; gravity tilt turns the reactions' base gravity; a shape's
+    spin now adds up per frame (so an equation can vary it smoothly).
+  - Deferred:
+    - Looks with no fluid at all (decision 5) need a scene-less render path; they fit
+      with the pure-feedback looks in phase I.
+    - The `[composite]` section belongs to phase G.
+    - MilkDrop's per-point custom waves are left for later.
+  - Tests:
+    - Language: precedence, statement splitting, names by kind, errors with positions
+      and suggestions, number forms, arithmetic and guarded functions, state kept
+      between frames.
+    - WGSL: the generated code validates, and the GPU agrees with the interpreter.
+    - Feedback: the template validates with and without per-pixel code. The settings'
+      motion fills its slots. The fade is frame-rate independent, and the GPU test still
+      streaks a zoomed dot outward.
+    - Files: defaults, sections turning things on, friendly reaction names, and mistakes
+      reported with their lines.
+    - Runtime: settings pass through without code; equations drive the motion, outputs
+      and parameters; `init` runs once; pulses fall; bad values fall back.
+    - Library: built-ins load and refer to real things (2D and 3D). A folder adds,
+      replaces and reloads, and its broken file is reported at its line.
+    - Director: it re-indexes by name.
+  - Checked in the app, full screen, with a generated beat, muted, and `APPDATA` pointed
+    at a scratch folder:
+    - Inferno's spirals.
+    - Ink storm as before, with its wobble.
+    - Editing Inferno's per-pixel line in the scratch folder showed within six seconds,
+      without restarting the fire.
+    - The Music tab's Looks group with a broken file listed (`broken.toml, line 10:
+      unknown name 'bas', did you mean 'bass'?`). Its first layout was too wide, so the
+      buttons became icons.
+  - Seen in passing, and the same before this phase: Lava lamp starts dim, and its
+    hexagon (a thin outline in the palette's dark red) hardly shows. For tuning in
+    phase I.

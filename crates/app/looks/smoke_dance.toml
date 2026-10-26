@@ -1,0 +1,36 @@
+[meta]
+name = "Smoke dance"
+energy = "calm"
+
+[sim]
+solver = "Smoke (3D GPU)"
+scene = "Twin burners"
+palette = "Ink"
+orbit = 0.08
+reactions = [
+    { trigger = "bass", effect = "param", param = "rise", gain = 0.6 },
+    { trigger = "snare", effect = "vortex", gain = 0.6 },
+    { trigger = "kick", effect = "splash", gain = 0.6 },
+    { trigger = "hat", effect = "flash", gain = 0.4 },
+    { trigger = "brightness", effect = "hue", gain = 0.6 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.7
+flow = 1.0
+echo = 0.25
+echo_zoom = 1.3
+echo_flip = "both"
+
+[waves]
+mode = "spectrum"
+size = 0.35
+brightness = 1.2
+
+[[shape]]
+sides = 3
+radius = 0.2
+spin = -0.4
+bass_pulse = 0.5
+fill = 0.3

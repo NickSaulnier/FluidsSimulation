@@ -10,7 +10,6 @@
 use crate::audio::{LATENCY_MS, Music};
 use crate::audio::analyzer::{self, AudioFeatures, BAND_NAMES, LUFS_FLOOR, OnsetKind};
 use crate::audio::reactions::{Effect, Reaction, Trigger, default_reactions};
-use crate::looks::LOOKS;
 use crate::ui::Frame;
 use crate::ui::params::live_float_params;
 use crate::ui::shortcuts::{Action, tip};
@@ -82,14 +81,17 @@ fn beat(ui: &mut Ui, f: &mut Frame<'_>) {
 
 /// Visualizer looks: pick one, and whether the director changes them by itself.
 fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
-    let d = &mut f.state.director;
+    let (d, library) = (&mut f.state.director, &f.state.looks);
+    let mut notice = None;
     widgets::group(ui, "Looks", |ui| {
-        row(ui, "Look", "A tuned solver, scene, colours and reactions. Picking one fades to it.", |ui| {
-            let current = d.current.map_or("Custom", |i| LOOKS[i].name);
+        row(ui, "Look", "A tuned solver, scene, colours, reactions and equations. Picking one fades to it.", |ui| {
+            let current = d.current.and_then(|i| library.looks.get(i)).map_or("Custom", |l| l.name.as_str());
             let mut pick = None;
             egui::ComboBox::from_id_salt("look").selected_text(current).width(150.0).truncate().show_ui(ui, |ui| {
-                for (i, look) in LOOKS.iter().enumerate() {
-                    if ui.selectable_label(d.current == Some(i), look.name).clicked() {
+                for (i, look) in library.looks.iter().enumerate() {
+                    let mine = matches!(look.source, crate::looks::Source::File(_));
+                    let label = if mine { format!("{} {}", look.name, icon::PENCIL_SIMPLE) } else { look.name.clone() };
+                    if ui.selectable_label(d.current == Some(i), label).clicked() {
                         pick = Some(i);
                     }
                 }
@@ -107,7 +109,39 @@ fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
         row(ui, "Change every", "The longest a look stays (in full screen, with automatic changes)", |ui| {
             ui.add(egui::Slider::new(&mut d.interval_s, 30.0..=300.0).suffix(" s").fixed_decimals(0));
         });
+        if let Some(folder) = &library.folder {
+            row(ui, "Files", "Your own looks: TOML files in this folder, read again whenever one changes (see looks/README.md)", |ui| {
+                if icon_button(ui, icon::FOLDER_OPEN).on_hover_text(format!("Open the folder: {}", folder.display())).clicked() {
+                    notice = open_folder(folder).err().map(|e| format!("can't open {}: {e}", folder.display()));
+                }
+                if icon_button(ui, icon::COPY).on_hover_text("Copy the built-in looks into the folder, to start your own from (files already there are kept)").clicked() {
+                    notice = Some(match library.copy_builtins() {
+                        Ok(n) => format!("copied {n} looks into {}", folder.display()),
+                        Err(e) => format!("can't copy the looks: {e}"),
+                    });
+                }
+            });
+        }
+        for error in &library.errors {
+            ui.add(egui::Label::new(RichText::new(error.to_string()).color(theme::ERROR).small()).wrap());
+        }
     });
+    if let Some(notice) = notice {
+        f.state.show_notice(notice);
+    }
+}
+
+/// Show `folder` in the system's file browser (making it if it isn't there yet).
+fn open_folder(folder: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(folder)?;
+    let browser = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(browser).arg(folder).spawn().map(|_| ())
 }
 
 /// The source switch, then the card for the chosen source.

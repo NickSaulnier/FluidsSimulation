@@ -110,6 +110,8 @@ pub struct UiState {
     pub notice: Option<(String, Instant)>,
     /// Picks visualizer looks and changes them with the music.
     pub director: crate::director::Director,
+    /// Every look (see `looks`).
+    pub looks: crate::looks::Library,
     /// A solver change for the app to make after this frame's layout.
     pub solver_request: Option<SolverChoice>,
 }
@@ -148,6 +150,7 @@ impl Default for UiState {
             reveal_until: None,
             notice: None,
             director: crate::director::Director::default(),
+            looks: crate::looks::Library::default(),
             solver_request: None,
         }
     }

@@ -1,0 +1,39 @@
+[meta]
+name = "Ink storm"
+energy = "energetic"
+
+[sim]
+solver = "Stable fluids (dye)"
+scene = "Double dam break"
+palette = "Ink"
+params = { buoyancy = 0.2, vorticity = 0.3 }
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 1.4 },
+    { trigger = "kick", effect = "vortex", gain = 0.8 },
+    { trigger = "mid", effect = "gust", gain = 0.6 },
+    { trigger = "hat", effect = "flash", gain = 0.4 },
+    { trigger = "brightness", effect = "hue", gain = 0.6 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.5
+flow = 1.5
+rotation = 0.15
+
+[waves]
+mode = "circle"
+size = 0.45
+push = 0.5
+brightness = 0.9
+
+[code]
+# A three-petalled wobble of zoom, turning slowly through the swirl; the turn swings
+# with the music.
+frame = """
+rot = 0.15 + 0.1 * sin(time * 0.2) * (0.5 + bass_att)
+q1 = time * 0.3
+"""
+pixel = """
+zoom = zoom + 0.08 * sin(3 * ang + q1) * rad
+"""

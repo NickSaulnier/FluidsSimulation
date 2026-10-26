@@ -35,16 +35,22 @@ const PUSH_STRENGTH: f32 = 20.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WaveMode {
     #[default]
+    #[serde(alias = "off")]
     Off,
     /// An oscilloscope across the screen.
+    #[serde(alias = "line")]
     Line,
     /// The oscilloscope bent into a ring.
+    #[serde(alias = "circle")]
     Circle,
     /// Spectrum bars along the bottom.
+    #[serde(alias = "spectrum")]
     Spectrum,
     /// Spectrum bars up and down from a centre line.
+    #[serde(alias = "mirror_spectrum")]
     MirrorSpectrum,
     /// Left against right, turned 45° so mono is a vertical line and width spreads it.
+    #[serde(alias = "xy")]
     Xy,
 }
 
@@ -159,9 +165,9 @@ fn gain(peak: f32) -> f32 {
 }
 
 /// Build the frame's triangles into `out` (replacing it), for a canvas `aspect` wide
-/// and `height_px` tall. `peak` is the waveform's recent peak, `time` the waves' clock.
+/// and `height_px` tall. `peak` is the waveform's recent peak, `turns` the shapes' angles.
 #[allow(clippy::too_many_arguments)]
-pub fn geometry(settings: &WaveSettings, sound: &Sound<'_>, peak: f32, time: f32, aspect: f32, height_px: f32, palette: &Palette, out: &mut Vec<Vertex>) {
+pub fn geometry(settings: &WaveSettings, sound: &Sound<'_>, peak: f32, turns: [f32; 2], aspect: f32, height_px: f32, palette: &Palette, out: &mut Vec<Vertex>) {
     out.clear();
     let [_, base, highlight] = palette.linear();
     let tint = |c: [f32; 4], k: f32| [c[0] * k, c[1] * k, c[2] * k, 1.0];
@@ -213,10 +219,9 @@ pub fn geometry(settings: &WaveSettings, sound: &Sound<'_>, peak: f32, time: f32
             }
         }
     }
-    for shape in settings.shapes.iter().filter(|s| s.enabled) {
+    for (shape, turn) in settings.shapes.iter().zip(turns).filter(|(s, _)| s.enabled) {
         let sides = shape.sides.clamp(3, 64) as usize;
         let r = shape.radius * (1.0 + shape.bass_pulse * (sound.bass - 1.0)).max(0.0);
-        let turn = shape.spin * time;
         let c = shape.centre;
         let corners: Vec<[f32; 2]> = (0..sides)
             .map(|k| {
@@ -288,7 +293,9 @@ pub struct WavesLayer {
     vertices: Option<wgpu::Buffer>,
     scratch: Vec<Vertex>,
     peak: f32,
-    time: f32,
+    /// Each shape's angle, radians: its spin added up, so a spin that changes turns
+    /// smoothly.
+    turns: [f32; 2],
 }
 
 impl WavesLayer {
@@ -328,7 +335,7 @@ impl WavesLayer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, vertices: None, scratch: Vec::new(), peak: 0.0, time: 0.0 }
+        Self { pipeline, vertices: None, scratch: Vec::new(), peak: 0.0, turns: [0.0; 2] }
     }
 
     /// The waveform's recent peak (for scaling pushes the same way as the drawing).
@@ -337,10 +344,12 @@ impl WavesLayer {
     }
 
     /// Follow the waveform's peak and advance the clock by `dt` (call every frame).
-    pub fn update(&mut self, waveform: &[Frame], dt: f32) {
+    pub fn update(&mut self, waveform: &[Frame], settings: &WaveSettings, dt: f32) {
         let loudest = points(waveform, 1.0).map(|(l, r, _)| l.abs().max(r.abs())).fold(0.0, f32::max);
         self.peak = loudest.max(self.peak * (-dt / PEAK_FALL_S).exp());
-        self.time += dt;
+        for (turn, shape) in self.turns.iter_mut().zip(&settings.shapes) {
+            *turn = (*turn + shape.spin * dt) % (TAU * 1000.0);
+        }
     }
 
     /// Add the waves onto `target` within `viewport` (pixels: x, y, width, height).
@@ -361,7 +370,7 @@ impl WavesLayer {
             return;
         }
         let mut scratch = std::mem::take(&mut self.scratch);
-        geometry(settings, sound, self.peak, self.time, w / h, h, palette, &mut scratch);
+        geometry(settings, sound, self.peak, self.turns, w / h, h, palette, &mut scratch);
         let bytes: &[u8] = bytemuck::cast_slice(&scratch);
         if !bytes.is_empty() {
             if self.vertices.as_ref().is_none_or(|b| b.size() < bytes.len() as u64) {
@@ -404,7 +413,7 @@ mod tests {
     fn build(settings: &WaveSettings, waveform: &[Frame], spectrum: &[f32]) -> Vec<Vertex> {
         let mut out = Vec::new();
         let sound = Sound { waveform, spectrum, bass: 1.0 };
-        geometry(settings, &sound, 0.5, 0.0, 1.5, 600.0, &Palette::default(), &mut out);
+        geometry(settings, &sound, 0.5, [0.0; 2], 1.5, 600.0, &Palette::default(), &mut out);
         out
     }
 
@@ -456,7 +465,7 @@ mod tests {
         assert!(s.any());
         let radius = |bass: f32| {
             let mut out = Vec::new();
-            geometry(&s, &Sound { waveform: &[], spectrum: &[], bass }, 0.5, 0.0, 1.0, 600.0, &Palette::default(), &mut out);
+            geometry(&s, &Sound { waveform: &[], spectrum: &[], bass }, 0.5, [0.0; 2], 1.0, 600.0, &Palette::default(), &mut out);
             assert_eq!(out.len(), 5 * 3 + 5 * 6);
             out[1].pos[0].hypot(out[1].pos[1])
         };
@@ -472,7 +481,7 @@ mod tests {
             let wave = sine(1024, amplitude, 1.0);
             let mut out = Vec::new();
             let sound = Sound { waveform: &wave, spectrum: &[], bass: 1.0 };
-            geometry(&s, &sound, amplitude, 0.0, 1.5, 600.0, &Palette::default(), &mut out);
+            geometry(&s, &sound, amplitude, [0.0; 2], 1.5, 600.0, &Palette::default(), &mut out);
             out.iter().map(|p| p.pos[1].abs()).fold(0.0, f32::max)
         };
         assert!((height(0.05) - height(0.8)).abs() < 1e-3, "quiet {} vs loud {}", height(0.05), height(0.8));

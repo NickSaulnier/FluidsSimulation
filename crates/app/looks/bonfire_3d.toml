@@ -1,0 +1,23 @@
+[meta]
+name = "Bonfire 3D"
+energy = "any"
+
+[sim]
+solver = "Fire (3D GPU)"
+scene = "Campfire 3D"
+palette = "Lava"
+orbit = 0.12
+reactions = [
+    { trigger = "kick", effect = "jet", gain = 1.0 },
+    { trigger = "bass", effect = "param", param = "burner_fuel", gain = 0.6 },
+    { trigger = "snare", effect = "vortex", gain = 0.8 },
+    { trigger = "level", effect = "breathe", gain = 0.4 },
+    { trigger = "mid", effect = "gust", gain = 0.3 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.5
+flow = 1.2
+drift = [0.0, 0.05]
+bass_zoom = 0.3

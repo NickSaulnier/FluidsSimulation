@@ -1,0 +1,38 @@
+[meta]
+name = "Lava lamp"
+energy = "calm"
+
+[sim]
+solver = "Stable fluids (dye)"
+scene = "Dam break"
+palette = "Lava"
+params = { buoyancy = 0.4, vorticity = 0.05 }
+reactions = [
+    { trigger = "bass", effect = "param", param = "buoyancy", gain = 0.8 },
+    { trigger = "level", effect = "breathe", gain = 0.4 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+    { trigger = "kick", effect = "splash", gain = 0.5 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.85
+flow = 1.0
+warp = 0.01
+warp_speed = 0.5
+
+[waves]
+brightness = 0.8
+
+[[shape]]
+sides = 6
+radius = 0.35
+spin = 0.15
+bass_pulse = 0.4
+
+[code]
+# The wobble breathes slowly; the hexagon spins up on each beat.
+frame = """
+warp = 0.01 + 0.006 * sin(time * 0.11)
+shape1_spin = 0.15 + 1.5 * beat
+"""

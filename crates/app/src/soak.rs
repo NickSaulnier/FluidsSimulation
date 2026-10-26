@@ -17,7 +17,7 @@ mod tests {
     use crate::audio::analyzer::tests::synthetic_beat;
     use crate::audio::analyzer::{Analyzer, OnsetKind};
     use crate::audio::reactions::ReactionEngine;
-    use crate::looks::{self, LOOKS};
+    use crate::looks;
     use crate::ui::UiState;
     use crate::{react3d, stability};
     use glam::Vec3;
@@ -79,8 +79,8 @@ mod tests {
             onsets.clear();
             analyzer.drain_onsets(&mut onsets);
             let kicked = onsets.iter().any(|o| o.kind == OnsetKind::Kick);
-            if let Some(look) = ui.director.update(true, Some(analyzer.features()), kicked, FRAME) {
-                let l = &LOOKS[look];
+            if let Some(look) = ui.director.update(&ui.looks.looks, true, Some(analyzer.features()), kicked, FRAME) {
+                let l = &ui.looks.looks[look].clone();
                 visited.push(look);
                 in_3d = false;
                 match l.solver_3d() {
@@ -148,7 +148,7 @@ mod tests {
         }
         eprintln!(
             "soak {seconds} s: looks {:?}, peak particles {peak}, 3D checks {checks_3d}",
-            visited.iter().map(|&i| LOOKS[i].name).collect::<Vec<_>>()
+            visited.iter().map(|&i| ui.looks.looks[i].name.as_str()).collect::<Vec<_>>()
         );
         visited
     }
@@ -167,7 +167,7 @@ mod tests {
     #[ignore = "slow: run on demand"]
     fn thirty_minute_soak() {
         let visited = soak(1800.0, 20.0);
-        for (i, look) in LOOKS.iter().enumerate() {
+        for (i, look) in looks::Library::builtin().looks.iter().enumerate() {
             assert!(visited.contains(&i), "never showed {}", look.name);
         }
     }

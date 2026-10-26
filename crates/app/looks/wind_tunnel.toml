@@ -1,0 +1,19 @@
+[meta]
+name = "Wind tunnel"
+energy = "any"
+
+[sim]
+solver = "Lattice Boltzmann (dye)"
+scene = "Wind tunnel"
+palette = "Slime"
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 1.0 },
+    { trigger = "kick", effect = "vortex", gain = 0.6 },
+    { trigger = "hat", effect = "flash", gain = 0.5 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.6
+flow = 2.0

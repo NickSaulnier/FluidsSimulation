@@ -18,7 +18,7 @@
 //! mixes to a uniform smear and solid fuel burns out.
 
 use crate::audio::analyzer::AudioFeatures;
-use crate::looks::LOOKS;
+use crate::looks::Look;
 
 const FADE_OUT_S: f32 = 0.5;
 const FADE_IN_S: f32 = 0.8;
@@ -60,7 +60,7 @@ pub struct Director {
     /// A new song began: seconds of it heard so far, and its loudness summed over them.
     listening: Option<(f32, f32)>,
     /// When each look was last applied, counted in looks applied (0: never).
-    shown: [u32; LOOKS.len()],
+    shown: Vec<u32>,
     applied: u32,
 }
 
@@ -77,27 +77,47 @@ impl Default for Director {
             due: false,
             fade: Fade::None,
             listening: None,
-            shown: [0; LOOKS.len()],
+            shown: Vec::new(),
             applied: 0,
         }
     }
 }
 
 impl Director {
-    /// Fade to `target` (a manual choice, or the director's own).
+    /// Fade to look `target` (a manual choice, or the director's own).
     pub fn request(&mut self, target: usize) {
-        if target < LOOKS.len() && !matches!(self.fade, Fade::Out { .. }) {
+        if !matches!(self.fade, Fade::Out { .. }) {
             self.fade = Fade::Out { t: 0.0, target };
         }
     }
 
-    /// The look `step` places from the current one (wrapping), for next and previous.
-    pub fn neighbour(&self, step: isize) -> usize {
-        let n = LOOKS.len() as isize;
+    /// The look `step` places from the current one (wrapping) of `count`, for next and
+    /// previous.
+    pub fn neighbour(&self, step: isize, count: usize) -> usize {
         match self.current {
-            Some(c) => (c as isize + step).rem_euclid(n) as usize,
-            None => 0,
+            Some(c) if count > 0 => (c as isize + step).rem_euclid(count as isize) as usize,
+            _ => 0,
         }
+    }
+
+    /// The looks were read again (some may have moved, come or gone): follow them by
+    /// name, from `before` (the old names in order) to `looks`.
+    pub fn reindex(&mut self, before: &[String], looks: &[Look]) {
+        let now = |i: usize| before.get(i).and_then(|name| looks.iter().position(|l| &l.name == name));
+        self.current = self.current.and_then(now);
+        if let Fade::Out { t, target } = self.fade {
+            self.fade = match now(target) {
+                Some(target) => Fade::Out { t, target },
+                None => Fade::None,
+            };
+        }
+        let mut shown = vec![0; looks.len()];
+        for (i, &when) in self.shown.iter().enumerate() {
+            if let Some(j) = now(i) {
+                shown[j] = when;
+            }
+        }
+        self.shown = shown;
     }
 
     /// How dark the fade is: 0 (none) to 1 (black).
@@ -109,11 +129,11 @@ impl Director {
         }
     }
 
-    /// Advance `dt` seconds. `presenting`: in full screen, where the director acts by
-    /// itself (changing looks with `auto`, refreshing the locked one without).
-    /// `features`: the analysis (none without a source); `kicked`: a kick this frame.
-    /// Returns the look to apply now, at the darkest point of a fade.
-    pub fn update(&mut self, presenting: bool, features: Option<&AudioFeatures>, kicked: bool, dt: f32) -> Option<usize> {
+    /// Advance `dt` seconds, choosing among `looks`. `presenting`: in full screen, where
+    /// the director acts by itself (changing looks with `auto`, refreshing the locked one
+    /// without). `features`: the analysis (none without a source); `kicked`: a kick this
+    /// frame. Returns the look to apply now, at the darkest point of a fade.
+    pub fn update(&mut self, looks: &[Look], presenting: bool, features: Option<&AudioFeatures>, kicked: bool, dt: f32) -> Option<usize> {
         self.elapsed += dt;
         let level = features.map_or(0.0, |f| f.level);
         self.fast += (level - self.fast) * (1.0 - (-dt / FAST_S).exp());
@@ -127,8 +147,12 @@ impl Director {
                 let t = t + dt;
                 if t >= FADE_OUT_S {
                     self.fade = Fade::In { t: 0.0 };
+                    if target >= looks.len() {
+                        return None;
+                    }
                     (self.current, self.elapsed, self.due) = (Some(target), 0.0, false);
                     self.applied += 1;
+                    self.shown.resize(looks.len(), 0);
                     self.shown[target] = self.applied;
                     return Some(target);
                 }
@@ -165,7 +189,7 @@ impl Director {
             self.listening = if silent {
                 None
             } else if heard >= LISTEN_S {
-                let target = self.choose(sum / heard > ENERGETIC);
+                let target = self.choose(looks, sum / heard > ENERGETIC);
                 self.request(target);
                 None
             } else {
@@ -176,7 +200,7 @@ impl Director {
         let drop = settled && self.fast - self.slow > DROP_JUMP;
         let overdue = self.elapsed >= self.interval_s + KICK_WAIT_S;
         if drop || (self.due && (kicked || overdue)) {
-            let target = self.choose(self.slow > ENERGETIC);
+            let target = self.choose(looks, self.slow > ENERGETIC);
             self.request(target);
         }
         None
@@ -184,13 +208,13 @@ impl Director {
 
     /// The look gone longest unseen that suits the music's energy; ties go to the
     /// first after the current one.
-    fn choose(&self, energetic: bool) -> usize {
-        let n = LOOKS.len();
+    fn choose(&self, looks: &[Look], energetic: bool) -> usize {
+        let n = looks.len().max(1);
         let start = self.current.map_or(0, |c| c + 1);
-        (0..n)
+        (0..looks.len())
             .map(|k| (start + k) % n)
-            .filter(|&i| Some(i) != self.current && LOOKS[i].suits(energetic))
-            .min_by_key(|&i| self.shown[i])
+            .filter(|&i| Some(i) != self.current && looks[i].suits(energetic))
+            .min_by_key(|&i| self.shown.get(i).copied().unwrap_or(0))
             .unwrap_or(start % n)
     }
 }
@@ -198,6 +222,14 @@ impl Director {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::looks::Library;
+    use std::sync::LazyLock;
+
+    static LIBRARY: LazyLock<Library> = LazyLock::new(Library::builtin);
+
+    fn looks() -> &'static [Look] {
+        &LIBRARY.looks
+    }
 
     const FRAME: f32 = 1.0 / 60.0;
 
@@ -212,7 +244,7 @@ mod tests {
     /// Run `seconds` of frames; returns the looks applied.
     fn run(d: &mut Director, f: &AudioFeatures, kick_every: Option<usize>, seconds: f32) -> Vec<usize> {
         let frames = (seconds / FRAME) as usize;
-        (0..frames).filter_map(|k| d.update(true, Some(f), kick_every.is_some_and(|n| k % n == 0), FRAME)).collect()
+        (0..frames).filter_map(|k| d.update(looks(), true, Some(f), kick_every.is_some_and(|n| k % n == 0), FRAME)).collect()
     }
 
     fn settled(level: f32) -> Director {
@@ -235,10 +267,10 @@ mod tests {
     #[test]
     fn choices_rotate_through_every_look_that_suits() {
         let mut d = Director { current: Some(0), ..Director::default() };
-        let suitable = LOOKS.iter().filter(|l| l.suits(true)).count();
+        let suitable = looks().iter().filter(|l| l.suits(true)).count();
         let mut picked = Vec::new();
         for _ in 0..suitable {
-            let target = d.choose(true);
+            let target = d.choose(looks(), true);
             d.request(target);
             run(&mut d, &silence(), None, 1.5);
             picked.push(d.current.unwrap());
@@ -265,10 +297,10 @@ mod tests {
     #[test]
     fn a_new_song_is_not_judged_by_the_last_ones_loud_end() {
         let mut d = settled(0.9);
-        d.current = LOOKS.iter().position(|l| l.name == "Wind tunnel");
+        d.current = looks().iter().position(|l| l.name == "Wind tunnel");
         run(&mut d, &silence(), None, 3.0);
         let applied = run(&mut d, &music(0.3), None, 3.0);
-        assert_eq!(applied.iter().map(|&i| LOOKS[i].name).collect::<Vec<_>>(), ["Lava lamp"], "the quiet new song didn't get the calm look");
+        assert_eq!(applied.iter().map(|&i| looks()[i].name.as_str()).collect::<Vec<_>>(), ["Lava lamp"], "the quiet new song didn't get the calm look");
     }
 
     #[test]
@@ -277,7 +309,7 @@ mod tests {
         run(&mut d, &silence(), None, 3.0);
         let applied = run(&mut d, &music(0.9), None, 3.0);
         assert_eq!(applied.len(), 1, "{applied:?}");
-        assert!(LOOKS[applied[0]].suits(true) && !LOOKS[applied[0]].suits(false), "{} isn't an energetic look", LOOKS[applied[0]].name);
+        assert!(looks()[applied[0]].suits(true) && !looks()[applied[0]].suits(false), "{} isn't an energetic look", looks()[applied[0]].name);
     }
 
     #[test]
@@ -300,18 +332,18 @@ mod tests {
     #[test]
     fn energy_picks_suitable_looks() {
         let d = Director { current: Some(0), ..Director::default() };
-        assert!(LOOKS[d.choose(true)].suits(true));
-        assert!(LOOKS[d.choose(false)].suits(false));
+        assert!(looks()[d.choose(looks(), true)].suits(true));
+        assert!(looks()[d.choose(looks(), false)].suits(false));
     }
 
     #[test]
     fn inactive_director_only_follows_requests() {
         let mut d = Director { current: Some(0), ..Director::default() };
         for _ in 0..(200.0 / FRAME) as usize {
-            assert_eq!(d.update(false, Some(&music(0.5)), true, FRAME), None);
+            assert_eq!(d.update(looks(), false, Some(&music(0.5)), true, FRAME), None);
         }
         d.request(3);
-        let applied: Vec<usize> = (0..120).filter_map(|_| d.update(false, None, false, FRAME)).collect();
+        let applied: Vec<usize> = (0..120).filter_map(|_| d.update(looks(), false, None, false, FRAME)).collect();
         assert_eq!(applied, vec![3]);
     }
 
@@ -323,7 +355,7 @@ mod tests {
         let mut switched = false;
         for _ in 0..200 {
             let before = d.darkness();
-            if d.update(false, None, false, FRAME).is_some() {
+            if d.update(looks(), false, None, false, FRAME).is_some() {
                 switched = true;
                 darkest_at_switch = before;
             }
@@ -346,7 +378,27 @@ mod tests {
     #[test]
     fn neighbours_wrap() {
         let d = Director { current: Some(0), ..Director::default() };
-        assert_eq!(d.neighbour(-1), LOOKS.len() - 1);
-        assert_eq!(d.neighbour(1), 1);
+        assert_eq!(d.neighbour(-1, looks().len()), looks().len() - 1);
+        assert_eq!(d.neighbour(1, looks().len()), 1);
+    }
+
+    /// After the looks are read again, the director follows its look by name, and keeps
+    /// what it knows of when each was shown.
+    #[test]
+    fn reindexing_follows_looks_by_name() {
+        let before: Vec<String> = looks().iter().map(|l| l.name.clone()).collect();
+        let mut moved: Vec<Look> = looks().to_vec();
+        moved.rotate_left(2);
+        moved.pop();
+        let mut d = Director { current: Some(3), ..Director::default() };
+        d.shown = (1..=before.len() as u32).collect();
+        d.reindex(&before, &moved);
+        assert_eq!(d.current.map(|i| moved[i].name.as_str()), Some(before[3].as_str()));
+        let i = moved.iter().position(|l| l.name == before[5]).unwrap();
+        assert_eq!(d.shown[i], 6);
+        // A look that's gone leaves nothing current.
+        let mut d = Director { current: Some(1), ..Director::default() };
+        d.reindex(&before, &moved);
+        assert_eq!(d.current, None);
     }
 }

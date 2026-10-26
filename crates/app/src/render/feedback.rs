@@ -8,14 +8,20 @@
 //! (`flow2d.wgsl`): the solver's own, or particle velocities splatted onto one. In 3D
 //! the raymarch writes it, from the velocity of the gas it sees.
 //!
-//! All rates are per second and scaled by the frame time, so a look moves the same at
-//! 60 fps and 240.
+//! All rates are per second and scaled by the frame time (in the shader), so a look
+//! moves the same at 60 fps and 240.
+//!
+//! The motion arrives as the equations' shared values (`expr::SHARED`), so a look's
+//! per-pixel code (`expr::wgsl`) can vary it across the picture: the shader is a
+//! template, built once per per-pixel program and cached.
 
 use super::post::{Echo, SCENE_FORMAT};
+use crate::expr::{self, MOTION, SHARED};
 use crate::view::View;
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 use sim::{FieldLayout, ParticleView, Vec2};
+use std::collections::HashMap;
 
 /// The flow texture's format: screen uv per second, x and y.
 pub const FLOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
@@ -26,17 +32,23 @@ const SPLAT_CELLS_Y: f32 = 48.0;
 pub enum FeedbackMode {
     /// Blend toward the scene: still things stay put, moving ones leave trails.
     #[default]
+    #[serde(alias = "smear")]
     Smear,
     /// The brighter of old and new: bright things streak over dark ones.
+    #[serde(alias = "brightest")]
     Brightest,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EchoFlip {
     #[default]
+    #[serde(alias = "none")]
     None,
+    #[serde(alias = "horizontal")]
     Horizontal,
+    #[serde(alias = "vertical")]
     Vertical,
+    #[serde(alias = "both")]
     Both,
 }
 
@@ -87,23 +99,40 @@ impl FeedbackSettings {
         echo_flip: EchoFlip::None,
     };
 
-    /// The shader's values for a frame of `dt` seconds with the bass at `bass` (0..1),
-    /// the wave at `warp_phase`, on a target `aspect` wide.
-    fn uniforms(&self, dt: f32, bass: f32, warp_phase: f32, aspect: f32) -> Uniforms {
+    /// The motion these settings make, per second, with the bass at `bass` (0..1): in
+    /// `MOTION` order (zoom, rot, dx, dy, cx, cy, sx, sy, warp).
+    pub fn motion(&self, bass: f32) -> [f32; MOTION.len()] {
+        let zoom = (self.zoom * (1.0 + self.bass_zoom * bass)).max(0.05);
+        [zoom, self.rotation, self.drift[0], self.drift[1], 0.5, 0.5, 1.0, 1.0, self.warp]
+    }
+
+    /// The shared values for a frame with no equations: the motion, the rest 0.
+    pub fn shared(&self, bass: f32) -> [f32; SHARED] {
+        let mut shared = [0.0; SHARED];
+        let start = expr::slot(MOTION[0]);
+        shared[start..start + MOTION.len()].copy_from_slice(&self.motion(bass));
+        shared
+    }
+
+    /// The shader's values for a frame of `dt` seconds, the wave at `warp_phase`, on a
+    /// target `aspect` wide, with the equations' `shared` values (the motion among them).
+    fn uniforms(&self, dt: f32, warp_phase: f32, aspect: f32, shared: &[f32; SHARED]) -> Uniforms {
+        let mut vars = [[0.0; 4]; 16];
+        for (i, v) in shared.iter().enumerate() {
+            vars[i / 4][i % 4] = *v;
+        }
         Uniforms {
-            zoom: (self.zoom * (1.0 + self.bass_zoom * bass)).max(0.05).powf(dt),
-            rotation: self.rotation * dt,
-            shift: [self.drift[0] * dt / aspect, -self.drift[1] * dt],
-            warp: self.warp,
-            warp_phase,
-            flow: self.flow * dt,
+            dt,
             persistence: self.trail.clamp(0.0, 0.98).powf(dt),
+            flow: self.flow * dt,
+            warp_phase,
             mode: match self.mode {
                 FeedbackMode::Smear => 0,
                 FeedbackMode::Brightest => 1,
             },
             aspect,
             _pad: [0.0; 2],
+            vars,
         }
     }
 
@@ -128,20 +157,40 @@ impl Default for FeedbackSettings {
     }
 }
 
-/// Must match `Feedback` in feedback.wgsl (48 bytes).
+/// Must match `Feedback` in feedback.wgsl (288 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
-    zoom: f32,
-    rotation: f32,
-    shift: [f32; 2],
-    warp: f32,
-    warp_phase: f32,
-    flow: f32,
+    dt: f32,
     persistence: f32,
+    flow: f32,
+    warp_phase: f32,
     mode: u32,
     aspect: f32,
     _pad: [f32; 2],
+    vars: [[f32; 4]; 16],
+}
+
+const _: () = assert!(SHARED <= 64, "the shared values don't fit the feedback uniforms");
+
+/// The feedback shader with `pixel` (a look's per-pixel code, from `expr::wgsl::pixel`;
+/// empty for none) in it.
+pub fn shader_source(pixel: &str) -> String {
+    let motion: String = MOTION.iter().map(|m| format!("    var {} = v({}u);\n", expr::wgsl::motion_var(m), expr::slot(m))).collect();
+    let template = include_str!("feedback.wgsl").replace("//{MOTION}\n", &motion).replace("//{PIXEL}\n", pixel);
+    format!("{}\n{template}", expr::wgsl::MATH)
+}
+
+/// Whether `pixel` makes a valid feedback shader (checked without a GPU), with naga's
+/// report if not.
+pub fn validate_pixel(pixel: &str) -> Result<(), String> {
+    use wgpu::naga;
+    let source = shader_source(pixel);
+    let module = naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+        .validate(&module)
+        .map(|_| ())
+        .map_err(|e| e.emit_to_string(&source))
 }
 
 /// Must match `View2d` in flow2d.wgsl (48 bytes).
@@ -187,7 +236,8 @@ struct Targets {
 
 pub struct FeedbackLayer {
     layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::RenderPipeline,
+    /// One pipeline per per-pixel program (by its code; "" for none).
+    pipelines: HashMap<String, wgpu::RenderPipeline>,
     uniforms: wgpu::Buffer,
     flow_layout: wgpu::BindGroupLayout,
     flow_pipeline: wgpu::RenderPipeline,
@@ -241,7 +291,7 @@ impl FeedbackLayer {
             label: Some("flow 2d"),
             entries: &[uniform(0, size_of::<FlowUniforms>()), texture(1, false)],
         });
-        let pipeline = fullscreen_pipeline(device, &layout, include_str!("feedback.wgsl"), "fs_feedback", SCENE_FORMAT);
+        let pipeline = fullscreen_pipeline(device, &layout, &shader_source(""), "fs_feedback", SCENE_FORMAT);
         let flow_pipeline = fullscreen_pipeline(device, &flow_layout, include_str!("flow2d.wgsl"), "fs_flow2d", FLOW_FORMAT);
         let buffer = |label, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -259,7 +309,7 @@ impl FeedbackLayer {
         });
         Self {
             layout,
-            pipeline,
+            pipelines: HashMap::from([(String::new(), pipeline)]),
             uniforms: buffer("feedback", size_of::<Uniforms>()),
             flow_layout,
             flow_pipeline,
@@ -353,7 +403,9 @@ impl FeedbackLayer {
 
     /// Carry the last frame into this one and combine `scene` over it; returns the new
     /// picture (for the glow and composite). `dt` is the frame time (0 holds the picture
-    /// still), `bass` the bass level (0..1).
+    /// still), `shared` the equations' values (the motion among them: see
+    /// `FeedbackSettings::shared` for none), `pixel` the look's per-pixel code (empty for
+    /// none; already validated).
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
@@ -363,9 +415,14 @@ impl FeedbackLayer {
         scene: &wgpu::TextureView,
         size: [u32; 2],
         settings: &FeedbackSettings,
+        shared: &[f32; SHARED],
+        pixel: &str,
         dt: f32,
-        bass: f32,
     ) -> wgpu::TextureView {
+        if !self.pipelines.contains_key(pixel) {
+            let pipeline = fullscreen_pipeline(device, &self.layout, &shader_source(pixel), "fs_feedback", SCENE_FORMAT);
+            self.pipelines.insert(pixel.to_string(), pipeline);
+        }
         let current = self.current;
         let t = self.targets(device, size);
         let (previous, next) = (t.frames[current].clone(), t.frames[1 - current].clone());
@@ -375,7 +432,7 @@ impl FeedbackLayer {
         }
         self.warp_phase = (self.warp_phase + settings.warp_speed * dt) % (std::f32::consts::TAU * 100.0);
         let aspect = size[0] as f32 / size[1].max(1) as f32;
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&settings.uniforms(dt, bass, self.warp_phase, aspect)));
+        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&settings.uniforms(dt, self.warp_phase, aspect, shared)));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("feedback"),
             layout: &self.layout,
@@ -387,7 +444,7 @@ impl FeedbackLayer {
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&flow) },
             ],
         });
-        fullscreen(encoder, "feedback", &next, &self.pipeline, &group);
+        fullscreen(encoder, "feedback", &next, &self.pipelines[pixel], &group);
         self.current = 1 - self.current;
         next
     }
@@ -460,25 +517,37 @@ fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
 mod tests {
     use super::*;
 
-    /// Rates are per second: two half-frames move as far as one whole one.
+    /// The fade is per second: two half-frames fade as much as one whole one, and a
+    /// paused frame holds the picture. (The motion is scaled in the shader.)
     #[test]
-    fn motion_is_independent_of_the_frame_rate() {
-        let s = FeedbackSettings { enabled: true, zoom: 1.4, rotation: 0.8, trail: 0.3, drift: [0.1, -0.2], ..FeedbackSettings::OFF };
-        let (whole, half) = (s.uniforms(1.0 / 60.0, 0.0, 0.0, 1.5), s.uniforms(1.0 / 120.0, 0.0, 0.0, 1.5));
-        assert!((whole.zoom - half.zoom * half.zoom).abs() < 1e-6);
+    fn the_fade_is_independent_of_the_frame_rate() {
+        let s = FeedbackSettings { enabled: true, trail: 0.3, ..FeedbackSettings::OFF };
+        let shared = s.shared(0.0);
+        let (whole, half) = (s.uniforms(1.0 / 60.0, 0.0, 1.5, &shared), s.uniforms(1.0 / 120.0, 0.0, 1.5, &shared));
         assert!((whole.persistence - half.persistence * half.persistence).abs() < 1e-6);
-        assert!((whole.rotation - 2.0 * half.rotation).abs() < 1e-7);
-        assert!((whole.shift[1] - 2.0 * half.shift[1]).abs() < 1e-7);
-        // Upward drift moves the picture up the screen: uv's y runs down.
-        assert!(whole.shift[1] > 0.0);
-        let still = s.uniforms(0.0, 0.0, 0.0, 1.5);
-        assert_eq!((still.zoom, still.persistence, still.rotation), (1.0, 1.0, 0.0), "a paused frame should hold the picture");
+        assert_eq!(s.uniforms(0.0, 0.0, 1.5, &shared).persistence, 1.0, "a paused frame should hold the picture");
     }
 
+    /// The settings' motion lands in its slots; the bass adds zoom.
     #[test]
-    fn the_bass_adds_zoom() {
-        let s = FeedbackSettings { enabled: true, zoom: 1.2, bass_zoom: 0.5, ..FeedbackSettings::OFF };
-        assert!(s.uniforms(0.1, 1.0, 0.0, 1.0).zoom > s.uniforms(0.1, 0.0, 0.0, 1.0).zoom);
+    fn the_motion_fills_its_slots() {
+        let s = FeedbackSettings { enabled: true, zoom: 1.2, rotation: 0.3, drift: [0.1, -0.2], warp: 0.01, bass_zoom: 0.5, ..FeedbackSettings::OFF };
+        let shared = s.shared(0.0);
+        let at = |name| shared[expr::slot(name)];
+        assert_eq!([at("zoom"), at("rot"), at("dx"), at("dy"), at("cx"), at("sx"), at("warp")], [1.2, 0.3, 0.1, -0.2, 0.5, 1.0, 0.01]);
+        assert!(s.shared(1.0)[expr::slot("zoom")] > at("zoom"));
+        let u = s.uniforms(0.1, 0.0, 1.0, &shared);
+        assert_eq!(u.vars[expr::slot("rot") / 4][expr::slot("rot") % 4], 0.3);
+    }
+
+    /// The template builds valid shaders, with and without per-pixel code.
+    #[test]
+    fn the_shader_validates() {
+        validate_pixel("").unwrap();
+        let p = expr::compile("zoom = zoom + 0.2 * rad * sin(ang * 4 + time); rot = rot * (1 - rad) + q1", expr::Stage::Pixel).unwrap();
+        if let Err(e) = validate_pixel(&expr::wgsl::pixel(&p)) {
+            panic!("{e}");
+        }
     }
 
     #[test]
@@ -522,7 +591,7 @@ mod tests {
             let mut encoder = device.create_command_encoder(&Default::default());
             let view = View::fit_in(Vec2::ONE, Vec2::ZERO, Vec2::splat(64.0), 0.0, winit::dpi::PhysicalSize::new(64, 64));
             layer.draw_flow_2d(device, queue, &mut encoder, size, &view, None);
-            let out = layer.run(device, queue, &mut encoder, &scene, size, s, dt, 0.0);
+            let out = layer.run(device, queue, &mut encoder, &scene, size, s, &s.shared(0.0), "", dt);
             queue.submit([encoder.finish()]);
             super::super::post::tests::read_red(device, queue, out.texture(), size)
         };

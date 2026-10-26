@@ -12,6 +12,7 @@
 
 mod audio;
 mod director;
+mod expr;
 mod governor;
 mod looks;
 mod react3d;
@@ -103,6 +104,12 @@ struct State {
     /// Waves and shapes, and this frame's waveform (reused).
     waves: render::waves::WavesLayer,
     waveform: Vec<audio::analyzer::Frame>,
+    /// The look's equations, running, and this frame's results (the feedback, waves and
+    /// the rest as drawn); the look as applied, to see when its file changes it.
+    look_runtime: looks::runtime::Runtime,
+    look_frame: looks::runtime::Frame,
+    look_pixel: String,
+    applied_look: Option<looks::Look>,
     ui: UiState,
     music: Music,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
@@ -249,12 +256,19 @@ impl State {
             frame_dt: 0.0,
             waves,
             waveform: Vec::new(),
+            look_runtime: looks::runtime::Runtime::default(),
+            look_frame: looks::runtime::Frame::plain(&render::feedback::FeedbackSettings::OFF, &render::waves::WaveSettings::OFF),
+            look_pixel: String::new(),
+            applied_look: None,
             ui: {
                 let mut ui = UiState::default();
                 if let Some(saved) = ui::settings::load() {
                     saved.apply(&mut ui);
                 }
                 ui.presenting = visualizer;
+                if let Some(folder) = looks::Library::user_folder() {
+                    ui.looks = looks::Library::with_folder(folder);
+                }
                 ui
             },
             music,
@@ -311,39 +325,85 @@ impl State {
         }
     }
 
+    /// Read the user's looks again if their files changed. If the look on screen is one
+    /// of them, show the change: at once if only its picture, colours, reactions or code
+    /// changed, or by applying it afresh if its fluid did.
+    fn reload_looks(&mut self, now: Instant) {
+        let before: Vec<String> = self.ui.looks.looks.iter().map(|l| l.name.clone()).collect();
+        if !self.ui.looks.poll(now) {
+            return;
+        }
+        self.ui.director.reindex(&before, &self.ui.looks.looks);
+        if let Some(error) = self.ui.looks.errors.first() {
+            let more = self.ui.looks.errors.len() - 1;
+            let others = if more > 0 { format!(" (and {more} more: see the Music tab)") } else { String::new() };
+            self.ui.show_notice(format!("look {error}{others}"));
+        }
+        let Some(index) = self.ui.director.current else { return };
+        let look = self.ui.looks.looks[index].clone();
+        if self.applied_look.as_ref() == Some(&look) {
+            return;
+        }
+        if self.applied_look.as_ref().is_some_and(|old| old.same_scene(&look)) {
+            looks::apply_picture(&look, &mut self.ui);
+            self.start_code(&look);
+            self.applied_look = Some(look);
+        } else {
+            self.apply_look(index);
+        }
+        if self.ui.looks.errors.is_empty() {
+            self.ui.show_notice(format!("reloaded {}", self.ui.looks.looks[index].name));
+        }
+    }
+
+    /// Start `look`'s equations.
+    fn start_code(&mut self, look: &looks::Look) {
+        self.look_runtime = looks::runtime::Runtime::new(&look.code);
+        self.look_pixel = look.code.pixel.clone();
+    }
+
     /// Switch to look `index`, moving between the 2D and 3D worlds if it needs to.
     fn apply_look(&mut self, index: usize) {
-        let look = &looks::LOOKS[index];
+        let Some(look) = self.ui.looks.looks.get(index).cloned() else { return };
         // Put back any parameters the last look's reactions were modulating, and start
         // the feedback afresh (the old look's trails would linger for seconds).
-        self.modulate_params(&[]);
+        self.modulate_params(&[], &[]);
         self.feedback.pause();
-        match look.solver_3d() {
+        self.start_code(&look);
+        let unknown = match look.solver_3d() {
             Some(solver) => {
                 self.choose_solver(ui::SolverChoice::ThreeD(solver));
+                let mut unknown = Vec::new();
                 if let Some(world) = &mut self.world3d {
-                    looks::apply_3d(look, world, &mut self.ui);
+                    unknown = looks::apply_3d(&look, world, &mut self.ui);
                     // Frame the new scene, keeping the camera's heading; closer in full
                     // screen, where there are no controls around it.
                     let framing = OrbitCamera::framing(world.scene.size);
                     let distance = if self.ui.presenting { PRESENTING_ZOOM * framing.distance } else { framing.distance };
                     self.camera = OrbitCamera { yaw: self.camera.yaw, distance, ..framing };
                 }
+                unknown
             }
             None => {
                 if self.world3d.is_some() {
                     self.choose_solver(ui::SolverChoice::TwoD(self.world.solver_index));
                 }
-                looks::apply(look, &mut self.world, &mut self.ui);
+                looks::apply(&look, &mut self.world, &mut self.ui)
             }
+        };
+        if !unknown.is_empty() {
+            self.ui.show_notice(format!("{}: the solver has no {}", look.name, unknown.join(", ")));
         }
         log::info!("look: {}", look.name);
+        self.applied_look = Some(look);
     }
 
     /// Parameter reactions: each key is set to its base value times the reaction's
     /// multiple; the base is remembered when modulation starts and restored when it
     /// stops (or the solver changes).
-    fn modulate_params(&mut self, params: &[(String, f32)]) {
+    /// `multiples` from the reactions, `values` from the look's equations (which replace
+    /// the base value before the reactions' multiple applies).
+    fn modulate_params(&mut self, multiples: &[(String, f32)], values: &[(String, f32)]) {
         // 3D solvers count down from the top, so they never match a 2D one.
         let (solver, world): (usize, &mut dyn ui::params::Params) = match &mut self.world3d {
             Some(w) => (usize::MAX - w.solver_index, w),
@@ -354,13 +414,15 @@ impl State {
         }
         let bases = &mut self.param_bases.1;
         bases.retain(|(key, base)| {
-            let active = params.iter().any(|(k, _)| k == key);
+            let active = multiples.iter().chain(values).any(|(k, _)| k == key);
             if !active {
                 ui::params::float_param(&mut *world, key, Some(*base));
             }
             active
         });
-        for (key, multiple) in params {
+        let mut keys: Vec<&String> = multiples.iter().chain(values).map(|(k, _)| k).collect();
+        keys.dedup();
+        for key in keys {
             let base = match bases.iter().find(|(k, _)| k == key) {
                 Some((_, base)) => *base,
                 None => match ui::params::float_param(&mut *world, key, None) {
@@ -371,7 +433,9 @@ impl State {
                     None => continue,
                 },
             };
-            ui::params::float_param(&mut *world, key, Some(base * multiple));
+            let value = values.iter().find(|(k, _)| k == key).map_or(base, |(_, v)| *v);
+            let multiple = multiples.iter().find(|(k, _)| k == key).map_or(1.0, |(_, m)| *m);
+            ui::params::float_param(&mut *world, key, Some(value * multiple));
         }
     }
 
@@ -411,8 +475,8 @@ impl State {
             Action::TogglePanel => ui.panel_open = !ui.panel_open,
             Action::ToggleCheatSheet => ui.cheat_sheet = !ui.cheat_sheet,
             Action::TogglePresentation => ui.presenting = !ui.presenting,
-            Action::PreviousLook => ui.director.request(ui.director.neighbour(-1)),
-            Action::NextLook => ui.director.request(ui.director.neighbour(1)),
+            Action::PreviousLook => ui.director.request(ui.director.neighbour(-1, ui.looks.looks.len())),
+            Action::NextLook => ui.director.request(ui.director.neighbour(1, ui.looks.looks.len())),
             Action::ToggleAutoLooks => ui.director.auto = !ui.director.auto,
         }
     }
@@ -445,7 +509,6 @@ impl State {
         self.music.latency_ms = self.ui.audio_latency_ms;
         self.music.update();
         self.music.waveform(&mut self.waveform);
-        self.waves.update(&self.waveform, self.frame_dt);
         let mut frame = ui::Frame {
             world: &mut self.world,
             world3d: self.world3d.as_mut(),
@@ -468,11 +531,17 @@ impl State {
         }
 
         self.sync_presentation(real_dt);
+        self.reload_looks(now);
         // The director: change looks with the music (by itself only in full screen).
         let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
-        if let Some(look) = self.ui.director.update(self.ui.presenting, self.music.features(), kicked, real_dt) {
+        if let Some(look) = self.ui.director.update(&self.ui.looks.looks, self.ui.presenting, self.music.features(), kicked, real_dt) {
             self.apply_look(look);
         }
+        // The look's equations, from its settings as they stand and the music.
+        let sound = looks::runtime::Sound { features: self.music.features(), onsets: self.music.onsets(), beats: self.music.beat_count() };
+        let aspect = self.gpu.config.width as f32 / self.gpu.config.height.max(1) as f32;
+        self.look_frame = self.look_runtime.step(&self.ui.feedback, &self.ui.waves, sound, self.frame_dt, aspect);
+        self.waves.update(&self.waveform, &self.look_frame.waves, self.frame_dt);
         let (drag, wheel) = self.input.take_orbit();
         if self.world3d.is_some() {
             self.step_3d(drag, wheel, real_dt);
@@ -516,16 +585,18 @@ impl State {
         }
         let mut step_input = self.input.apply(view, &self.ui, &mut self.world, real_dt);
         // Music reactions: forces, gravity, parameters, and the colours drawn this frame.
-        let mut reaction =
-            self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), self.ui.presenting, real_dt);
+        let gravity = tilt(self.ui.gravity(), self.look_frame.gravity_tilt);
+        let intensity = self.look_frame.intensity;
+        let mut reaction = self.music.react(&self.ui.reactions, self.world.scene.size, gravity, self.ui.presenting, real_dt, intensity);
         if !stability::room_for_fluid(&self.world) {
             reaction.emitters.clear(); // jets pause while particles are over budget
         }
         self.world.scene.gravity = reaction.gravity;
         step_input.brushes.extend(reaction.brushes);
-        render::waves::wave_brushes(&self.ui.waves, &self.waveform, self.waves.peak(), self.world.scene.size, &mut step_input.brushes);
+        render::waves::wave_brushes(&self.look_frame.waves, &self.waveform, self.waves.peak(), self.world.scene.size, &mut step_input.brushes);
         step_input.emitters.extend(reaction.emitters);
-        self.modulate_params(&reaction.params);
+        let values = std::mem::take(&mut self.look_frame.params);
+        self.modulate_params(&reaction.params, &values);
         self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
         let wanted = real_dt * self.ui.speed;
         let sim_dt = self.sim_dt(real_dt);
@@ -554,16 +625,18 @@ impl State {
         let mut reaction = self.music.react(
             &self.ui.reactions,
             react3d::front_view(size),
-            react3d::front_gravity(base_gravity),
+            tilt(react3d::front_gravity(base_gravity), self.look_frame.gravity_tilt),
             self.ui.presenting,
             real_dt,
+            self.look_frame.intensity,
         );
         let front = react3d::front_view(size);
-        render::waves::wave_brushes(&self.ui.waves, &self.waveform, self.waves.peak(), front, &mut reaction.brushes);
+        render::waves::wave_brushes(&self.look_frame.waves, &self.waveform, self.waves.peak(), front, &mut reaction.brushes);
         let (music, gravity) = react3d::lift(&reaction, size, self.camera.right(), base_gravity);
         input.brushes.extend(music.brushes);
         input.burners.extend(music.burners);
-        self.modulate_params(&reaction.params);
+        let values = std::mem::take(&mut self.look_frame.params);
+        self.modulate_params(&reaction.params, &values);
         self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
         let Some(world) = &mut self.world3d else { return };
         world.scene.gravity = gravity;
@@ -633,7 +706,8 @@ impl State {
             }
         };
         mark(&self.timer, &mut encoder, Stage::Scene);
-        let feedback = self.ui.feedback;
+        let feedback = self.look_frame.feedback;
+        let waves = self.look_frame.waves;
         let flow = self.feedback.flow_target(&self.gpu.device, scene_size);
         if let Some(world) = &self.world3d {
             let viewport = self.viewport_3d().map(|v| v * scale);
@@ -662,7 +736,7 @@ impl State {
                 self.draw_flow_2d(&mut encoder, view, scene_size);
             }
         }
-        if self.ui.waves.any() {
+        if waves.any() {
             let viewport = self.viewport_3d().map(|v| v * scale);
             let features = self.music.features();
             let sound = render::waves::Sound {
@@ -671,13 +745,13 @@ impl State {
                 bass: features.map_or(1.0, |f| f.milk.bass_att),
             };
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
-            self.waves.draw(device, queue, &mut encoder, &scene, viewport, &self.ui.waves, &sound, &self.palette_now);
+            self.waves.draw(device, queue, &mut encoder, &scene, viewport, &waves, &sound, &self.palette_now);
         }
         mark(&self.timer, &mut encoder, Stage::Feedback);
         let picture = if feedback.enabled {
-            let bass = self.music.features().map_or(0.0, |f| f.bands[1]);
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
-            self.feedback.run(device, queue, &mut encoder, &scene, scene_size, &feedback, self.frame_dt, bass)
+            let (shared, pixel) = (&self.look_frame.shared, &self.look_pixel);
+            self.feedback.run(device, queue, &mut encoder, &scene, scene_size, &feedback, shared, pixel, self.frame_dt)
         } else {
             self.feedback.pause();
             scene.clone()
@@ -765,7 +839,7 @@ impl State {
             liquid: self.ui.liquid_style(),
             target_size: (size[0], size[1]),
             pixel_scale: scale,
-            black_letterbox: self.ui.feedback.enabled,
+            black_letterbox: self.look_frame.feedback.enabled,
             palette: self.palette_now,
         };
         self.field_range = self.renderer.render(device, queue, encoder, target, options);
@@ -855,3 +929,12 @@ impl PerfCounter {
     }
 }
 
+
+/// `v` turned `degrees` anticlockwise.
+fn tilt(v: sim::Vec2, degrees: f32) -> sim::Vec2 {
+    if degrees == 0.0 {
+        return v;
+    }
+    let (s, c) = degrees.to_radians().sin_cos();
+    sim::Vec2::new(c * v.x - s * v.y, s * v.x + c * v.y)
+}

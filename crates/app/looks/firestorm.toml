@@ -1,0 +1,21 @@
+[meta]
+name = "Firestorm"
+energy = "energetic"
+
+[sim]
+solver = "Smoke & fire"
+scene = "Campfire"
+palette = "Lava"
+reactions = [
+    { trigger = "kick", effect = "jet", gain = 1.0 },
+    { trigger = "bass", effect = "breathe", gain = 0.6 },
+    { trigger = "snare", effect = "vortex", gain = 0.7 },
+    { trigger = "mid", effect = "gust", gain = 0.4 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.55
+zoom = 1.25
+drift = [0.0, 0.12]
+bass_zoom = 0.4
