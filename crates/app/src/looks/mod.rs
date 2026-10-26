@@ -16,6 +16,7 @@ use crate::audio::reactions::Reaction;
 use crate::expr::Program;
 use crate::render::feedback::FeedbackSettings;
 use crate::render::palette::Palette;
+use crate::render::composite::CompositeSettings;
 use crate::render::waves::WaveSettings;
 use crate::ui::{UiState, params};
 pub use file::LoadError;
@@ -92,6 +93,8 @@ pub struct Look {
     pub feedback: FeedbackSettings,
     /// The sound drawn on screen.
     pub waves: WaveSettings,
+    /// The composite: symmetry, colour grading, lens.
+    pub composite: CompositeSettings,
     /// Solver parameters, by key (ints are rounded, toggles on unless 0).
     pub params: Vec<(String, f32)>,
     pub reactions: Vec<Reaction>,
@@ -356,6 +359,7 @@ pub fn apply_picture(look: &Look, ui: &mut UiState) {
     ui.reactions = look.reactions.clone();
     ui.feedback = look.feedback;
     ui.waves = look.waves;
+    ui.composite = look.composite;
     if look.solver_3d().is_some() {
         ui.orbit = look.orbit;
     }

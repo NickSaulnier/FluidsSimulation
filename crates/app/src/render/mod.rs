@@ -3,6 +3,7 @@
 //! screen.
 
 pub mod colormap;
+pub mod composite;
 mod liquid;
 pub mod feedback;
 pub mod palette;

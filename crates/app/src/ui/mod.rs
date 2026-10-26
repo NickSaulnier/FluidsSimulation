@@ -97,6 +97,8 @@ pub struct UiState {
     pub feedback: crate::render::feedback::FeedbackSettings,
     /// The sound drawn on screen (scopes, spectrum, shapes).
     pub waves: crate::render::waves::WaveSettings,
+    /// The composite's look: symmetry, colour grading, lens.
+    pub composite: crate::render::composite::CompositeSettings,
     /// How the music drives the fluid.
     pub reactions: Vec<crate::audio::reactions::Reaction>,
     /// How much later than it's analysed the audio is heard, milliseconds (see
@@ -148,6 +150,7 @@ impl Default for UiState {
             palette: crate::render::Palette::default(),
             feedback: crate::render::feedback::FeedbackSettings::OFF,
             waves: crate::render::waves::WaveSettings::OFF,
+            composite: crate::render::composite::CompositeSettings::OFF,
             reactions: crate::audio::reactions::default_reactions(),
             audio_latency_ms: 0.0,
             presenting: false,

@@ -8,6 +8,7 @@ use crate::audio::reactions::{Effect, Reaction, Trigger};
 use crate::expr::{self, Program, Stage};
 use crate::render::feedback::{self, FeedbackSettings};
 use crate::render::palette::{PALETTES, Palette};
+use crate::render::composite::CompositeSettings;
 use crate::render::waves::{ShapeSettings, WaveSettings};
 use serde::Deserialize;
 use std::fmt;
@@ -39,6 +40,7 @@ struct Doc {
     waves: Option<WaveSettings>,
     #[serde(default)]
     shape: Vec<ShapeSettings>,
+    composite: Option<CompositeSettings>,
     #[serde(default)]
     code: CodeDoc,
 }
@@ -142,6 +144,7 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
     waves_known.remove("shapes");
     unknown("feedback", raw.get("feedback"), keys(FeedbackSettings::OFF))?;
     unknown("waves", raw.get("waves"), waves_known)?;
+    unknown("composite", raw.get("composite"), keys(CompositeSettings::OFF))?;
     if let Some(toml::Value::Array(shapes)) = raw.get("shape") {
         let shape_known = keys(ShapeSettings::OFF);
         for shape in shapes {
@@ -243,6 +246,7 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         orbit: sim.orbit,
         feedback,
         waves,
+        composite: doc.composite.unwrap_or(CompositeSettings::OFF),
         params,
         reactions,
         code,
@@ -317,6 +321,7 @@ pub fn write(look: &Look) -> String {
     for shape in look.waves.shapes.iter().filter(|s| s.enabled) {
         section("[[shape]]", changed(*shape, ShapeSettings::OFF, &["enabled"]), true);
     }
+    section("[composite]", changed(look.composite, CompositeSettings::OFF, &[]), false);
     let code = &look.code.source;
     if code.init.is_some() || code.frame.is_some() || code.pixel.is_some() {
         let _ = writeln!(out, "\n[code]");

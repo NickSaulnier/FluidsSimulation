@@ -9,6 +9,7 @@ use crate::audio::analyzer::{AudioFeatures, Onset, OnsetKind};
 use crate::audio::sections::SectionKind;
 use crate::expr::eval::{Layout, Machine};
 use crate::expr::{FRAME_OUTPUTS, MOTION, Program, SHARED, Stage, slot};
+use crate::render::composite::CompositeSettings;
 use crate::render::feedback::FeedbackSettings;
 use crate::render::waves::WaveSettings;
 use utils::rng::SplitMix64;
@@ -32,6 +33,7 @@ pub struct Sound<'a> {
 pub struct Frame {
     pub feedback: FeedbackSettings,
     pub waves: WaveSettings,
+    pub composite: CompositeSettings,
     /// The values the per-pixel shader reads (inputs, motion, q's).
     pub shared: [f32; SHARED],
     /// Gravity's tilt, degrees (anticlockwise), and the reactions' intensity (a multiple).
@@ -43,8 +45,8 @@ pub struct Frame {
 
 impl Frame {
     /// A frame of the settings as they are, with no equations.
-    pub fn plain(feedback: &FeedbackSettings, waves: &WaveSettings) -> Self {
-        Self { feedback: *feedback, waves: *waves, shared: feedback.shared(0.0), gravity_tilt: 0.0, intensity: 1.0, params: Vec::new() }
+    pub fn plain(feedback: &FeedbackSettings, waves: &WaveSettings, composite: &CompositeSettings) -> Self {
+        Self { feedback: *feedback, waves: *waves, composite: *composite, shared: feedback.shared(0.0), gravity_tilt: 0.0, intensity: 1.0, params: Vec::new() }
     }
 }
 
@@ -93,8 +95,8 @@ impl Runtime {
     }
 
     /// Run a frame of `dt` seconds (0 while paused) on a picture `aspect` wide, from the
-    /// look's settings as they stand (`feedback`, `waves`) and the music.
-    pub fn step(&mut self, feedback: &FeedbackSettings, waves: &WaveSettings, sound: Sound<'_>, dt: f32, aspect: f32) -> Frame {
+    /// look's settings as they stand (`feedback`, `waves`, `composite`) and the music.
+    pub fn step(&mut self, feedback: &FeedbackSettings, waves: &WaveSettings, composite: &CompositeSettings, sound: Sound<'_>, dt: f32, aspect: f32) -> Frame {
         self.time += dt;
         self.frames += 1.0;
         let fall = (-dt / PULSE_S).exp();
@@ -164,7 +166,7 @@ impl Runtime {
         let motion = feedback.motion(f.bands[1]);
         let start = slot(MOTION[0]);
         self.block[start..start + MOTION.len()].copy_from_slice(&motion);
-        let outputs = outputs(feedback, waves);
+        let outputs = outputs(feedback, waves, composite);
         self.block[self.layout.outputs..self.layout.outputs + FRAME_OUTPUTS.len()].copy_from_slice(&outputs);
 
         if !self.started {
@@ -206,14 +208,27 @@ impl Runtime {
             shape.spin = s("spin").clamp(-100.0, 100.0);
             shape.fill = s("fill").clamp(0.0, 1.0);
         }
+        let mut c = *composite;
+        c.segments = get("segments").round().clamp(2.0, 16.0) as u32;
+        c.symmetry_spin = get("symmetry_spin").clamp(-10.0, 10.0);
+        c.hue = get("hue");
+        c.hue_speed = get("hue_speed").clamp(-720.0, 720.0);
+        c.saturation = get("saturation").clamp(0.0, 4.0);
+        c.contrast = get("contrast").clamp(0.0, 4.0);
+        c.exposure = get("exposure").clamp(0.0, 4.0);
+        c.palette_map = get("palette_map").clamp(0.0, 1.0);
+        c.invert = get("invert").clamp(0.0, 1.0);
+        c.aberration = get("aberration").clamp(0.0, 0.1);
+        c.vignette = get("vignette").clamp(0.0, 1.0);
+        c.grain = get("grain").clamp(0.0, 1.0);
         // Every parameter a program names, it sets each frame (statements always run).
         let params = self.params.iter().enumerate().filter_map(|(i, key)| Some(key.clone()).zip(Some(self.block[self.layout.params + i]).filter(|v| v.is_finite()))).collect();
-        Frame { feedback: fb, waves: w, shared, gravity_tilt: get("gravity").clamp(-360.0, 360.0), intensity: get("intensity").clamp(0.0, 10.0), params }
+        Frame { feedback: fb, waves: w, composite: c, shared, gravity_tilt: get("gravity").clamp(-360.0, 360.0), intensity: get("intensity").clamp(0.0, 10.0), params }
     }
 }
 
 /// The frame outputs as the settings have them (`FRAME_OUTPUTS` order).
-fn outputs(feedback: &FeedbackSettings, waves: &WaveSettings) -> Vec<f32> {
+fn outputs(feedback: &FeedbackSettings, waves: &WaveSettings, composite: &CompositeSettings) -> Vec<f32> {
     let [s1, s2] = waves.shapes;
     FRAME_OUTPUTS
         .iter()
@@ -231,6 +246,18 @@ fn outputs(feedback: &FeedbackSettings, waves: &WaveSettings) -> Vec<f32> {
             "wave_push" => waves.push,
             "gravity" => 0.0,
             "intensity" => 1.0,
+            "segments" => composite.segments as f32,
+            "symmetry_spin" => composite.symmetry_spin,
+            "hue" => composite.hue,
+            "hue_speed" => composite.hue_speed,
+            "saturation" => composite.saturation,
+            "contrast" => composite.contrast,
+            "exposure" => composite.exposure,
+            "palette_map" => composite.palette_map,
+            "invert" => composite.invert,
+            "aberration" => composite.aberration,
+            "vignette" => composite.vignette,
+            "grain" => composite.grain,
             other => {
                 let (shape, field) = other.split_once('_').expect("shapeN_field");
                 let s = if shape == "shape1" { s1 } else { s2 };
@@ -265,7 +292,7 @@ mod tests {
     fn without_equations_the_settings_pass_through() {
         let fb = FeedbackSettings { enabled: true, zoom: 1.3, rotation: 0.2, trail: 0.4, ..FeedbackSettings::OFF };
         let mut r = Runtime::default();
-        let f = r.step(&fb, &WaveSettings::OFF, Sound::default(), 1.0 / 60.0, 1.5);
+        let f = r.step(&fb, &WaveSettings::OFF, &CompositeSettings::OFF, Sound::default(), 1.0 / 60.0, 1.5);
         assert_eq!((f.feedback, f.waves, f.gravity_tilt, f.intensity), (fb, WaveSettings::OFF, 0.0, 1.0));
         assert_eq!(f.shared[slot("zoom")], 1.3);
         assert_eq!(f.shared[slot("rot")], 0.2);
@@ -283,12 +310,12 @@ mod tests {
         features.milk.bass = 0.3;
         let kick = [Onset { kind: OnsetKind::Kick, time: 0.0, strength: 1.0 }];
         let sound = Sound { features: Some(&features), onsets: &kick, beats: 1 };
-        let f = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, sound, 0.5, 1.0);
+        let f = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, &CompositeSettings::OFF, sound, 0.5, 1.0);
         assert!((f.shared[slot("zoom")] - 1.11).abs() < 1e-6);
         assert!((f.feedback.trail - 0.5).abs() < 1e-6);
         assert_eq!((f.shared[slot("q1")], f.waves.scale, f.waves.shapes[0].spin, f.gravity_tilt), (0.5, 2.0, -1.0, 15.0));
         assert_eq!(f.params, [("buoyancy".to_string(), 0.5)]);
-        let f = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, Sound { features: Some(&features), ..Sound::default() }, 0.5, 1.0);
+        let f = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, &CompositeSettings::OFF, Sound { features: Some(&features), ..Sound::default() }, 0.5, 1.0);
         assert!((f.shared[slot("zoom")] - 1.12).abs() < 1e-6, "n carried on from init");
         assert!(f.params[0].1 < 0.01, "the kick's pulse fell: {:?}", f.params);
     }
@@ -304,12 +331,23 @@ mod tests {
         f.sections.changes = 1;
         f.sections.last = Some(crate::audio::sections::Section { kind: SectionKind::Drop, time: 0.0 });
         let sound = Sound { features: Some(&f), ..Sound::default() };
-        let out = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, sound, 1.0 / 60.0, 1.0);
+        let out = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, &CompositeSettings::OFF, sound, 1.0 / 60.0, 1.0);
         let q = |i: usize| out.shared[slot(&format!("q{i}"))];
         assert!(q(1) > 0.9 && q(2) > 0.9 && q(3) == 0.0 && (q(4) - 0.7).abs() < 1e-6, "{:?}", [q(1), q(2), q(3), q(4)]);
-        let out = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, sound, 0.5, 1.0);
+        let out = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, &CompositeSettings::OFF, sound, 0.5, 1.0);
         let drop = out.shared[slot("q2")];
         assert!((0.2..0.5).contains(&drop), "the same change again isn't new, and the pulse falls over half a second: {drop}");
+    }
+
+    /// The composite's outputs start from its settings and take the equations' values,
+    /// in range.
+    #[test]
+    fn equations_drive_the_composite() {
+        let c = code("", "hue = 30; segments = 7.6; saturation = 5; vignette = vignette + 0.25");
+        let base = CompositeSettings { vignette: 0.5, contrast: 1.2, ..CompositeSettings::OFF };
+        let f = Runtime::new(&c).step(&FeedbackSettings::OFF, &WaveSettings::OFF, &base, Sound::default(), 0.1, 1.0);
+        let out = f.composite;
+        assert_eq!((out.hue, out.segments, out.saturation, out.vignette, out.contrast), (30.0, 8, 4.0, 0.75, 1.2));
     }
 
     /// Equations that make no number fall back to the settings, and outputs stay in range.
@@ -317,7 +355,7 @@ mod tests {
     fn bad_values_fall_back() {
         let c = code("", "zoom = 0 / 0 + log(0) * 1e30 * 1e30; rot = sqrt(-1) / 0; trail = 5; echo = -1");
         let fb = FeedbackSettings { enabled: true, zoom: 1.2, rotation: 0.1, ..FeedbackSettings::OFF };
-        let f = Runtime::new(&c).step(&fb, &WaveSettings::OFF, Sound::default(), 0.1, 1.0);
+        let f = Runtime::new(&c).step(&fb, &WaveSettings::OFF, &CompositeSettings::OFF, Sound::default(), 0.1, 1.0);
         assert!(f.shared.iter().all(|v| v.is_finite()));
         assert_eq!(f.shared[slot("zoom")], 1.2, "an infinite zoom falls back");
         assert_eq!((f.feedback.trail, f.feedback.echo), (0.98, 0.0));

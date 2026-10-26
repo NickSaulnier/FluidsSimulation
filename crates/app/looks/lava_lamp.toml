@@ -30,6 +30,12 @@ radius = 0.35
 spin = 0.15
 bass_pulse = 0.4
 
+[composite]
+exposure = 2.0
+palette_map = 0.4
+vignette = 0.4
+aberration = 0.006
+
 [code]
 # The wobble breathes slowly; the hexagon spins up on each beat.
 frame = """

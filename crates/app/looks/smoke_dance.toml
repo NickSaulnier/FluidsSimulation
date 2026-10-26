@@ -35,6 +35,11 @@ spin = -0.4
 bass_pulse = 0.5
 fill = 0.3
 
+[composite]
+symmetry = "quad"
+palette_map = 0.3
+vignette = 0.35
+
 [code]
 # Sways one way and back over each bar, while there's a steady beat.
 frame = """

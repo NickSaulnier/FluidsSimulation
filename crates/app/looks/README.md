@@ -49,6 +49,11 @@ size = 0.45
 sides = 6
 radius = 0.3
 
+[composite]
+symmetry = "kaleidoscope"
+segments = 6
+vignette = 0.4
+
 [code]
 init = "phase = 0"
 frame = """
@@ -102,6 +107,21 @@ Rates are per second.
 - `[[shape]]`: `sides`, `radius`, `centre` (`[x, y]`), `spin` (radians per second),
   `thickness`, `bass_pulse` (how much the radius follows the bass), `fill` (0 to 1).
   Sizes are in half the picture's height; `[0, 0]` is the middle.
+
+## `[composite]`
+
+The picture's last touches, drawn on the screen and never fed back. All off by default.
+
+| Setting | Meaning |
+|---|---|
+| `symmetry` | `none`, `mirror_x` (the left half mirrored onto the right), `mirror_y` (the top onto the bottom), `quad` (the top-left quarter into all four), `kaleidoscope` |
+| `segments`, `symmetry_spin` | the kaleidoscope's mirrored wedges (2 to 16) and its turn (radians per second) |
+| `hue`, `hue_speed` | turn every colour round the colour wheel (degrees), and keep turning (degrees per second) |
+| `saturation`, `contrast`, `exposure` | 1 as is: saturation 0 is grey, contrast is around mid-grey, exposure a multiple |
+| `palette_map` | recolour the picture by its brightness with the look's palette (dark to deep, base, highlight), 0 to 1 |
+| `invert` | 0 to 1 |
+| `aberration` | colour fringes toward the edges, 0 to 0.05 |
+| `vignette`, `grain` | darker corners (0 to 1), film grain (0 to 0.3) |
 
 ## `[code]`: equations
 
@@ -162,6 +182,10 @@ Per frame only:
 - `shape1_radius`, `shape1_x`, `shape1_y`, `shape1_spin`, `shape1_fill` (and `shape2_`);
 - `gravity` (a tilt, degrees anticlockwise), `intensity` (the reactions' strength, a
   multiple: 1 as set);
+- the composite, by its settings' names: `segments`, `symmetry_spin`, `hue`,
+  `hue_speed`, `saturation`, `contrast`, `exposure`, `palette_map`, `invert`,
+  `aberration`, `vignette`, `grain` (`hue = 40 * sin(time * 0.1)`, `vignette = 0.3 + 0.4
+  * beat`);
 - `param_<key>`: a solver parameter (`param_buoyancy = 0.2 + 0.2 * bass_att`);
 - `q1` to `q8`: passed on to the per-pixel program;
 - any other name: the program's own variable, kept from frame to frame (`init` and

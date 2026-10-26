@@ -110,6 +110,8 @@ struct State {
     look_frame: looks::runtime::Frame,
     look_pixel: String,
     applied_look: Option<looks::Look>,
+    /// The composite's kaleidoscope turn, hue drift and grain seed.
+    composite_clock: render::composite::CompositeClock,
     ui: UiState,
     music: Music,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
@@ -257,7 +259,8 @@ impl State {
             waves,
             waveform: Vec::new(),
             look_runtime: looks::runtime::Runtime::default(),
-            look_frame: looks::runtime::Frame::plain(&render::feedback::FeedbackSettings::OFF, &render::waves::WaveSettings::OFF),
+            look_frame: looks::runtime::Frame::plain(&render::feedback::FeedbackSettings::OFF, &render::waves::WaveSettings::OFF, &render::composite::CompositeSettings::OFF),
+            composite_clock: render::composite::CompositeClock::default(),
             look_pixel: String::new(),
             applied_look: None,
             ui: {
@@ -386,6 +389,7 @@ impl State {
             orbit,
             feedback: self.ui.feedback,
             waves: self.ui.waves,
+            composite: self.ui.composite,
             params,
             reactions: self.ui.reactions.clone(),
             code: current.map(|l| l.code).unwrap_or_default(),
@@ -406,10 +410,12 @@ impl State {
         }
     }
 
-    /// Start `look`'s equations.
+    /// Start `look`'s equations, and its composite's clock afresh (the last look's hue
+    /// drift and kaleidoscope turn would carry over).
     fn start_code(&mut self, look: &looks::Look) {
         self.look_runtime = looks::runtime::Runtime::new(&look.code);
         self.look_pixel = look.code.pixel.clone();
+        self.composite_clock = render::composite::CompositeClock::default();
     }
 
     /// Switch to look `index`, moving between the 2D and 3D worlds if it needs to.
@@ -593,7 +599,8 @@ impl State {
         // The look's equations, from its settings as they stand and the music.
         let sound = looks::runtime::Sound { features: self.music.features(), onsets: self.music.onsets(), beats: self.music.beat_count() };
         let aspect = self.gpu.config.width as f32 / self.gpu.config.height.max(1) as f32;
-        self.look_frame = self.look_runtime.step(&self.ui.feedback, &self.ui.waves, sound, self.frame_dt, aspect);
+        self.look_frame = self.look_runtime.step(&self.ui.feedback, &self.ui.waves, &self.ui.composite, sound, self.frame_dt, aspect);
+        self.composite_clock.advance(&self.look_frame.composite, self.frame_dt);
         self.waves.update(&self.waveform, &self.look_frame.waves, self.frame_dt);
         let (drag, wheel) = self.input.take_orbit();
         if self.world3d.is_some() {
@@ -810,7 +817,9 @@ impl State {
             scene.clone()
         };
         mark(&self.timer, &mut encoder, Stage::Glow);
-        self.post.run(&self.gpu.device, &self.gpu.queue, &mut encoder, &picture, &target, self.ui.glow, feedback.echo(), self.timer.as_ref());
+        let composite = render::composite::Composite { settings: self.look_frame.composite, clock: self.composite_clock, palette: self.palette_now };
+        let (device, queue) = (&self.gpu.device, &self.gpu.queue);
+        self.post.run(device, queue, &mut encoder, &picture, &target, self.ui.glow, feedback.echo(), &composite, self.timer.as_ref());
         mark(&self.timer, &mut encoder, Stage::Interface);
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
 

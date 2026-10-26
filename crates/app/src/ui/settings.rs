@@ -38,6 +38,7 @@ pub struct Settings {
     pub render_scale: f32,
     pub feedback: crate::render::feedback::FeedbackSettings,
     pub waves: crate::render::waves::WaveSettings,
+    pub composite: crate::render::composite::CompositeSettings,
 }
 
 impl Default for Settings {
@@ -71,6 +72,7 @@ impl Settings {
             render_scale: s.render_scale,
             feedback: s.feedback,
             waves: s.waves,
+            composite: s.composite,
         }
     }
 
@@ -130,6 +132,22 @@ impl Settings {
                 ..sh
             }),
             ..*w
+        };
+        let c = &self.composite;
+        s.composite = crate::render::composite::CompositeSettings {
+            segments: c.segments.clamp(2, 16),
+            symmetry_spin: clamp(c.symmetry_spin, -2.0, 2.0),
+            hue: clamp(c.hue, -180.0, 180.0),
+            hue_speed: clamp(c.hue_speed, -90.0, 90.0),
+            saturation: clamp(c.saturation, 0.0, 2.0),
+            contrast: clamp(c.contrast, 0.5, 2.0),
+            exposure: clamp(c.exposure, 0.25, 2.0),
+            palette_map: clamp(c.palette_map, 0.0, 1.0),
+            invert: clamp(c.invert, 0.0, 1.0),
+            aberration: clamp(c.aberration, 0.0, 0.05),
+            vignette: clamp(c.vignette, 0.0, 1.0),
+            grain: clamp(c.grain, 0.0, 0.3),
+            ..*c
         };
         for r in &mut s.reactions {
             r.gain = clamp(r.gain, 0.0, 3.0);

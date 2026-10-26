@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phases A to E done** (E with the analyzer plan, which did most of its audio work). Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A to E and G done** (E with the analyzer plan, which did most of its audio work; F not yet). Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -593,3 +593,44 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
     folder): looks changed 2.3 s after the first drop, 3.3 s after the breakdown (reported
     2 s late, then waiting for the bar line) and 2.5 s after the second drop, and nowhere
     else. The log's whole seconds can't show the bar line itself: the tests check that.
+- **Phase G (done):** composite and colour (`app/src/render/composite.rs`,
+  `post.wgsl`).
+  - The composite (drawn on the screen, never fed back) gained:
+    - Symmetry: mirror left-right, top-bottom or four ways, or an N-fold kaleidoscope
+      (2 to 16 mirrored wedges) that can turn. It folds where the picture is read from,
+      so the bloom and echo fold with it. A kaleidoscope reaching past the edges reads
+      the picture reflected, not its edge pixels smeared.
+    - Grading, after tone mapping (where the numbers mean what they look like): a hue turn
+      (round the grey axis) and drift, saturation, contrast (about mid-grey in a roughly
+      perceptual space), exposure.
+    - Palette mapping: the picture's brightness onto the look's palette (black, deep,
+      base, highlight), mixed in by an amount.
+    - Invert, chromatic aberration (red pushed out, blue in), vignette, film grain.
+    - Each step leaves the picture exactly as it was at its default, so looks without a
+      composite are unchanged (the existing composite test still passes).
+  - Settings: a Composite group in the View tab (saved), a `[composite]` section in look
+    files (checked for unknown keys, written by Save as), and equation outputs named as
+    the settings (`hue`, `vignette`...). The kaleidoscope's turn and the hue's drift add
+    up per frame, and start afresh with each look: the first in-app check showed a
+    look's red palette gone green, from the previous look's drift carried over.
+  - Changed from §5.3: the Flash and Hue reactions stay on the fluid's palette. They
+    colour the fluid itself, which the feedback then carries, and moving them would
+    change every look; the composite has its own hue and exposure for equations.
+    Changed from §4.2: no raw WGSL in `[composite]` yet (decision 4 placed it late).
+  - Looks:
+    - Inferno is a turning six-wedge kaleidoscope of its spirals.
+    - Mercury rain is silver film (low saturation, contrast, vignette, grain).
+    - Lava lamp is brighter (exposure 2, partly mapped onto its palette) with a vignette
+      and fringes: it was dim.
+    - Ink storm drifts in hue.
+    - Smoke dance is mirrored four ways and partly palette-mapped.
+  - Tests:
+    - GPU: off leaves colours unchanged. The mirror puts a dot at its mirror position.
+      The kaleidoscope repeats every 60° and mirrors within a wedge. Saturation 0 is
+      grey, a 120° hue turn takes red to green, invert takes 0.2 to 0.8. The vignette
+      darkens corners, not the centre. The palette map takes black to black and white
+      to the highlight.
+    - Equations drive the composite, in range. Every built-in survives the round trip
+      with its composite.
+  - Checked in the app, full screen, with the long test beat: the five looks above
+    (Inferno's mandala in fire colours, Mercury's silver, Lava lamp's red blobs).

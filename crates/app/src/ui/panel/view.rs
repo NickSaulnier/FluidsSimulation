@@ -2,6 +2,7 @@
 //! field overlay.
 
 use crate::render::Palette;
+use crate::render::composite::{CompositeSettings, Symmetry};
 use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
 use crate::render::waves::{WaveMode, WaveSettings};
 use crate::render::palette::PALETTES;
@@ -44,6 +45,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     widgets::group(ui, "Picture", |ui| picture(ui, f.state));
     widgets::group(ui, "Feedback", |ui| feedback(ui, &mut f.state.feedback));
     widgets::group(ui, "Waves", |ui| waves(ui, &mut f.state.waves));
+    widgets::group(ui, "Composite", |ui| composite(ui, &mut f.state.composite));
     if !in_3d {
         widgets::group(ui, "Overlay", |ui| overlay(ui, f));
     }
@@ -88,6 +90,41 @@ fn feedback(ui: &mut egui::Ui, s: &mut FeedbackSettings) {
                 }
             });
         });
+    }
+}
+
+/// The picture's last touches, never fed back: symmetry, colour grading, lens.
+fn composite(ui: &mut egui::Ui, s: &mut CompositeSettings) {
+    let slider = |ui: &mut egui::Ui, label: &str, help: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>| {
+        row(ui, label, help, |ui| {
+            ui.add(egui::Slider::new(value, range));
+        });
+    };
+    row(ui, "Symmetry", "Mirror the picture, or fold it into a kaleidoscope round the centre.", |ui| {
+        egui::ComboBox::from_id_salt("symmetry").selected_text(s.symmetry.label()).width(150.0).show_ui(ui, |ui| {
+            for symmetry in Symmetry::ALL {
+                ui.selectable_value(&mut s.symmetry, symmetry, symmetry.label());
+            }
+        });
+    });
+    if s.symmetry == Symmetry::Kaleidoscope {
+        row(ui, "Wedges", "How many mirrored wedges round the centre.", |ui| {
+            ui.add(egui::Slider::new(&mut s.segments, 2..=16));
+        });
+        slider(ui, "Kaleidoscope turn", "Radians per second.", &mut s.symmetry_spin, -2.0..=2.0);
+    }
+    slider(ui, "Hue", "Turn every colour round the colour wheel, degrees.", &mut s.hue, -180.0..=180.0);
+    slider(ui, "Hue drift", "Keep turning the colours, degrees per second.", &mut s.hue_speed, -90.0..=90.0);
+    slider(ui, "Saturation", "0 grey, 1 as is, above 1 more vivid.", &mut s.saturation, 0.0..=2.0);
+    slider(ui, "Contrast", "1 as is.", &mut s.contrast, 0.5..=2.0);
+    slider(ui, "Exposure", "Brighter or darker, as a multiple.", &mut s.exposure, 0.25..=2.0);
+    slider(ui, "Palette map", "Recolour the picture by its brightness with the fluid's colours (dark to deep, base, highlight).", &mut s.palette_map, 0.0..=1.0);
+    slider(ui, "Invert", "", &mut s.invert, 0.0..=1.0);
+    slider(ui, "Fringes", "Chromatic aberration: colour fringes toward the edges.", &mut s.aberration, 0.0..=0.05);
+    slider(ui, "Vignette", "Darker corners.", &mut s.vignette, 0.0..=1.0);
+    slider(ui, "Grain", "Film grain.", &mut s.grain, 0.0..=0.3);
+    if *s != CompositeSettings::OFF && ui.button("Reset").on_hover_text("Everything as it was: no symmetry, no grading, no lens").clicked() {
+        *s = CompositeSettings::OFF;
     }
 }
 

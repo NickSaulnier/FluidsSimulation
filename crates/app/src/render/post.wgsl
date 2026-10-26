@@ -2,7 +2,8 @@
 //
 // Bloom: the scene, soft-thresholded, is downsampled through a chain of half-size
 // textures (13-tap filter), then blurred back up level by level (3×3 tent), each level
-// added onto the one above. The composite adds it to the scene and tone-maps.
+// added onto the one above. The composite folds the picture into its symmetry, adds the
+// echo and the bloom, tone-maps, then grades the colours (see composite.rs).
 
 struct Post {
     // Brightness (linear) where glow starts, and the width of the soft start.
@@ -14,8 +15,30 @@ struct Post {
     // (a sign per axis).
     echo: f32,
     echo_zoom: f32,
-    _pad: f32,
+    aspect: f32,
     echo_flip: vec2f,
+    // The composite's look (see composite.rs): symmetry (`Symmetry::index`), the
+    // kaleidoscope's wedges and turn (radians), the hue's turn (radians), the grading,
+    // the lens, the grain's seed, and the palette (linear) for mapping onto.
+    symmetry: u32,
+    segments: f32,
+    turn: f32,
+    hue: f32,
+    saturation: f32,
+    contrast: f32,
+    exposure: f32,
+    palette_map: f32,
+    invert: f32,
+    aberration: f32,
+    vignette: f32,
+    grain: f32,
+    seed: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+    deep: vec4f,
+    base: vec4f,
+    highlight: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -104,16 +127,121 @@ fn tone(x: f32) -> f32 {
     return TONE_KNEE + over / (1.0 + over / room);
 }
 
-/// The picture (with its echo) plus bloom, tone-mapped per channel (bright fire goes
-/// white, as it should).
+/// `uv` reflected back into the picture (beyond an edge, the picture mirrored), so a
+/// fold or a kaleidoscope reaching past the edges sees more picture, not smeared edges.
+fn reflect_in(uv: vec2f) -> vec2f {
+    let m = uv - 2.0 * floor(uv * 0.5);
+    return 1.0 - abs(1.0 - m);
+}
+
+/// Where this pixel shows the picture from, under the symmetry.
+fn fold(uv: vec2f) -> vec2f {
+    switch post.symmetry {
+        case 1u: {
+            return vec2f(0.5 - abs(uv.x - 0.5), uv.y);
+        }
+        case 2u: {
+            return vec2f(uv.x, 0.5 - abs(uv.y - 0.5));
+        }
+        case 3u: {
+            return 0.5 - abs(uv - 0.5);
+        }
+        case 4u: {
+            // Each wedge round the centre shows the same half-wedge, mirrored, turning.
+            let square = vec2f(post.aspect, 1.0);
+            let p = (uv - 0.5) * square;
+            let wedge = 6.2831853 / max(post.segments, 1.0);
+            var a = atan2(p.y, p.x) - post.turn;
+            a = a - wedge * floor(a / wedge);
+            a = min(a, wedge - a) + post.turn;
+            let q = length(p) * vec2f(cos(a), sin(a));
+            return reflect_in(q / square + 0.5);
+        }
+        default: {
+            return uv;
+        }
+    }
+}
+
+fn luma(c: vec3f) -> f32 {
+    return dot(c, vec3f(0.2126, 0.7152, 0.0722));
+}
+
+/// `c` turned `angle` radians round the grey axis (Rodrigues' rotation).
+fn hue_turn(c: vec3f, angle: f32) -> vec3f {
+    let k = vec3f(0.57735027);
+    let s = sin(angle);
+    let co = cos(angle);
+    return c * co + cross(k, c) * s + k * dot(k, c) * (1.0 - co);
+}
+
+/// Brightness (0..1) onto the palette: black, deep, base, highlight.
+fn gradient(l: f32) -> vec3f {
+    let t = clamp(l, 0.0, 1.0) * 3.0;
+    if t < 1.0 {
+        return mix(vec3f(0.0), post.deep.rgb, t);
+    }
+    if t < 2.0 {
+        return mix(post.deep.rgb, post.base.rgb, t - 1.0);
+    }
+    return mix(post.base.rgb, post.highlight.rgb, t - 2.0);
+}
+
+/// A pseudo-random number in 0..1 for a pixel and a seed.
+fn hash(p: vec2f, seed: f32) -> f32 {
+    let q = fract(vec3f(p.x, p.y, seed) * vec3f(0.1031, 0.1030, 0.0973));
+    let r = q + dot(q, q.yzx + 33.33);
+    return fract((r.x + r.y) * r.z);
+}
+
+/// The picture folded into its symmetry, with chromatic aberration and its echo, plus
+/// bloom, tone-mapped per channel (bright fire goes white, as it should), then graded.
 @fragment
 fn fs_composite(in: VOut) -> @location(0) vec4f {
-    var scene = textureSampleLevel(src, linear_clamp, in.uv, 0.0).rgb;
+    let uv = fold(in.uv);
+    var scene: vec3f;
+    if post.aberration > 0.0 {
+        // Red pushed out from the centre, blue pulled in.
+        let shift = (uv - 0.5) * post.aberration;
+        scene = vec3f(
+            textureSampleLevel(src, linear_clamp, uv + shift, 0.0).r,
+            textureSampleLevel(src, linear_clamp, uv, 0.0).g,
+            textureSampleLevel(src, linear_clamp, uv - shift, 0.0).b,
+        );
+    } else {
+        scene = textureSampleLevel(src, linear_clamp, uv, 0.0).rgb;
+    }
     if post.echo > 0.0 {
-        let echo_uv = 0.5 + (in.uv - 0.5) * post.echo_flip / post.echo_zoom;
+        let echo_uv = 0.5 + (uv - 0.5) * post.echo_flip / post.echo_zoom;
         scene = mix(scene, textureSampleLevel(src, linear_clamp, echo_uv, 0.0).rgb, post.echo);
     }
-    let glow = textureSampleLevel(bloom, linear_clamp, in.uv, 0.0).rgb;
-    let c = max(scene + post.strength * glow, vec3f(0.0));
-    return vec4f(tone(c.r), tone(c.g), tone(c.b), 1.0);
+    let glow = textureSampleLevel(bloom, linear_clamp, uv, 0.0).rgb;
+    let lit = max(scene + post.strength * glow, vec3f(0.0));
+    var c = vec3f(tone(lit.r), tone(lit.g), tone(lit.b));
+
+    // Grading, on the tone-mapped colours (each step leaves them alone at its default).
+    if post.hue != 0.0 {
+        c = max(hue_turn(c, post.hue), vec3f(0.0));
+    }
+    c = max(mix(vec3f(luma(c)), c, post.saturation), vec3f(0.0));
+    if post.contrast != 1.0 {
+        // About mid-grey as it looks (contrast in a roughly perceptual space).
+        c = sqrt(c);
+        c = max((c - 0.5) * post.contrast + 0.5, vec3f(0.0));
+        c = c * c;
+    }
+    c = c * post.exposure;
+    if post.palette_map > 0.0 {
+        c = mix(c, gradient(sqrt(luma(c))), post.palette_map);
+    }
+    c = mix(c, 1.0 - min(c, vec3f(1.0)), post.invert);
+    if post.vignette > 0.0 {
+        let from_centre = (in.uv - 0.5) * vec2f(post.aspect, 1.0);
+        let d = length(from_centre) / length(vec2f(post.aspect, 1.0) * 0.5);
+        c = c * (1.0 - post.vignette * smoothstep(0.35, 1.0, d));
+    }
+    if post.grain > 0.0 {
+        c = c + post.grain * (hash(in.pos.xy, post.seed) - 0.5);
+    }
+    return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);
 }

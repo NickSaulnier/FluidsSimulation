@@ -5,6 +5,7 @@
 //! scenes look as they did when they drew straight to the screen; only highlights above
 //! it (fire, glows, bloom) roll off toward white (Reinhard-style) instead of clipping.
 
+use super::composite::{self, Composite};
 use super::timer::{GpuTimer, Stage};
 use bytemuck::{Pod, Zeroable};
 
@@ -20,7 +21,7 @@ const MIN_LEVEL: u32 = 8;
 const AUTO_FULL_PIXELS: u32 = 2560 * 1440;
 const AUTO_SCALE: f32 = 0.75;
 
-/// Must match `Post` in post.wgsl (32 bytes).
+/// Must match `Post` in post.wgsl (144 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -29,8 +30,57 @@ struct Uniforms {
     strength: f32,
     echo: f32,
     echo_zoom: f32,
-    _pad: f32,
+    aspect: f32,
     echo_flip: [f32; 2],
+    symmetry: u32,
+    segments: f32,
+    turn: f32,
+    hue: f32,
+    saturation: f32,
+    contrast: f32,
+    exposure: f32,
+    palette_map: f32,
+    invert: f32,
+    aberration: f32,
+    vignette: f32,
+    grain: f32,
+    seed: f32,
+    _pad: [f32; 3],
+    deep: [f32; 4],
+    base: [f32; 4],
+    highlight: [f32; 4],
+}
+
+impl Uniforms {
+    fn new(strength: f32, echo: Echo, aspect: f32, c: &Composite) -> Self {
+        let s = &c.settings;
+        Self {
+            threshold: THRESHOLD,
+            knee: KNEE,
+            strength,
+            echo: echo.amount,
+            echo_zoom: echo.zoom,
+            aspect,
+            echo_flip: echo.flip,
+            symmetry: s.symmetry.index(),
+            segments: s.segments.clamp(2, 16) as f32,
+            turn: c.clock.turn,
+            hue: (s.hue + c.clock.hue_drift).to_radians(),
+            saturation: s.saturation.max(0.0),
+            contrast: s.contrast.max(0.0),
+            exposure: s.exposure.max(0.0),
+            palette_map: s.palette_map.clamp(0.0, 1.0),
+            invert: s.invert.clamp(0.0, 1.0),
+            aberration: s.aberration.clamp(0.0, 0.1),
+            vignette: s.vignette.clamp(0.0, 1.0),
+            grain: s.grain.clamp(0.0, 1.0),
+            seed: c.clock.seed,
+            _pad: [0.0; 3],
+            deep: composite::linear(c.palette.deep),
+            base: composite::linear(c.palette.base),
+            highlight: composite::linear(c.palette.highlight),
+        }
+    }
 }
 
 /// The echo the composite draws: how much (0 for none), its zoom, its flip as signs.
@@ -215,8 +265,9 @@ impl PostProcess {
     }
 
     /// Record the bloom of `source` (skipped at `strength` 0) and the composite of it,
-    /// with `echo`, into `output`. `source` is the scene texture (after drawing into
-    /// `scene_target`), or the feedback's latest frame, at the same size.
+    /// with `echo` and `composite`'s look, into `output`. `source` is the scene texture
+    /// (after drawing into `scene_target`), or the feedback's latest frame, at the same
+    /// size.
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
@@ -227,10 +278,12 @@ impl PostProcess {
         output: &wgpu::TextureView,
         strength: f32,
         echo: Echo,
+        composite: &Composite,
         timer: Option<&GpuTimer>,
     ) {
         let t = self.targets.as_ref().expect("scene_target first");
-        let uniforms = Uniforms { threshold: THRESHOLD, knee: KNEE, strength, echo: echo.amount, echo_zoom: echo.zoom, _pad: 0.0, echo_flip: echo.flip };
+        let aspect = t.size[0] as f32 / t.size[1].max(1) as f32;
+        let uniforms = Uniforms::new(strength, echo, aspect, composite);
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         if strength > 0.0 {
             let prefilter = self.group(device, source, &self.blank);
@@ -294,6 +347,81 @@ pub(crate) mod tests {
         half_float::read(device, queue, texture, size).iter().map(|p| p[0]).collect()
     }
 
+    /// The composite's look on a headless GPU: off it leaves colours alone; the mirror
+    /// and the kaleidoscope fold the picture; the grading, palette map, inversion and
+    /// vignette do what they say.
+    #[test]
+    fn the_composite_folds_and_grades() {
+        use crate::render::composite::{CompositeClock, CompositeSettings, Symmetry};
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let mut post = PostProcess::new(device, SCENE_FORMAT);
+        let size = [64u32, 64];
+        let scene = post.scene_target(device, size);
+        let palette = crate::render::palette::PALETTES[0].1;
+        let render = |pixels: &dyn Fn(u32, u32) -> [f32; 3], settings: CompositeSettings| -> Vec<[f32; 4]> {
+            let data: Vec<half_float::F16x4> = (0..size[1]).flat_map(|y| (0..size[0]).map(move |x| (x, y))).map(|(x, y)| half_float::F16x4::rgb(pixels(x, y))).collect();
+            queue.write_texture(
+                scene.texture().as_image_copy(),
+                bytemuck::cast_slice(&data),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: None },
+                wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+            );
+            let output = texture_2d(device, "output", size);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let composite = Composite { settings, clock: CompositeClock::default(), palette };
+            post.run(device, queue, &mut encoder, &scene, &output, 0.0, Echo::NONE, &composite, None);
+            queue.submit([encoder.finish()]);
+            half_float::read(device, queue, output.texture(), size)
+        };
+        let at = |img: &[[f32; 4]], x: u32, y: u32| img[(y * size[0] + x) as usize];
+        let close = |a: f32, b: f32, tolerance: f32| (a - b).abs() <= tolerance;
+        let off = CompositeSettings::OFF;
+
+        let colour = render(&|_, _| [0.6, 0.2, 0.1], off);
+        assert!(colour.iter().all(|p| close(p[0], 0.6, 2e-3) && close(p[1], 0.2, 2e-3) && close(p[2], 0.1, 2e-3)), "off changed {:?}", colour[0]);
+
+        let dot = |x, y| if (x, y) == (10, 20) { [0.8; 3] } else { [0.1; 3] };
+        let mirrored = render(&dot, CompositeSettings { symmetry: Symmetry::MirrorX, ..off });
+        assert!(close(at(&mirrored, 10, 20)[0], 0.8, 0.01) && close(at(&mirrored, 53, 20)[0], 0.8, 0.01), "no mirror: {:?} {:?}", at(&mirrored, 10, 20), at(&mirrored, 53, 20));
+
+        // An image that changes with the angle round the centre: the kaleidoscope repeats
+        // it every 60°, and mirrors it within each wedge.
+        let swirl = |x: u32, y: u32| {
+            let (dx, dy) = (x as f32 + 0.5 - 32.0, y as f32 + 0.5 - 32.0);
+            [0.1 + 0.4 * (0.5 + 0.5 * (dy.atan2(dx) * 1.3).sin()), 0.2, 0.2]
+        };
+        let kaleido = render(&swirl, CompositeSettings { symmetry: Symmetry::Kaleidoscope, segments: 6, ..off });
+        let polar = |deg: f32| {
+            let a = deg.to_radians();
+            at(&kaleido, (32.0 + 20.0 * a.cos()).round() as u32, (32.0 + 20.0 * a.sin()).round() as u32)[0]
+        };
+        for deg in [10.0, 25.0, 40.0] {
+            for k in 1..6 {
+                assert!(close(polar(deg), polar(deg + 60.0 * k as f32), 0.03), "{deg}° and {}° differ: {} {}", deg + 60.0 * k as f32, polar(deg), polar(deg + 60.0 * k as f32));
+            }
+            assert!(close(polar(deg), polar(60.0 - deg), 0.03), "not mirrored within the wedge at {deg}°");
+        }
+
+        let grey = render(&|_, _| [0.6, 0.2, 0.1], CompositeSettings { saturation: 0.0, ..off });
+        let g = grey[0];
+        assert!(close(g[0], g[1], 2e-3) && close(g[1], g[2], 2e-3), "saturation 0 isn't grey: {g:?}");
+        let turned = render(&|_, _| [0.5, 0.0, 0.0], CompositeSettings { hue: 120.0, ..off })[0];
+        assert!(close(turned[0], 0.0, 0.01) && close(turned[1], 0.5, 0.01) && close(turned[2], 0.0, 0.01), "red turned 120° isn't green: {turned:?}");
+        let inverted = render(&|_, _| [0.2; 3], CompositeSettings { invert: 1.0, ..off })[0];
+        assert!(close(inverted[0], 0.8, 2e-3), "0.2 inverted: {inverted:?}");
+        let vignetted = render(&|_, _| [0.5; 3], CompositeSettings { vignette: 1.0, ..off });
+        assert!(close(at(&vignetted, 32, 32)[0], 0.5, 2e-3) && at(&vignetted, 0, 0)[0] < 0.2, "vignette: centre {:?}, corner {:?}", at(&vignetted, 32, 32), at(&vignetted, 0, 0));
+        // (A bright white: 1.0 itself tone-maps to 0.925, a little short of the top.)
+        let ramp = render(&|x, _| [if x < 32 { 0.0 } else { 50.0 }; 3], CompositeSettings { palette_map: 1.0, ..off });
+        let highlight = crate::render::composite::linear(palette.highlight);
+        let white = at(&ramp, 60, 10);
+        assert!(at(&ramp, 4, 10)[0] < 1e-3 && (0..3).all(|c| close(white[c], highlight[c], 0.02)), "palette map: black {:?}, white {white:?} (highlight {highlight:?})", at(&ramp, 4, 10));
+    }
+
     #[test]
     fn the_automatic_scale_draws_4k_smaller() {
         assert_eq!(render_scale(0.0, [1920, 1080]), 1.0);
@@ -326,7 +454,7 @@ pub(crate) mod tests {
             );
             let output = texture_2d(device, "output", size);
             let mut encoder = device.create_command_encoder(&Default::default());
-            post.run(device, queue, &mut encoder, &scene, &output, strength, Echo::NONE, None);
+            post.run(device, queue, &mut encoder, &scene, &output, strength, Echo::NONE, &Composite::NONE, None);
             queue.submit([encoder.finish()]);
             half_float::read(device, queue, output.texture(), size)
         };
@@ -352,8 +480,11 @@ pub(crate) mod tests {
 
         impl F16x4 {
             pub fn grey(v: f32) -> Self {
-                let h = to_f16(v);
-                Self([h, h, h, to_f16(1.0)])
+                Self::rgb([v; 3])
+            }
+
+            pub fn rgb(c: [f32; 3]) -> Self {
+                Self([to_f16(c[0]), to_f16(c[1]), to_f16(c[2]), to_f16(1.0)])
             }
         }
 

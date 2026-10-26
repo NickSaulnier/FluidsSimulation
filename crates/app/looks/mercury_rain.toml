@@ -24,3 +24,9 @@ echo_flip = "horizontal"
 mode = "xy"
 scale = 1.2
 brightness = 1.4
+
+[composite]
+saturation = 0.35
+contrast = 1.25
+vignette = 0.5
+grain = 0.05
