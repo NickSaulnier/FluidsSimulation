@@ -6,7 +6,12 @@ all. The files here are the built-in looks, compiled into the app.
 
 Your own looks go in the `looks` folder beside the settings file (on Windows,
 `%APPDATA%\fluid-toy\looks`). The Music tab's Looks group opens that folder, and can copy
-the built-ins there to start from. The app checks the folder every second: a changed
+the built-ins there to start from. Its "Save as" row saves the settings as they stand as
+a look there: the fluid (solver, the scene as last loaded, every parameter at its own
+value, not as the music moves it), the colours, feedback, waves and reactions, and the
+equations of the look on screen. Saving under one of your looks' names writes over it;
+under a built-in's name, it becomes your own version in its place. The app checks the
+folder every second: a changed
 file is read again, and if it's the look on screen, the change shows at once. Only a
 change to the fluid (solver, scene, parameters) restarts the scene. A look named like a
 built-in replaces it. A file with a mistake is skipped, and the Music tab lists it with
@@ -57,9 +62,12 @@ rot = rot * (0.5 + rad)
 
 ## `[sim]`
 
-- `solver`, `scene`, `palette`: names as the app shows them. A 3D solver (`Smoke (3D
-  GPU)`, `Fire (3D GPU)`) needs a 3D scene.
+- `solver`, `scene`: names as the app shows them. A 3D solver (`Smoke (3D GPU)`,
+  `Fire (3D GPU)`) needs a 3D scene.
+- `palette`: a palette's name (`Ocean`, `Lava`, `Slime`, `Ink`, `Mercury`), or its
+  colours: `{ deep = [r, g, b], base = [r, g, b], highlight = [r, g, b] }` (0 to 255).
 - `params`: solver parameters by key: the keys the Simulate tab shows for the solver.
+  A toggle is on unless 0.
 - `reactions`: each one `trigger`, `effect`, `gain` (1 if left out) and, for
   `effect = "param"`, the parameter's key. `enabled = false` keeps one off.
   - Triggers: `kick`, `snare`, `hat`, `beat` (every beat of a steady beat, even a quiet

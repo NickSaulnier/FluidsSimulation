@@ -122,6 +122,27 @@ fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
                 }
             });
         }
+        if library.folder.is_some() {
+            let save_name = &mut f.state.save_name;
+            let mut save = None;
+            row(ui, "Save as", "Save the settings as they stand as a look in your folder: the fluid, its parameters, colours, feedback, waves and reactions, with the current look's equations", |ui| {
+                let field = ui.add(egui::TextEdit::singleline(save_name).hint_text("a name").desired_width(118.0));
+                let name = save_name.trim();
+                let replaces = library.looks.iter().find(|l| l.name == name).map(|l| match l.source {
+                    crate::looks::Source::File(_) => format!("Save over your look \"{name}\""),
+                    crate::looks::Source::Builtin(_) => format!("Save as your own \"{name}\", in place of the built-in one"),
+                });
+                let tip = replaces.unwrap_or_else(|| "Save as a new look".into());
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let button = ui.add_enabled(!name.is_empty(), egui::Button::new(icon::FLOPPY_DISK).min_size(BUTTON)).on_hover_text(tip);
+                if (button.clicked() || enter) && !name.is_empty() {
+                    save = Some(name.to_string());
+                }
+            });
+            if save.is_some() {
+                f.state.save_look_request = save;
+            }
+        }
         for error in &library.errors {
             ui.add(egui::Label::new(RichText::new(error.to_string()).color(theme::ERROR).small()).wrap());
         }

@@ -257,7 +257,7 @@ mod tests {
         let p = compile(&joined, Stage::Frame).unwrap();
         let n = compile(init, Stage::Frame).unwrap().stmts.len();
         let (a, b) = p.stmts.split_at(n);
-        Code { init: Some(Program { stmts: a.to_vec(), ..p.clone() }), frame: Some(Program { stmts: b.to_vec(), ..p.clone() }), pixel: String::new() }
+        Code { init: Some(Program { stmts: a.to_vec(), ..p.clone() }), frame: Some(Program { stmts: b.to_vec(), ..p.clone() }), ..Code::default() }
     }
 
     /// Without equations a frame is the settings, the motion among the shared values.

@@ -521,6 +521,18 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
   - Seen in passing, and the same before this phase: Lava lamp starts dim, and its
     hexagon (a thin outline in the palette's dark red) hardly shows. For tuning in
     phase I.
+- **Added after phase D:** saving the settings as a look (the Music tab's "Save as").
+  - What's saved: the fluid (solver, the scene as last loaded, every parameter at its
+    base value even while a reaction moves it, toggles as 0 or 1), the colours, feedback,
+    waves and reactions, and the equations and energy of the look on screen.
+  - A palette can be its colours in the file, so one edited in the View tab saves too.
+  - Files leave out settings at their defaults. A test writes every built-in out and reads
+    it back unchanged.
+  - Saving over one of the user's looks writes its file; otherwise a new file is named
+    after the look, never over another's. The saved look becomes the one on screen.
+  - Not checked in the app: posted clicks and typing don't reach egui's text field, so
+    gathering the app's state for a save is checked only by reading the code. The
+    library's saving and loading are tested.
 - **Phase E (done):** audio upgrades.
   - Already done by the analyzer plan: MilkDrop's `bass`, `mid`, `treb` and `_att`
     (its phase B), and tempo, beats, bars, the latency offset and the calibration

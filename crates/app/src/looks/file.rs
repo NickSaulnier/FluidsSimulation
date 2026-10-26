@@ -3,11 +3,11 @@
 //! quietly ignored is worse than one that's reported. The format is in
 //! `looks/README.md`.
 
-use super::{Code, Energy, Look, Source};
+use super::{Code, CodeSource, Energy, Look, Source};
 use crate::audio::reactions::{Effect, Reaction, Trigger};
 use crate::expr::{self, Program, Stage};
 use crate::render::feedback::{self, FeedbackSettings};
-use crate::render::palette::PALETTES;
+use crate::render::palette::{PALETTES, Palette};
 use crate::render::waves::{ShapeSettings, WaveSettings};
 use serde::Deserialize;
 use std::fmt;
@@ -69,7 +69,8 @@ enum EnergyDoc {
 struct Sim {
     solver: Spanned<String>,
     scene: Spanned<String>,
-    palette: Spanned<String>,
+    /// A palette's name, or its colours (`{ deep = [r, g, b], base = ..., highlight = ... }`).
+    palette: Spanned<toml::Value>,
     #[serde(default)]
     liquid: bool,
     #[serde(default)]
@@ -163,11 +164,20 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         let kind = if three_d { "3D " } else { "" };
         return Err(fail(Some(sim.scene.span().start), format!("no {kind}scene \"{scene}\" (there are: {})", scenes.join(", "))));
     }
-    let palette = sim.palette.get_ref().clone();
-    if !PALETTES.iter().any(|(n, _)| *n == palette) {
-        let names: Vec<&str> = PALETTES.iter().map(|(n, _)| *n).collect();
-        return Err(fail(Some(sim.palette.span().start), format!("no palette \"{palette}\" (there are: {})", names.join(", "))));
-    }
+    let at = Some(sim.palette.span().start);
+    let palette = match sim.palette.get_ref() {
+        toml::Value::String(name) => match PALETTES.iter().find(|(n, _)| n == name) {
+            Some((_, p)) => *p,
+            None => {
+                let names: Vec<&str> = PALETTES.iter().map(|(n, _)| *n).collect();
+                return Err(fail(at, format!("no palette \"{name}\" (there are: {}, or give its colours)", names.join(", "))));
+            }
+        },
+        colours => colours
+            .clone()
+            .try_into::<Palette>()
+            .map_err(|e| fail(at, format!("a palette is a name or {{ deep = [r, g, b], base = [r, g, b], highlight = [r, g, b] }}: {}", e.message())))?,
+    };
     let mut params = Vec::new();
     for (key, value) in &sim.params {
         let number = value.as_float().map(|f| f as f32).or_else(|| value.as_integer().map(|i| i as f32));
@@ -240,6 +250,104 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
     })
 }
 
+/// `look` as a file, in the form `parse` reads: settings at their defaults are left out.
+pub fn write(look: &Look) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let text = |s: &str| toml::Value::String(s.to_string()).to_string();
+    let value = |v: toml::Value| tidy(v).to_string();
+    let _ = writeln!(out, "[meta]\nname = {}", text(&look.name));
+    if !look.author.is_empty() {
+        let _ = writeln!(out, "author = {}", text(&look.author));
+    }
+    if !look.tags.is_empty() {
+        let _ = writeln!(out, "tags = {}", value(toml::Value::Array(look.tags.iter().map(|t| toml::Value::String(t.clone())).collect())));
+    }
+    let energy = match look.energy {
+        Energy::Calm => "calm",
+        Energy::Energetic => "energetic",
+        Energy::Any => "any",
+    };
+    let _ = writeln!(out, "energy = {}\n\n[sim]\nsolver = {}\nscene = {}", text(energy), text(&look.solver), text(&look.scene));
+    let palette = match look.palette.name() {
+        Some(name) => text(name),
+        None => value(toml::Value::try_from(look.palette).expect("serialisable")),
+    };
+    let _ = writeln!(out, "palette = {palette}");
+    if look.liquid {
+        let _ = writeln!(out, "liquid = true");
+    }
+    if look.orbit != 0.0 {
+        let _ = writeln!(out, "orbit = {}", value(toml::Value::Float(f64::from(look.orbit))));
+    }
+    if !look.params.is_empty() {
+        let params: toml::Table = look.params.iter().map(|(k, v)| (k.clone(), toml::Value::Float(f64::from(*v)))).collect();
+        let _ = writeln!(out, "params = {}", value(toml::Value::Table(params)));
+    }
+    if !look.reactions.is_empty() {
+        let _ = writeln!(out, "reactions = [");
+        for r in &look.reactions {
+            let (trigger, effect) = (simple(&format!("{:?}", r.trigger)), simple(&format!("{:?}", r.effect)));
+            let mut line = format!("    {{ trigger = {}, effect = {}, gain = {}", text(&trigger), text(&effect), value(toml::Value::Float(f64::from(r.gain))));
+            if let Some(key) = &r.param {
+                let _ = write!(line, ", param = {}", text(key));
+            }
+            if !r.enabled {
+                line += ", enabled = false";
+            }
+            let _ = writeln!(out, "{line} }},");
+        }
+        let _ = writeln!(out, "]");
+    }
+    let mut section = |header: &str, keys: Vec<(String, toml::Value)>, always: bool| {
+        if always || !keys.is_empty() {
+            let _ = writeln!(out, "\n{header}");
+            for (k, v) in keys {
+                let _ = writeln!(out, "{k} = {}", value(v));
+            }
+        }
+    };
+    let fb = look.feedback;
+    let mut feedback = changed(fb, FeedbackSettings::OFF, &["enabled"]);
+    if !fb.enabled && !feedback.is_empty() {
+        feedback.insert(0, ("enabled".into(), toml::Value::Boolean(false)));
+    }
+    section("[feedback]", feedback, fb.enabled);
+    section("[waves]", changed(look.waves, WaveSettings::OFF, &["shapes"]), false);
+    for shape in look.waves.shapes.iter().filter(|s| s.enabled) {
+        section("[[shape]]", changed(*shape, ShapeSettings::OFF, &["enabled"]), true);
+    }
+    let code = &look.code.source;
+    if code.init.is_some() || code.frame.is_some() || code.pixel.is_some() {
+        let _ = writeln!(out, "\n[code]");
+        for (key, src) in [("init", &code.init), ("frame", &code.frame), ("pixel", &code.pixel)] {
+            let Some(src) = src else { continue };
+            let src = if src.ends_with('\n') { src.clone() } else { format!("{src}\n") };
+            // A literal string keeps the code exactly as written, unless it holds the
+            // closing quotes itself.
+            let quoted = if src.contains("'''") { text(&src) } else { format!("'''\n{src}'''") };
+            let _ = writeln!(out, "{key} = {quoted}");
+        }
+    }
+    out
+}
+
+/// The settings that differ from `defaults` (but `skip`), in order.
+fn changed(settings: impl serde::Serialize, defaults: impl serde::Serialize, skip: &[&str]) -> Vec<(String, toml::Value)> {
+    let (now, base) = (keys(settings), keys(defaults));
+    now.into_iter().filter(|(k, v)| !skip.contains(&k.as_str()) && base.get(k) != Some(v)).collect()
+}
+
+/// Numbers as their shortest single-precision form (0.3, not 0.30000001192092896).
+fn tidy(v: toml::Value) -> toml::Value {
+    match v {
+        toml::Value::Float(f) => toml::Value::Float(format!("{}", f as f32).parse().unwrap_or(f)),
+        toml::Value::Array(a) => toml::Value::Array(a.into_iter().map(tidy).collect()),
+        toml::Value::Table(t) => toml::Value::Table(t.into_iter().map(|(k, v)| (k, tidy(v))).collect()),
+        other => other,
+    }
+}
+
 /// Where a string's contents start in the file, from its span (which includes the
 /// quotes; a multi-line string's first newline isn't part of it).
 fn content_start(text: &str, span: std::ops::Range<usize>) -> usize {
@@ -262,7 +370,8 @@ fn content_start(text: &str, span: std::ops::Range<usize>) -> usize {
 /// escapes) and messages.
 fn compile_code(text: &str, doc: &CodeDoc) -> Result<Code, (Option<usize>, String)> {
     let at = |s: &Spanned<String>, offset: usize| content_start(text, s.span()) + offset;
-    let mut code = Code::default();
+    let written = |s: &Option<Spanned<String>>| s.as_ref().map(|s| s.get_ref().trim_end().to_string()).filter(|s| !s.trim().is_empty());
+    let mut code = Code { source: CodeSource { init: written(&doc.init), frame: written(&doc.frame), pixel: written(&doc.pixel) }, ..Code::default() };
     let init = doc.init.as_ref().map_or("", |s| s.get_ref().as_str());
     let frame = doc.frame.as_ref().map_or("", |s| s.get_ref().as_str());
     if !init.trim().is_empty() || !frame.trim().is_empty() {
@@ -345,6 +454,26 @@ mod tests {
         assert!(e.message.contains("bass"), "{e}");
         assert_eq!(error("[code]\ninit = \"a = 1\"\nframe = \"zoom = b\"\n").line, Some(9));
         assert!(error("[code]\npixel = \"trail = 0.5\"\n").message.contains("per frame"));
+    }
+
+    /// Every built-in written out and read back is the same look; so is a custom palette,
+    /// a toggle parameter, a disabled reaction and feedback kept off.
+    #[test]
+    fn looks_survive_writing_and_reading() {
+        for (name, text) in super::super::BUILTIN {
+            let look = parse(text, name, Source::Builtin(name)).unwrap();
+            let written = write(&look);
+            let back = parse(&written, name, Source::Builtin(name)).unwrap_or_else(|e| panic!("{name}: {e}\n{written}"));
+            assert_eq!(back, look, "{name} changed:\n{written}");
+        }
+        let mut look = load("[code]\nframe = \"zoom = 1.1\"\n").unwrap();
+        look.palette = Palette { deep: [1, 2, 3], base: [40, 50, 60], highlight: [200, 210, 220] };
+        look.params = vec![("buoyancy".into(), 0.3), ("liquid_mode".into(), 1.0)]; // as a table reads back: by key
+        look.reactions = vec![Reaction::new(Trigger::Beat, Effect::Hue, 0.25, false)];
+        look.feedback = FeedbackSettings { enabled: false, zoom: 1.3, ..FeedbackSettings::OFF };
+        let written = write(&look);
+        let back = parse(&written, "t", Source::Builtin("t")).unwrap();
+        assert_eq!(back, Look { source: Source::Builtin("t"), ..look }, "{written}");
     }
 
     /// `init` and `frame` share variables; `pixel` becomes shader code.

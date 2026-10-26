@@ -356,6 +356,56 @@ impl State {
         }
     }
 
+    /// Save the settings as they stand as a look named `name`: the fluid (solver, scene as
+    /// last loaded, every parameter at its own value, not as the music moves it), the
+    /// colours, feedback, waves and reactions, and the current look's equations and
+    /// energy. It becomes the look on screen.
+    fn save_look(&mut self, name: String) {
+        let current = self.ui.director.current.and_then(|i| self.ui.looks.looks.get(i)).cloned();
+        let bases = self.param_bases.1.clone();
+        let (solver, scene, params, liquid, orbit) = match &mut self.world3d {
+            Some(w) => {
+                let params = looks::current_params(w, &bases);
+                (w.solver.name().to_string(), sim3d::PRESETS[w.preset_index].name.to_string(), params, false, self.ui.orbit)
+            }
+            None => {
+                let w = &mut self.world;
+                let params = looks::current_params(w, &bases);
+                (w.solvers[w.solver_index].name.to_string(), sim::PRESETS[w.preset_index].name.to_string(), params, self.ui.liquid, 0.0)
+            }
+        };
+        let look = looks::Look {
+            name: name.clone(),
+            author: current.as_ref().map_or_else(String::new, |l| l.author.clone()),
+            tags: current.as_ref().map_or_else(Vec::new, |l| l.tags.clone()),
+            energy: current.as_ref().map_or(looks::Energy::Any, |l| l.energy),
+            solver,
+            scene,
+            palette: self.ui.palette,
+            liquid,
+            orbit,
+            feedback: self.ui.feedback,
+            waves: self.ui.waves,
+            params,
+            reactions: self.ui.reactions.clone(),
+            code: current.map(|l| l.code).unwrap_or_default(),
+            source: looks::Source::Builtin("unsaved"),
+        };
+        let before: Vec<String> = self.ui.looks.looks.iter().map(|l| l.name.clone()).collect();
+        match self.ui.looks.save(&look) {
+            Ok(path) => {
+                self.ui.director.reindex(&before, &self.ui.looks.looks);
+                if let Some(i) = self.ui.looks.looks.iter().position(|l| l.name == name) {
+                    self.ui.director.current = Some(i);
+                    self.applied_look = Some(self.ui.looks.looks[i].clone());
+                }
+                log::info!("saved look {name} to {}", path.display());
+                self.ui.show_notice(format!("saved {name} as {}", path.display()));
+            }
+            Err(e) => self.ui.show_notice(format!("can't save the look: {e}")),
+        }
+    }
+
     /// Start `look`'s equations.
     fn start_code(&mut self, look: &looks::Look) {
         self.look_runtime = looks::runtime::Runtime::new(&look.code);
@@ -528,6 +578,9 @@ impl State {
         self.apply_egui_textures(std::mem::take(&mut egui_out.textures_delta));
         if let Some(choice) = self.ui.solver_request.take() {
             self.choose_solver(choice);
+        }
+        if let Some(name) = self.ui.save_look_request.take() {
+            self.save_look(name);
         }
 
         self.sync_presentation(real_dt);

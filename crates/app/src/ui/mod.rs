@@ -112,6 +112,10 @@ pub struct UiState {
     pub director: crate::director::Director,
     /// Every look (see `looks`).
     pub looks: crate::looks::Library,
+    /// The name typed for saving the current settings as a look, and a save asked for
+    /// (the app does it: it holds the solver).
+    pub save_name: String,
+    pub save_look_request: Option<String>,
     /// A solver change for the app to make after this frame's layout.
     pub solver_request: Option<SolverChoice>,
 }
@@ -151,6 +155,8 @@ impl Default for UiState {
             notice: None,
             director: crate::director::Director::default(),
             looks: crate::looks::Library::default(),
+            save_name: String::new(),
+            save_look_request: None,
             solver_request: None,
         }
     }
