@@ -1,0 +1,36 @@
+[meta]
+name = "Vortex drain"
+tags = ["no fluid", "spiral", "circle"]
+energy = "energetic"
+
+[sim]
+palette = "Slime"
+reactions = [
+    { trigger = "kick", effect = "flash", gain = 0.6 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.85
+zoom = 0.75
+rotation = 1.0
+
+[waves]
+mode = "circle"
+size = 0.6
+scale = 1.0
+brightness = 1.3
+
+[composite]
+exposure = 1.2
+vignette = 0.6
+
+[code]
+# Everything pours into the middle, spinning faster as it goes.
+frame = """
+rot = 0.8 + 0.6 * bass_att
+"""
+pixel = """
+rot = rot * (1.6 - rad)
+"""

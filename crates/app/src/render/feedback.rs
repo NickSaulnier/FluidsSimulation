@@ -27,6 +27,8 @@ use std::collections::HashMap;
 pub const FLOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 /// Cells up the domain when splatting particle velocities.
 const SPLAT_CELLS_Y: f32 = 48.0;
+/// The most feedback pipelines kept (one per per-pixel program).
+const MAX_PIPELINES: usize = 32;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FeedbackMode {
@@ -420,6 +422,11 @@ impl FeedbackLayer {
         dt: f32,
     ) -> wgpu::TextureView {
         if !self.pipelines.contains_key(pixel) {
+            // Editing per-pixel code live makes a version per keystroke: keep the cache to
+            // the built-ins' worth (and the plain one).
+            if self.pipelines.len() >= MAX_PIPELINES {
+                self.pipelines.retain(|code, _| code.is_empty());
+            }
             let pipeline = fullscreen_pipeline(device, &self.layout, &shader_source(pixel), "fs_feedback", SCENE_FORMAT);
             self.pipelines.insert(pixel.to_string(), pipeline);
         }
@@ -500,7 +507,8 @@ fn fullscreen(encoder: &mut wgpu::CommandEncoder, label: &str, target: &wgpu::Te
     pass.draw(0..3, 0..1);
 }
 
-fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+/// Clear `target` to transparent black.
+pub fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("clear"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {

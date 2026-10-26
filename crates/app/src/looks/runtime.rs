@@ -8,7 +8,7 @@ use super::Code;
 use crate::audio::analyzer::{AudioFeatures, Onset, OnsetKind};
 use crate::audio::sections::SectionKind;
 use crate::expr::eval::{Layout, Machine};
-use crate::expr::{FRAME_OUTPUTS, MOTION, Program, SHARED, Stage, slot};
+use crate::expr::{FRAME_OUTPUTS, INPUTS, MOTION, Program, QS, SHARED, Stage, slot};
 use crate::render::composite::CompositeSettings;
 use crate::render::feedback::FeedbackSettings;
 use crate::render::waves::WaveSettings;
@@ -54,6 +54,8 @@ pub struct Runtime {
     init: Option<Machine>,
     frame: Option<Machine>,
     params: Vec<String>,
+    /// The program's own variables, by name (for `replace`).
+    locals: Vec<String>,
     layout: Layout,
     block: Vec<f32>,
     rng: SplitMix64,
@@ -82,6 +84,7 @@ impl Runtime {
             init: code.init.as_ref().map(Machine::new),
             frame,
             params: code.frame.as_ref().map_or_else(Vec::new, |p| p.params.clone()),
+            locals: code.frame.as_ref().map_or_else(Vec::new, |p| p.locals.clone()),
             block: vec![0.0; layout.len],
             layout,
             rng: SplitMix64::new(0x6c6f_6f6b),
@@ -92,6 +95,23 @@ impl Runtime {
             section_pulses: [0.0; 3],
             sections_seen: 0,
         }
+    }
+
+    /// Swap in `code`, edited while it runs: the clock, the pulses, the q's and the
+    /// variables both versions have carry on. `init` runs again if `rerun_init`.
+    pub fn replace(&mut self, code: &Code, rerun_init: bool) {
+        let mut next = Self::new(code);
+        (next.time, next.frames, next.pulses, next.section_pulses, next.sections_seen) = (self.time, self.frames, self.pulses, self.section_pulses, self.sections_seen);
+        next.rng = self.rng.clone();
+        next.started = self.started && !rerun_init;
+        let q = INPUTS.len() + MOTION.len();
+        next.block[q..q + QS].copy_from_slice(&self.block[q..q + QS]);
+        for (i, name) in self.locals.iter().enumerate() {
+            if let Some(j) = next.locals.iter().position(|n| n == name) {
+                next.block[next.layout.locals + j] = self.block[self.layout.locals + i];
+            }
+        }
+        *self = next;
     }
 
     /// Run a frame of `dt` seconds (0 while paused) on a picture `aspect` wide, from the
@@ -348,6 +368,20 @@ mod tests {
         let f = Runtime::new(&c).step(&FeedbackSettings::OFF, &WaveSettings::OFF, &base, Sound::default(), 0.1, 1.0);
         let out = f.composite;
         assert_eq!((out.hue, out.segments, out.saturation, out.vignette, out.contrast), (30.0, 8, 4.0, 0.75, 1.2));
+    }
+
+    /// Edited code takes over without restarting: the clock and shared variables carry
+    /// on, a new variable starts at 0, and `init` runs again only if asked.
+    #[test]
+    fn replacing_code_keeps_it_running() {
+        let mut r = Runtime::new(&code("n = 10", "n = n + 1; q1 = n"));
+        let step = |r: &mut Runtime| r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, &CompositeSettings::OFF, Sound::default(), 0.5, 1.0);
+        step(&mut r);
+        r.replace(&code("n = 10", "n = n + 2; m = m + 1; q2 = m; q3 = time"), false);
+        let f = step(&mut r);
+        assert_eq!((f.shared[slot("q1")], f.shared[slot("q2")], f.shared[slot("q3")]), (11.0, 1.0, 1.0));
+        r.replace(&code("n = 100", "n = n + 2; q1 = n"), true);
+        assert_eq!(step(&mut r).shared[slot("q1")], 102.0, "init ran again");
     }
 
     /// Equations that make no number fall back to the settings, and outputs stay in range.

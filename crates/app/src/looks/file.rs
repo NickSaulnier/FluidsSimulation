@@ -69,8 +69,10 @@ enum EnergyDoc {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Sim {
-    solver: Spanned<String>,
-    scene: Spanned<String>,
+    /// Both left out: a look without fluid (the picture is only waves, shapes and the
+    /// feedback).
+    solver: Option<Spanned<String>>,
+    scene: Option<Spanned<String>>,
     /// A palette's name, or its colours (`{ deep = [r, g, b], base = ..., highlight = ... }`).
     palette: Spanned<toml::Value>,
     #[serde(default)]
@@ -153,20 +155,34 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
     }
     let section = |name: &str| raw.get(name).and_then(toml::Value::as_table);
 
-    // The fluid: a solver and a scene of its kind, and a palette.
+    // The fluid: a solver and a scene of its kind (or neither, for no fluid), and a
+    // palette.
     let sim = doc.sim;
-    let solver = sim.solver.get_ref().clone();
-    let three_d = sim3d::SOLVERS.iter().any(|s| s.name == solver);
-    if !three_d && !sim::SOLVERS.iter().any(|s| s.name == solver) {
-        let names: Vec<&str> = sim::SOLVERS.iter().map(|s| s.name).chain(sim3d::SOLVERS.iter().map(|s| s.name)).collect();
-        return Err(fail(Some(sim.solver.span().start), format!("no solver \"{solver}\" (there are: {})", names.join(", "))));
-    }
-    let scene = sim.scene.get_ref().clone();
-    let scenes: Vec<&str> = if three_d { sim3d::PRESETS.iter().map(|p| p.name).collect() } else { sim::PRESETS.iter().map(|p| p.name).collect() };
-    if !scenes.contains(&scene.as_str()) {
-        let kind = if three_d { "3D " } else { "" };
-        return Err(fail(Some(sim.scene.span().start), format!("no {kind}scene \"{scene}\" (there are: {})", scenes.join(", "))));
-    }
+    let (solver, scene) = match (&sim.solver, &sim.scene) {
+        (None, None) => {
+            if !sim.params.is_empty() || sim.liquid || sim.orbit != 0.0 {
+                return Err(fail(None, "a look without a solver has no fluid: `params`, `liquid` and `orbit` need one".into()));
+            }
+            (String::new(), String::new())
+        }
+        (None, Some(scene)) => return Err(fail(Some(scene.span().start), "a scene needs a `solver` too (or leave both out, for no fluid)".into())),
+        (Some(solver), None) => return Err(fail(Some(solver.span().start), "a solver needs a `scene` too".into())),
+        (Some(solver_at), Some(scene_at)) => {
+            let solver = solver_at.get_ref().clone();
+            let three_d = sim3d::SOLVERS.iter().any(|s| s.name == solver);
+            if !three_d && !sim::SOLVERS.iter().any(|s| s.name == solver) {
+                let names: Vec<&str> = sim::SOLVERS.iter().map(|s| s.name).chain(sim3d::SOLVERS.iter().map(|s| s.name)).collect();
+                return Err(fail(Some(solver_at.span().start), format!("no solver \"{solver}\" (there are: {})", names.join(", "))));
+            }
+            let scene = scene_at.get_ref().clone();
+            let scenes: Vec<&str> = if three_d { sim3d::PRESETS.iter().map(|p| p.name).collect() } else { sim::PRESETS.iter().map(|p| p.name).collect() };
+            if !scenes.contains(&scene.as_str()) {
+                let kind = if three_d { "3D " } else { "" };
+                return Err(fail(Some(scene_at.span().start), format!("no {kind}scene \"{scene}\" (there are: {})", scenes.join(", "))));
+            }
+            (solver, scene)
+        }
+    };
     let at = Some(sim.palette.span().start);
     let palette = match sim.palette.get_ref() {
         toml::Value::String(name) => match PALETTES.iter().find(|(n, _)| n == name) {
@@ -228,7 +244,7 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         waves.shapes[i] = shape;
     }
 
-    let code = compile_code(text, &doc.code).map_err(|(offset, message)| fail(offset, message))?;
+    let code = compile_doc_code(text, &doc.code).map_err(|(offset, message)| fail(offset, message))?;
     let meta = doc.meta;
     Ok(Look {
         name: meta.name,
@@ -272,7 +288,10 @@ pub fn write(look: &Look) -> String {
         Energy::Energetic => "energetic",
         Energy::Any => "any",
     };
-    let _ = writeln!(out, "energy = {}\n\n[sim]\nsolver = {}\nscene = {}", text(energy), text(&look.solver), text(&look.scene));
+    let _ = writeln!(out, "energy = {}\n\n[sim]", text(energy));
+    if look.has_fluid() {
+        let _ = writeln!(out, "solver = {}\nscene = {}", text(&look.solver), text(&look.scene));
+    }
     let palette = match look.palette.name() {
         Some(name) => text(name),
         None => value(toml::Value::try_from(look.palette).expect("serialisable")),
@@ -370,24 +389,54 @@ fn content_start(text: &str, span: std::ops::Range<usize>) -> usize {
     after
 }
 
-/// The `[code]` section compiled. `init` and `frame` share their variables: they're
-/// compiled together and split. Errors are file offsets (exact unless the string has
-/// escapes) and messages.
-fn compile_code(text: &str, doc: &CodeDoc) -> Result<Code, (Option<usize>, String)> {
-    let at = |s: &Spanned<String>, offset: usize| content_start(text, s.span()) + offset;
-    let written = |s: &Option<Spanned<String>>| s.as_ref().map(|s| s.get_ref().trim_end().to_string()).filter(|s| !s.trim().is_empty());
-    let mut code = Code { source: CodeSource { init: written(&doc.init), frame: written(&doc.frame), pixel: written(&doc.pixel) }, ..Code::default() };
-    let init = doc.init.as_ref().map_or("", |s| s.get_ref().as_str());
-    let frame = doc.frame.as_ref().map_or("", |s| s.get_ref().as_str());
+/// The `[code]` section compiled (see `compile_code`). Errors are file offsets (exact
+/// unless the string has escapes) and messages.
+fn compile_doc_code(text: &str, doc: &CodeDoc) -> Result<Code, (Option<usize>, String)> {
+    let raw = |s: &Option<Spanned<String>>| s.as_ref().map(|s| s.get_ref().clone());
+    compile_code(&CodeSource { init: raw(&doc.init), frame: raw(&doc.frame), pixel: raw(&doc.pixel) }).map_err(|e| {
+        let spanned = match e.part {
+            Part::Init => &doc.init,
+            Part::Frame => &doc.frame,
+            Part::Pixel => &doc.pixel,
+        };
+        let offset = spanned.as_ref().map(|s| match e.offset {
+            Some(offset) => content_start(text, s.span()) + offset,
+            None => s.span().start,
+        });
+        (offset, e.message)
+    })
+}
+
+/// One of a look's three programs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Init,
+    Frame,
+    Pixel,
+}
+
+/// A mistake in one of a look's programs: which, where in it (a byte offset, if known)
+/// and what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeError {
+    pub part: Part,
+    pub offset: Option<usize>,
+    pub message: String,
+}
+
+/// A look's programs compiled, from the source of each. `init` and `frame` share their
+/// variables: they're compiled together and split. (Kept as written, less trailing
+/// space, for saving.)
+pub fn compile_code(source: &CodeSource) -> Result<Code, CodeError> {
+    let written = |s: &Option<String>| s.as_ref().map(|s| s.trim_end().to_string()).filter(|s| !s.trim().is_empty());
+    let mut code = Code { source: CodeSource { init: written(&source.init), frame: written(&source.frame), pixel: written(&source.pixel) }, ..Code::default() };
+    let init = source.init.as_deref().unwrap_or("");
+    let frame = source.frame.as_deref().unwrap_or("");
     if !init.trim().is_empty() || !frame.trim().is_empty() {
         let joined = format!("{init}\n{frame}");
         let program = expr::compile(&joined, Stage::Frame).map_err(|e| {
-            let offset = if e.offset <= init.len() {
-                doc.init.as_ref().map(|s| at(s, e.offset))
-            } else {
-                doc.frame.as_ref().map(|s| at(s, e.offset - init.len() - 1))
-            };
-            (offset, e.message)
+            let (part, offset) = if e.offset <= init.len() { (Part::Init, e.offset) } else { (Part::Frame, e.offset - init.len() - 1) };
+            CodeError { part, offset: Some(offset), message: e.message }
         })?;
         let n_init = expr::compile(init, Stage::Frame).map(|p| p.stmts.len()).unwrap_or(0);
         let split = |stmts: Vec<expr::Stmt>| Program { stmts, ..program.clone() };
@@ -395,12 +444,13 @@ fn compile_code(text: &str, doc: &CodeDoc) -> Result<Code, (Option<usize>, Strin
         code.init = (!init_stmts.is_empty()).then(|| split(init_stmts.to_vec()));
         code.frame = Some(split(frame_stmts.to_vec()));
     }
-    if let Some(pixel) = &doc.pixel
-        && !pixel.get_ref().trim().is_empty()
+    if let Some(pixel) = &source.pixel
+        && !pixel.trim().is_empty()
     {
-        let program = expr::compile(pixel.get_ref(), Stage::Pixel).map_err(|e| (Some(at(pixel, e.offset)), e.message))?;
+        let program = expr::compile(pixel, Stage::Pixel).map_err(|e| CodeError { part: Part::Pixel, offset: Some(e.offset), message: e.message })?;
         code.pixel = expr::wgsl::pixel(&program);
-        feedback::validate_pixel(&code.pixel).map_err(|e| (Some(pixel.span().start), format!("the per-pixel code didn't make a valid shader:\n{e}")))?;
+        feedback::validate_pixel(&code.pixel)
+            .map_err(|e| CodeError { part: Part::Pixel, offset: None, message: format!("the per-pixel code didn't make a valid shader:\n{e}") })?;
     }
     Ok(code)
 }
@@ -479,6 +529,20 @@ mod tests {
         let written = write(&look);
         let back = parse(&written, "t", Source::Builtin("t")).unwrap();
         assert_eq!(back, Look { source: Source::Builtin("t"), ..look }, "{written}");
+    }
+
+    /// Leaving out the solver and scene makes a look without fluid; it needs both or
+    /// neither, and nothing that only a fluid takes.
+    #[test]
+    fn a_look_can_have_no_fluid() {
+        let text = "[meta]\nname = \"T\"\n[sim]\npalette = \"Ink\"\n[waves]\nmode = \"circle\"\n";
+        let look = parse(text, "t", Source::Builtin("t")).unwrap();
+        assert!(!look.has_fluid() && look.waves.any());
+        assert_eq!(parse(&write(&look), "t", Source::Builtin("t")).unwrap(), look, "{}", write(&look));
+        let fails = |sim: &str| parse(&format!("[meta]\nname = \"T\"\n[sim]\npalette = \"Ink\"\n{sim}"), "t", Source::Builtin("t")).unwrap_err().message;
+        assert!(fails("scene = \"Dam break\"\n").contains("solver"));
+        assert!(fails("solver = \"FLIP\"\n").contains("scene"));
+        assert!(fails("params = { buoyancy = 0.2 }\n").contains("no fluid"));
     }
 
     /// `init` and `frame` share variables; `pixel` becomes shader code.

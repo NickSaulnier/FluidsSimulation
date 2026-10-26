@@ -1,0 +1,45 @@
+[meta]
+name = "Bass bloom"
+tags = ["no fluid", "shapes", "kaleidoscope"]
+energy = "energetic"
+
+[sim]
+palette = "Lava"
+reactions = [
+    { trigger = "kick", effect = "flash", gain = 0.7 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.75
+zoom = 1.3
+bass_zoom = 0.6
+
+[[shape]]
+sides = 6
+radius = 0.18
+spin = 0.6
+bass_pulse = 0.8
+fill = 0.5
+thickness = 3.0
+
+[[shape]]
+sides = 3
+radius = 0.32
+spin = -0.4
+bass_pulse = 0.4
+thickness = 2.0
+
+[composite]
+symmetry = "kaleidoscope"
+segments = 12
+symmetry_spin = -0.08
+exposure = 1.2
+vignette = 0.5
+
+[code]
+frame = """
+shape1_fill = 0.3 + 0.6 * kick
+shape2_spin = -0.4 - 2 * beat
+"""

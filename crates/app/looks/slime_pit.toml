@@ -1,0 +1,26 @@
+[meta]
+name = "Slime pit"
+tags = ["fluid", "liquid", "green"]
+energy = "calm"
+
+[sim]
+solver = "PBF"
+scene = "Dam break"
+palette = "Slime"
+liquid = true
+reactions = [
+    { trigger = "bass", effect = "slosh", gain = 0.8 },
+    { trigger = "kick", effect = "splash", gain = 0.6 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.7
+flow = 1.0
+warp = 0.006
+warp_speed = 0.4
+
+[composite]
+saturation = 1.2
+vignette = 0.45

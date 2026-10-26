@@ -19,7 +19,7 @@ use crate::render::palette::Palette;
 use crate::render::composite::CompositeSettings;
 use crate::render::waves::WaveSettings;
 use crate::ui::{UiState, params};
-pub use file::LoadError;
+pub use file::{CodeError, LoadError, Part, compile_code};
 use sim::{PRESETS, World};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
@@ -35,6 +35,29 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("bonfire_3d.toml", include_str!("../../looks/bonfire_3d.toml")),
     ("inferno.toml", include_str!("../../looks/inferno.toml")),
     ("smoke_dance.toml", include_str!("../../looks/smoke_dance.toml")),
+    ("tunnel_vision.toml", include_str!("../../looks/tunnel_vision.toml")),
+    ("deep_current.toml", include_str!("../../looks/deep_current.toml")),
+    ("spiral_galaxy.toml", include_str!("../../looks/spiral_galaxy.toml")),
+    ("fountain_of_light.toml", include_str!("../../looks/fountain_of_light.toml")),
+    ("starfield.toml", include_str!("../../looks/starfield.toml")),
+    ("quicksilver.toml", include_str!("../../looks/quicksilver.toml")),
+    ("neon_scope.toml", include_str!("../../looks/neon_scope.toml")),
+    ("slime_pit.toml", include_str!("../../looks/slime_pit.toml")),
+    ("bass_bloom.toml", include_str!("../../looks/bass_bloom.toml")),
+    ("dye_tornado.toml", include_str!("../../looks/dye_tornado.toml")),
+    ("ripple_pool.toml", include_str!("../../looks/ripple_pool.toml")),
+    ("ember_drift.toml", include_str!("../../looks/ember_drift.toml")),
+    ("prism.toml", include_str!("../../looks/prism.toml")),
+    ("karman_street.toml", include_str!("../../looks/karman_street.toml")),
+    ("heartbeat.toml", include_str!("../../looks/heartbeat.toml")),
+    ("ink_garden.toml", include_str!("../../looks/ink_garden.toml")),
+    ("mandala.toml", include_str!("../../looks/mandala.toml")),
+    ("ghost_smoke.toml", include_str!("../../looks/ghost_smoke.toml")),
+    ("vortex_drain.toml", include_str!("../../looks/vortex_drain.toml")),
+    ("twin_flames.toml", include_str!("../../looks/twin_flames.toml")),
+    ("aurora.toml", include_str!("../../looks/aurora.toml")),
+    ("blue_torch.toml", include_str!("../../looks/blue_torch.toml")),
+    ("strobe_lattice.toml", include_str!("../../looks/strobe_lattice.toml")),
 ];
 
 /// How often the user's folder is checked for changed files, seconds.
@@ -103,6 +126,12 @@ pub struct Look {
 }
 
 impl Look {
+    /// Whether it has a fluid at all (a look without one is only waves, shapes and the
+    /// feedback).
+    pub fn has_fluid(&self) -> bool {
+        !self.solver.is_empty()
+    }
+
     /// The 3D solver this look runs, if it's a 3D look.
     pub fn solver_3d(&self) -> Option<usize> {
         sim3d::SOLVERS.iter().position(|s| s.name == self.solver)
@@ -123,6 +152,21 @@ impl Look {
     }
 }
 
+/// What the user thinks of a look: a rating (1 to 5 stars, 0 unrated, which counts as
+/// 3) and whether it's a favourite. Kept in the settings, by the look's name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Mark {
+    pub rating: u8,
+    pub favourite: bool,
+}
+
+impl Mark {
+    pub fn stars(&self) -> u8 {
+        if self.rating == 0 { 3 } else { self.rating.min(5) }
+    }
+}
+
 /// Every look: the built-ins, then the user's (a user's look named like a built-in
 /// takes its place), and the files that didn't load.
 pub struct Library {
@@ -130,6 +174,8 @@ pub struct Library {
     pub errors: Vec<LoadError>,
     /// The user's folder, if there is one.
     pub folder: Option<PathBuf>,
+    /// Ratings and favourites, by look name.
+    pub marks: std::collections::BTreeMap<String, Mark>,
     /// The folder's look files as last read: path, modified time, length.
     seen: Vec<(PathBuf, Option<SystemTime>, u64)>,
     checked: Option<Instant>,
@@ -144,7 +190,7 @@ impl Default for Library {
 impl Library {
     /// Only the built-in looks.
     pub fn builtin() -> Self {
-        let mut library = Self { looks: Vec::new(), errors: Vec::new(), folder: None, seen: Vec::new(), checked: None };
+        let mut library = Self { looks: Vec::new(), errors: Vec::new(), folder: None, marks: Default::default(), seen: Vec::new(), checked: None };
         library.load();
         library
     }
@@ -165,6 +211,25 @@ impl Library {
     #[cfg(test)]
     pub fn find(&self, name: &str) -> Option<usize> {
         self.looks.iter().position(|l| l.name == name)
+    }
+
+    pub fn mark(&self, name: &str) -> Mark {
+        self.marks.get(name).copied().unwrap_or_default()
+    }
+
+    /// Rate look `name` a star up (`step` 1) or down (-1), from 1 to 5. Returns the stars.
+    pub fn rate(&mut self, name: &str, step: i8) -> u8 {
+        let mark = self.marks.entry(name.to_string()).or_default();
+        mark.rating = (mark.stars() as i8 + step).clamp(1, 5) as u8;
+        mark.rating
+    }
+
+    /// Which looks the director may pick by itself: not rated one star, and only
+    /// favourites if `favourites_only` (while there are any).
+    pub fn eligible(&self, favourites_only: bool) -> Vec<bool> {
+        let marks: Vec<Mark> = self.looks.iter().map(|l| self.mark(&l.name)).collect();
+        let only = favourites_only && marks.iter().any(|m| m.favourite);
+        marks.iter().map(|m| m.stars() > 1 && (!only || m.favourite)).collect()
     }
 
     /// Check the folder for changed files (at most every `POLL_S`), and read every look
@@ -192,9 +257,7 @@ impl Library {
         let path = match self.looks.iter().find(|l| l.name == look.name).map(|l| &l.source) {
             Some(Source::File(path)) => path.clone(),
             _ => {
-                let words: String = look.name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { ' ' }).collect();
-                let stem = words.split_whitespace().collect::<Vec<_>>().join("_");
-                let stem = if stem.is_empty() { "look".to_string() } else { stem };
+                let stem = file_stem(&look.name);
                 (1..)
                     .map(|n| folder.join(if n == 1 { format!("{stem}.toml") } else { format!("{stem}_{n}.toml") }))
                     .find(|p| !p.exists())
@@ -365,6 +428,19 @@ pub fn apply_picture(look: &Look, ui: &mut UiState) {
     }
 }
 
+/// A file name (without extension) for a look named `name`: "My look!" is `my_look`.
+pub fn file_stem(name: &str) -> String {
+    let words: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { ' ' }).collect();
+    let stem = words.split_whitespace().collect::<Vec<_>>().join("_");
+    if stem.is_empty() { "look".to_string() } else { stem }
+}
+
+/// A number that changes whenever anything in `look` does (FNV-1a of it as a file),
+/// stable between runs: for caching what's made from it.
+pub fn fingerprint(look: &Look) -> u64 {
+    file::write(look).bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
 /// A file's name for showing.
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
@@ -384,7 +460,7 @@ mod tests {
     /// reactions.
     #[test]
     fn every_look_refers_to_things_that_exist() {
-        for look in library().looks.iter().filter(|l| l.solver_3d().is_none()) {
+        for look in library().looks.iter().filter(|l| l.has_fluid() && l.solver_3d().is_none()) {
             assert!(!look.reactions.is_empty(), "{}: no reactions", look.name);
             let mut world = World::new(0, 0);
             let mut ui = UiState::default();

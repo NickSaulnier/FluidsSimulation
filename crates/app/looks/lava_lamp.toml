@@ -1,5 +1,6 @@
 [meta]
 name = "Lava lamp"
+tags = ["fluid", "dye", "shapes"]
 energy = "calm"
 
 [sim]

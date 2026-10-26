@@ -1,0 +1,31 @@
+[meta]
+name = "Prism"
+tags = ["no fluid", "spectrum", "mirror"]
+energy = "energetic"
+
+[sim]
+palette = "Ink"
+reactions = [
+    { trigger = "snare", effect = "flash", gain = 0.6 },
+    { trigger = "hat", effect = "flash", gain = 0.3 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.55
+zoom = 1.2
+rotation = 0.15
+echo = 0.2
+echo_zoom = 1.5
+
+[waves]
+mode = "mirror_spectrum"
+size = 0.1
+brightness = 0.7
+
+[composite]
+symmetry = "quad"
+hue_speed = 20.0
+saturation = 1.4
+aberration = 0.02
+vignette = 0.3

@@ -1,0 +1,28 @@
+[meta]
+name = "Ember drift"
+tags = ["fluid", "fire", "mirror"]
+energy = "calm"
+
+[sim]
+solver = "Smoke & fire"
+scene = "Campfire"
+palette = "Lava"
+reactions = [
+    { trigger = "bass", effect = "breathe", gain = 0.5 },
+    { trigger = "mid", effect = "gust", gain = 0.3 },
+    { trigger = "kick", effect = "jet", gain = 0.4 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.75
+drift = [0.0, 0.08]
+warp = 0.012
+warp_speed = 0.5
+flow = 1.0
+
+[composite]
+symmetry = "mirror_x"
+palette_map = 0.25
+vignette = 0.5
+grain = 0.04

@@ -43,6 +43,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         widgets::toggle(ui, &mut s.show_particles, &tip("Show particles", Action::ToggleParticles), "");
     });
     widgets::group(ui, "Picture", |ui| picture(ui, f.state));
+    widgets::group(ui, "Screen", |ui| screen(ui, f.state));
     widgets::group(ui, "Feedback", |ui| feedback(ui, &mut f.state.feedback));
     widgets::group(ui, "Waves", |ui| waves(ui, &mut f.state.waves));
     widgets::group(ui, "Composite", |ui| composite(ui, &mut f.state.composite));
@@ -201,6 +202,39 @@ fn picture(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
         egui::ComboBox::from_id_salt("render_scale").selected_text(label(s.render_scale)).width(150.0).show_ui(ui, |ui| {
             for scale in [0.0, 1.0, 0.75, 0.5] {
                 ui.selectable_value(&mut s.render_scale, scale, label(scale));
+            }
+        });
+    });
+}
+
+/// Where the visualizer shows, and the frame-rate cap.
+fn screen(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
+    let screen = &mut s.screen;
+    widgets::toggle(
+        ui,
+        &mut screen.windowed,
+        "Visualizer in a window",
+        "F11 shows the visualizer in this window (its controls hidden) instead of full screen",
+    );
+    ui.add_enabled_ui(screen.windowed, |ui| {
+        widgets::toggle(ui, &mut screen.on_top, "Keep it on top", "While the visualizer shows in a window, keep that window above the others");
+    });
+    ui.add_enabled_ui(!screen.windowed, |ui| {
+        row(ui, "Full screen on", "The monitor the visualizer fills", |ui| {
+            let current = screen.monitor.clone().unwrap_or_else(|| "This window's".into());
+            egui::ComboBox::from_id_salt("monitor").selected_text(current).width(150.0).truncate().show_ui(ui, |ui| {
+                ui.selectable_value(&mut screen.monitor, None, "This window's");
+                for name in &s.monitors {
+                    ui.selectable_value(&mut screen.monitor, Some(name.clone()), name);
+                }
+            });
+        });
+    });
+    let label = |cap: u32| if cap == 0 { "No cap".to_string() } else { format!("{cap} fps") };
+    row(ui, "Frame rate", "The most frames per second: lower saves power (and heat) on a fast display", |ui| {
+        egui::ComboBox::from_id_salt("fps_cap").selected_text(label(screen.fps_cap)).width(150.0).show_ui(ui, |ui| {
+            for cap in crate::ui::FPS_CAPS {
+                ui.selectable_value(&mut screen.fps_cap, cap, label(cap));
             }
         });
     });

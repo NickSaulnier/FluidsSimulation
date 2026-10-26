@@ -46,6 +46,10 @@ fn looks(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     if ui.button(icon::CARET_RIGHT).on_hover_text(tip("Next look", Action::NextLook)).clicked() {
         d.request(d.neighbour(1, looks.len()));
     }
+    if ui.button(icon::SQUARES_FOUR).on_hover_text(tip("Browse the looks", Action::ToggleBrowser)).clicked() {
+        f.state.browser_open = !f.state.browser_open;
+    }
+    let d = &mut f.state.director;
     let (glyph, what) = if d.auto {
         (icon::LOCK_OPEN, "Looks change with the music: click to keep this one")
     } else {

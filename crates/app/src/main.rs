@@ -57,6 +57,8 @@ const VIEW_MARGIN_PX: f32 = 16.0;
 /// In the full-screen visualizer a 3D look is framed this much closer.
 const PRESENTING_ZOOM: f32 = 0.8;
 const TILT_STEP_DEG: f32 = 5.0;
+/// A look's thumbnail is taken this long after it starts.
+const THUMBNAIL_AFTER_S: f32 = 8.0;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,fluid_toy=info")).init();
@@ -110,8 +112,14 @@ struct State {
     look_frame: looks::runtime::Frame,
     look_pixel: String,
     applied_look: Option<looks::Look>,
+    /// While a look without fluid shows: the 2D world's (solver, scene generation) then.
+    /// The fluid comes back when either changes (or a 3D solver is picked).
+    no_fluid: Option<(usize, u64)>,
     /// The composite's kaleidoscope turn, hue drift and grain seed.
     composite_clock: render::composite::CompositeClock,
+    /// Thumbnails being taken, and the look whose one to take this frame (its key).
+    thumbnailer: render::thumbnail::Thumbnailer,
+    thumbnail_key: Option<String>,
     ui: UiState,
     music: Music,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
@@ -124,8 +132,11 @@ struct State {
     palette_now: render::Palette,
     /// Base values of parameters the music is modulating, for the solver they belong to.
     param_bases: (usize, Vec<(String, f32)>),
-    /// Whether the window is full screen (follows `ui.presenting`), and the cursor shown.
-    fullscreen: bool,
+    /// How the window was last set up for the visualizer (presenting, and the screen
+    /// settings), and the cursor shown.
+    presented: (bool, ui::Screen),
+    /// When the monitors were last listed.
+    monitors_listed: Option<Instant>,
     cursor_visible: bool,
     governor: governor::Governor,
     /// The (solver, scene) the governor is judging (3D solvers count down from the
@@ -192,8 +203,15 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = &self.state {
+    /// Draw again at once, or, under a frame-rate cap, once the next frame is due.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(state) = &self.state else { return };
+        let cap = state.ui.screen.fps_cap;
+        let due = state.last_frame + Duration::from_secs_f64(if cap > 0 { 1.0 / f64::from(cap) } else { 0.0 });
+        if cap > 0 && Instant::now() < due {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(due));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Poll);
             state.window.request_redraw();
         }
     }
@@ -261,8 +279,11 @@ impl State {
             look_runtime: looks::runtime::Runtime::default(),
             look_frame: looks::runtime::Frame::plain(&render::feedback::FeedbackSettings::OFF, &render::waves::WaveSettings::OFF, &render::composite::CompositeSettings::OFF),
             composite_clock: render::composite::CompositeClock::default(),
+            thumbnailer: render::thumbnail::Thumbnailer::default(),
+            thumbnail_key: None,
             look_pixel: String::new(),
             applied_look: None,
+            no_fluid: None,
             ui: {
                 let mut ui = UiState::default();
                 if let Some(saved) = ui::settings::load() {
@@ -270,8 +291,11 @@ impl State {
                 }
                 ui.presenting = visualizer;
                 if let Some(folder) = looks::Library::user_folder() {
+                    let marks = std::mem::take(&mut ui.looks.marks);
                     ui.looks = looks::Library::with_folder(folder);
+                    ui.looks.marks = marks;
                 }
+                ui.thumbnails = ui::thumbnails::Thumbnails::new(ui::thumbnails::Thumbnails::user_folder());
                 ui
             },
             music,
@@ -281,7 +305,8 @@ impl State {
             canvas: None,
             palette_now: render::Palette::default(),
             param_bases: (usize::MAX, Vec::new()),
-            fullscreen: false,
+            presented: (false, ui::Screen::default()),
+            monitors_listed: None,
             cursor_visible: true,
             governor: governor::Governor::default(),
             governed: (usize::MAX, u64::MAX),
@@ -295,13 +320,25 @@ impl State {
     /// overlay is showing, and the resolution governor watching for slow motion.
     fn sync_presentation(&mut self, real_dt: f32) {
         let presenting = self.ui.presenting;
-        if presenting != self.fullscreen {
-            self.fullscreen = presenting;
-            self.window.set_fullscreen(presenting.then_some(winit::window::Fullscreen::Borderless(None)));
-            self.governor.reset();
-            if presenting {
-                self.ui.reveal();
+        if self.monitors_listed.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+            self.monitors_listed = Some(Instant::now());
+            self.ui.monitors = self.window.available_monitors().filter_map(|m| m.name()).collect();
+        }
+        let wanted = (presenting, self.ui.screen.clone());
+        if wanted != self.presented {
+            let screen = &self.ui.screen;
+            let full = presenting && !screen.windowed;
+            let monitor = screen.monitor.as_ref().and_then(|name| self.window.available_monitors().find(|m| m.name().as_ref() == Some(name)));
+            self.window.set_fullscreen(full.then_some(winit::window::Fullscreen::Borderless(monitor)));
+            let on_top = presenting && screen.windowed && screen.on_top;
+            self.window.set_window_level(if on_top { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
+            if presenting != self.presented.0 {
+                self.governor.reset();
+                if presenting {
+                    self.ui.reveal();
+                }
             }
+            self.presented = wanted;
         }
         let cursor = !presenting || self.ui.revealed() || self.egui_ctx.is_pointer_over_egui();
         if cursor != self.cursor_visible {
@@ -410,6 +447,19 @@ impl State {
         }
     }
 
+    /// Run `code`, edited in the editor, in place of the look on screen's (and keep it
+    /// with the look, for saving).
+    fn edit_code(&mut self, code: looks::Code, rerun_init: bool) {
+        if let Some(look) = self.ui.director.current.and_then(|i| self.ui.looks.looks.get_mut(i)) {
+            look.code = code.clone();
+        }
+        if let Some(look) = &mut self.applied_look {
+            look.code = code.clone();
+        }
+        self.look_runtime.replace(&code, rerun_init);
+        self.look_pixel = code.pixel;
+    }
+
     /// Start `look`'s equations, and its composite's clock afresh (the last look's hue
     /// drift and kaleidoscope turn would carry over).
     fn start_code(&mut self, look: &looks::Look) {
@@ -426,6 +476,18 @@ impl State {
         self.modulate_params(&[], &[]);
         self.feedback.pause();
         self.start_code(&look);
+        if !look.has_fluid() {
+            // Only the picture: the 2D world waits underneath, neither stepped nor drawn.
+            if self.world3d.is_some() {
+                self.choose_solver(ui::SolverChoice::TwoD(self.world.solver_index));
+            }
+            looks::apply_picture(&look, &mut self.ui);
+            self.no_fluid = Some((self.world.solver_index, self.world.scene_generation));
+            log::info!("look: {} (no fluid)", look.name);
+            self.applied_look = Some(look);
+            return;
+        }
+        self.no_fluid = None;
         let unknown = match look.solver_3d() {
             Some(solver) => {
                 self.choose_solver(ui::SolverChoice::ThreeD(solver));
@@ -498,7 +560,7 @@ impl State {
     /// Keyboard shortcuts, as listed in `ui::shortcuts::SHORTCUTS`.
     fn key(&mut self, key: KeyCode, repeat: bool) {
         use ui::shortcuts::Action;
-        let Some(action) = ui::shortcuts::lookup(key, repeat) else { return };
+        let Some(action) = ui::shortcuts::lookup(key, repeat, self.ui.presenting) else { return };
         let ui = &mut self.ui;
         match action {
             Action::TogglePause => ui.paused = !ui.paused,
@@ -533,7 +595,39 @@ impl State {
             Action::TogglePresentation => ui.presenting = !ui.presenting,
             Action::PreviousLook => ui.director.request(ui.director.neighbour(-1, ui.looks.looks.len())),
             Action::NextLook => ui.director.request(ui.director.neighbour(1, ui.looks.looks.len())),
-            Action::ToggleAutoLooks => ui.director.auto = !ui.director.auto,
+            Action::ToggleAutoLooks | Action::LockLook => {
+                ui.director.auto = !ui.director.auto;
+                ui.show_notice(if ui.director.auto { "looks change with the music".into() } else { "this look stays".into() });
+            }
+            Action::BackLook => {
+                if !ui.director.back() {
+                    ui.show_notice("no look before this one".into());
+                }
+            }
+            Action::NextLookFade | Action::HardCut => {
+                let eligible = ui.looks.eligible(ui.director.favourites_only);
+                let next = ui.director.pick(&ui.looks.looks, &eligible);
+                if action == Action::HardCut { ui.director.cut(next) } else { ui.director.request(next) }
+            }
+            Action::RateUp | Action::RateDown => {
+                if let Some(name) = ui.director.current.and_then(|i| ui.looks.looks.get(i)).map(|l| l.name.clone()) {
+                    let stars = ui.looks.rate(&name, if action == Action::RateUp { 1 } else { -1 });
+                    let shown: String = (1..=5).map(|k| if k <= stars { '\u{2605}' } else { '\u{2606}' }).collect();
+                    let note = if stars == 1 { " (not picked by itself)" } else { "" };
+                    ui.show_notice(format!("{name}: {shown}{note}"));
+                }
+            }
+            Action::ShowTitle => {
+                let title = if self.music.is_live() {
+                    let device = self.music.live.as_ref().map_or("the system", |l| l.device_name.as_str());
+                    format!("Live: {device}")
+                } else {
+                    self.music.track.as_ref().map_or_else(|| "No track".to_string(), |t| t.name.clone())
+                };
+                ui.show_notice(title);
+            }
+            Action::ToggleBrowser => ui.browser_open = !ui.browser_open,
+            Action::ToggleEditor => ui.editor_open = !ui.editor_open,
         }
     }
 
@@ -555,6 +649,9 @@ impl State {
         let real_dt = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
         self.frame_dt = if self.ui.paused { 0.0 } else { real_dt.min(0.1) };
+        if let Some((key, pixels)) = self.thumbnailer.poll(&self.gpu.device) {
+            self.ui.thumbnails.store(&self.egui_ctx, &key, &pixels);
+        }
         let view = self.view();
 
         // UI first, so changes made in the panel apply to this frame's step.
@@ -585,6 +682,9 @@ impl State {
         if let Some(choice) = self.ui.solver_request.take() {
             self.choose_solver(choice);
         }
+        if let Some((code, rerun_init)) = self.ui.code_request.take() {
+            self.edit_code(code, rerun_init);
+        }
         if let Some(name) = self.ui.save_look_request.take() {
             self.save_look(name);
         }
@@ -593,8 +693,11 @@ impl State {
         self.reload_looks(now);
         // The director: change looks with the music (by itself only in full screen).
         let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
-        if let Some(look) = self.ui.director.update(&self.ui.looks.looks, self.ui.presenting, self.music.features(), kicked, real_dt) {
+        if let Some(look) = self.ui.director.update(&self.ui.looks.looks, &self.ui.looks.eligible(self.ui.director.favourites_only), self.ui.presenting, self.music.features(), kicked, real_dt) {
             self.apply_look(look);
+        }
+        if self.no_fluid.is_some_and(|at| self.world3d.is_some() || at != (self.world.solver_index, self.world.scene_generation)) {
+            self.no_fluid = None;
         }
         // The look's equations, from its settings as they stand and the music.
         let sound = looks::runtime::Sound { features: self.music.features(), onsets: self.music.onsets(), beats: self.music.beat_count() };
@@ -610,6 +713,7 @@ impl State {
             self.step_2d(now, real_dt, &view);
         }
         self.update_title();
+        self.thumbnail_key = self.thumbnail_wanted();
 
         let frame = match self.gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -637,6 +741,14 @@ impl State {
 
     /// The 2D frame: tools, music reactions, then the simulation step.
     fn step_2d(&mut self, now: Instant, real_dt: f32, view: &View) {
+        if self.no_fluid.is_some() {
+            // No fluid: the reactions only colour the picture.
+            let reaction = self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), self.ui.presenting, real_dt, self.look_frame.intensity);
+            self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
+            self.look_frame.params.clear();
+            self.perf.record(now, None, 0.0);
+            return;
+        }
         // Tools and gravity, then the simulation step. A freshly loaded preset brings
         // its own gravity (the wind tunnel has none); after that the sliders own it.
         if self.gravity_synced != self.world.scene_generation {
@@ -790,6 +902,12 @@ impl State {
                 lines,
             );
             self.field_range = None;
+        } else if self.no_fluid.is_some() {
+            render::feedback::clear(&mut encoder, &scene);
+            if feedback.enabled {
+                self.feedback.draw_flow_2d(&self.gpu.device, &self.gpu.queue, &mut encoder, scene_size, view, None);
+            }
+            self.field_range = None;
         } else {
             self.render_2d(&mut encoder, &scene, view, scene_size, scale);
             if feedback.enabled {
@@ -820,6 +938,12 @@ impl State {
         let composite = render::composite::Composite { settings: self.look_frame.composite, clock: self.composite_clock, palette: self.palette_now };
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
         self.post.run(device, queue, &mut encoder, &picture, &target, self.ui.glow, feedback.echo(), &composite, self.timer.as_ref());
+        if let Some(key) = self.thumbnail_key.take() {
+            let thumbnail = self.thumbnailer.target(device, surface, self.gpu.config.format);
+            self.post.composite_again(device, &mut encoder, &picture, &thumbnail);
+            let crop = self.canvas_fraction();
+            self.thumbnailer.copy(device, &mut encoder, key, crop);
+        }
         mark(&self.timer, &mut encoder, Stage::Interface);
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
 
@@ -860,6 +984,26 @@ impl State {
 
         self.window.pre_present_notify();
         queue.present(frame);
+    }
+
+    /// The thumbnail to take this frame, if any: of the look on screen, once it has run a
+    /// while (not paused, not fading), if it has none yet.
+    fn thumbnail_wanted(&mut self) -> Option<String> {
+        let d = &self.ui.director;
+        // In silence most looks are still or dark: wait for the music.
+        let silent = self.music.features().is_none_or(|f| f.silent);
+        if self.thumbnailer.busy() || self.ui.paused || silent || d.darkness() > 0.0 || d.elapsed() < THUMBNAIL_AFTER_S {
+            return None;
+        }
+        let look = d.current.and_then(|i| self.ui.looks.looks.get(i)).filter(|l| self.applied_look.as_ref() == Some(*l))?.clone();
+        self.ui.thumbnails.wants(&look)
+    }
+
+    /// The canvas as fractions of the window: x, y, width, height.
+    fn canvas_fraction(&self) -> [f32; 4] {
+        let [x, y, w, h] = self.viewport_3d();
+        let (sw, sh) = (self.gpu.config.width.max(1) as f32, self.gpu.config.height.max(1) as f32);
+        [x / sw, y / sh, w / sw, h / sh]
     }
 
     /// The 2D flow for the feedback: the solver's velocity grid, or its particles'

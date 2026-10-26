@@ -18,7 +18,7 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, open: &mut bool) {
                     widgets::title(ui, "Keyboard and mouse");
                     ui.add_space(6.0);
                     ui.horizontal_top(|ui| {
-                        for (group, title) in [(Group::Simulation, "Simulation"), (Group::Tools, "Tools"), (Group::View, "View")] {
+                        for (group, title) in [(Group::Simulation, "Simulation"), (Group::Tools, "Tools"), (Group::View, "View"), (Group::Visualizer, "In full screen")] {
                             ui.vertical(|ui| {
                                 widgets::header(ui, title);
                                 egui::Grid::new(title).num_columns(2).spacing([14.0, 4.0]).show(ui, |ui| {

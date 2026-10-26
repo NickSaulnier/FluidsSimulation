@@ -1,0 +1,39 @@
+[meta]
+name = "Spiral galaxy"
+tags = ["no fluid", "spiral", "kaleidoscope"]
+energy = "calm"
+
+[sim]
+palette = "Ink"
+reactions = [
+    { trigger = "brightness", effect = "hue", gain = 0.6 },
+    { trigger = "hat", effect = "flash", gain = 0.3 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.9
+zoom = 1.12
+rotation = 0.35
+
+[waves]
+mode = "circle"
+size = 0.35
+scale = 0.7
+thickness = 1.5
+
+[composite]
+symmetry = "kaleidoscope"
+segments = 8
+symmetry_spin = 0.05
+palette_map = 0.5
+vignette = 0.4
+
+[code]
+# The rim turns faster than the middle, winding everything into arms.
+frame = """
+q1 = 0.3 + 0.4 * mid_att
+"""
+pixel = """
+rot = rot * (0.3 + q1 * 2 * rad)
+"""

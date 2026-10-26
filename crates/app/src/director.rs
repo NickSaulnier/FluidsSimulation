@@ -19,6 +19,10 @@
 //! the next kick, or `KICK_WAIT_S` later if no kick comes (ambient music, say). Drops
 //! don't wait: the drop has just happened.
 //!
+//! Its own picks skip the looks rated lowest, and keep to the favourites when asked
+//! (`eligible`, unless none would do). `back` returns through the looks shown before;
+//! `cut` changes without a fade.
+//!
 //! With auto off (the look locked) it still refreshes the look on new songs and at the
 //! interval: the same look fades back in with a fresh scene. Left alone for long, dye
 //! mixes to a uniform smear and solid fuel burns out.
@@ -35,6 +39,8 @@ const LISTEN_S: f32 = 2.0;
 const MIN_LOOK_S: f32 = 15.0;
 /// How long a change waits for a kick, without a steady beat.
 const KICK_WAIT_S: f32 = 4.0;
+/// How many looks back `back` can go.
+const HISTORY: usize = 50;
 /// The shortest fade-out when it's fitted to the bar.
 const MIN_FADE_OUT_S: f32 = 0.15;
 const SLOW_S: f32 = 8.0;
@@ -44,7 +50,7 @@ const ENERGETIC: f32 = 0.5;
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Fade {
     None,
-    /// Fading out over `length` seconds.
+    /// Fading out over `length` seconds (0: a cut, with no fade back in either).
     Out { t: f32, target: usize, length: f32 },
     In { t: f32 },
 }
@@ -55,6 +61,8 @@ pub struct Director {
     pub auto: bool,
     /// Change look at least this often, seconds.
     pub interval_s: f32,
+    /// Pick only favourites when changing by itself.
+    pub favourites_only: bool,
     /// The look on screen, if a look was applied.
     pub current: Option<usize>,
     elapsed: f32,
@@ -72,6 +80,10 @@ pub struct Director {
     /// When each look was last applied, counted in looks applied (0: never).
     shown: Vec<u32>,
     applied: u32,
+    /// The looks shown before the current one, oldest first, and whether the change
+    /// under way is a step back through them (which isn't recorded).
+    history: Vec<usize>,
+    going_back: bool,
 }
 
 impl Default for Director {
@@ -79,6 +91,7 @@ impl Default for Director {
         Self {
             auto: true,
             interval_s: 90.0,
+            favourites_only: false,
             current: None,
             elapsed: 0.0,
             silence: 0.0,
@@ -90,6 +103,8 @@ impl Default for Director {
             listening: None,
             shown: Vec::new(),
             applied: 0,
+            history: Vec::new(),
+            going_back: false,
         }
     }
 }
@@ -100,11 +115,37 @@ impl Director {
         self.fade_to(target, FADE_OUT_S);
     }
 
+    /// Change to look `target` at once, without a fade.
+    pub fn cut(&mut self, target: usize) {
+        self.fade = Fade::Out { t: 0.0, target, length: 0.0 };
+        self.waiting = None;
+        self.going_back = false;
+    }
+
+    /// Fade back to the look shown before this one, if there was one (and step further
+    /// back each time). Returns whether there was.
+    pub fn back(&mut self) -> bool {
+        if matches!(self.fade, Fade::Out { .. }) {
+            return false;
+        }
+        let Some(target) = self.history.pop() else { return false };
+        self.fade_to(target, FADE_OUT_S);
+        self.going_back = true;
+        true
+    }
+
+    /// The look the director would pick next (for a "next" key): the one gone longest
+    /// unseen that suits the music, of those `eligible` (see `update`).
+    pub fn pick(&self, looks: &[Look], eligible: &[bool]) -> usize {
+        self.choose(looks, eligible, self.slow > ENERGETIC)
+    }
+
     /// Fade out over `length` seconds to `target`.
     fn fade_to(&mut self, target: usize, length: f32) {
         if !matches!(self.fade, Fade::Out { .. }) {
             self.fade = Fade::Out { t: 0.0, target, length };
             self.waiting = None;
+            self.going_back = false;
         }
     }
 
@@ -136,12 +177,19 @@ impl Director {
             }
         }
         self.shown = shown;
+        self.history = self.history.iter().filter_map(|&i| now(i)).collect();
+    }
+
+    /// Seconds since the current look was applied.
+    pub fn elapsed(&self) -> f32 {
+        self.elapsed
     }
 
     /// How dark the fade is: 0 (none) to 1 (black).
     pub fn darkness(&self) -> f32 {
         match self.fade {
             Fade::None => 0.0,
+            Fade::Out { length, .. } if length <= 0.0 => 0.0,
             Fade::Out { t, length, .. } => (t / length).min(1.0),
             Fade::In { t } => 1.0 - (t / FADE_IN_S).min(1.0),
         }
@@ -150,8 +198,9 @@ impl Director {
     /// Advance `dt` seconds, choosing among `looks`. `presenting`: in full screen, where
     /// the director acts by itself (changing looks with `auto`, refreshing the locked one
     /// without). `features`: the analysis (none without a source); `kicked`: a kick this
-    /// frame. Returns the look to apply now, at the darkest point of a fade.
-    pub fn update(&mut self, looks: &[Look], presenting: bool, features: Option<&AudioFeatures>, kicked: bool, dt: f32) -> Option<usize> {
+    /// frame. `eligible`: which looks it may pick by itself (by index; any not listed
+    /// may). Returns the look to apply now, at the darkest point of a fade.
+    pub fn update(&mut self, looks: &[Look], eligible: &[bool], presenting: bool, features: Option<&AudioFeatures>, kicked: bool, dt: f32) -> Option<usize> {
         self.elapsed += dt;
         let level = features.map_or(0.0, |f| f.level);
         self.slow += (level - self.slow) * (1.0 - (-dt / SLOW_S).exp());
@@ -170,10 +219,17 @@ impl Director {
             Fade::Out { t, target, length } => {
                 let t = t + dt;
                 if t >= length {
-                    self.fade = Fade::In { t: 0.0 };
+                    self.fade = if length > 0.0 { Fade::In { t: 0.0 } } else { Fade::None };
                     if target >= looks.len() {
                         return None;
                     }
+                    if let Some(left) = self.current.filter(|&c| c != target && !self.going_back) {
+                        self.history.push(left);
+                        if self.history.len() > HISTORY {
+                            self.history.remove(0);
+                        }
+                    }
+                    self.going_back = false;
                     (self.current, self.elapsed, self.due) = (Some(target), 0.0, false);
                     self.applied += 1;
                     self.shown.resize(looks.len(), 0);
@@ -215,7 +271,7 @@ impl Director {
             self.listening = if silent {
                 None
             } else if heard >= LISTEN_S {
-                let target = self.choose(looks, sum / heard > ENERGETIC);
+                let target = self.choose(looks, eligible, sum / heard > ENERGETIC);
                 self.request(target);
                 None
             } else {
@@ -226,16 +282,16 @@ impl Director {
         match section {
             Some(SectionKind::Drop) if settled => {
                 // The drop has just happened: change now.
-                let target = self.choose(looks, true);
+                let target = self.choose(looks, eligible, true);
                 self.request(target);
                 return None;
             }
-            Some(SectionKind::Breakdown) if settled => self.waiting = Some((self.choose(looks, false), 0.0)),
+            Some(SectionKind::Breakdown) if settled => self.waiting = Some((self.choose(looks, eligible, false), 0.0)),
             Some(SectionKind::Change) if self.elapsed >= MIN_LOOK_S.max(0.5 * self.interval_s) => self.due = true,
             _ => {}
         }
         if self.due && self.waiting.is_none() {
-            self.waiting = Some((self.choose(looks, self.slow > ENERGETIC), 0.0));
+            self.waiting = Some((self.choose(looks, eligible, self.slow > ENERGETIC), 0.0));
         }
         self.land_on_the_bar(features, kicked, dt);
         None
@@ -263,16 +319,18 @@ impl Director {
         }
     }
 
-    /// The look gone longest unseen that suits the music's energy; ties go to the
-    /// first after the current one.
-    fn choose(&self, looks: &[Look], energetic: bool) -> usize {
+    /// The look gone longest unseen that suits the music's energy, of the `eligible`
+    /// ones if any suit; ties go to the first after the current one.
+    fn choose(&self, looks: &[Look], eligible: &[bool], energetic: bool) -> usize {
         let n = looks.len().max(1);
         let start = self.current.map_or(0, |c| c + 1);
-        (0..looks.len())
-            .map(|k| (start + k) % n)
-            .filter(|&i| Some(i) != self.current && looks[i].suits(energetic))
-            .min_by_key(|&i| self.shown.get(i).copied().unwrap_or(0))
-            .unwrap_or(start % n)
+        let pick = |strict: bool| {
+            (0..looks.len())
+                .map(|k| (start + k) % n)
+                .filter(|&i| Some(i) != self.current && looks[i].suits(energetic) && (!strict || eligible.get(i).copied().unwrap_or(true)))
+                .min_by_key(|&i| self.shown.get(i).copied().unwrap_or(0))
+        };
+        pick(true).or_else(|| pick(false)).unwrap_or(start % n)
     }
 }
 
@@ -302,7 +360,7 @@ mod tests {
     /// Run `seconds` of frames; returns the looks applied.
     fn run(d: &mut Director, f: &AudioFeatures, kick_every: Option<usize>, seconds: f32) -> Vec<usize> {
         let frames = (seconds / FRAME) as usize;
-        (0..frames).filter_map(|k| d.update(looks(), true, Some(f), kick_every.is_some_and(|n| k % n == 0), FRAME)).collect()
+        (0..frames).filter_map(|k| d.update(looks(), &[], true, Some(f), kick_every.is_some_and(|n| k % n == 0), FRAME)).collect()
     }
 
     fn settled(level: f32) -> Director {
@@ -328,7 +386,7 @@ mod tests {
         let suitable = looks().iter().filter(|l| l.suits(true)).count();
         let mut picked = Vec::new();
         for _ in 0..suitable {
-            let target = d.choose(looks(), true);
+            let target = d.choose(looks(), &[], true);
             d.request(target);
             run(&mut d, &silence(), None, 1.5);
             picked.push(d.current.unwrap());
@@ -429,7 +487,7 @@ mod tests {
             let mut t = 0.37; // not on a bar line
             let mut switched = None;
             for _ in 0..(80.0 / FRAME) as usize {
-                if d.update(looks(), true, Some(&beating(0.3, bpm, t)), false, FRAME).is_some() {
+                if d.update(looks(), &[], true, Some(&beating(0.3, bpm, t)), false, FRAME).is_some() {
                     switched = Some(t);
                     break;
                 }
@@ -444,18 +502,18 @@ mod tests {
     #[test]
     fn energy_picks_suitable_looks() {
         let d = Director { current: Some(0), ..Director::default() };
-        assert!(looks()[d.choose(looks(), true)].suits(true));
-        assert!(looks()[d.choose(looks(), false)].suits(false));
+        assert!(looks()[d.choose(looks(), &[], true)].suits(true));
+        assert!(looks()[d.choose(looks(), &[], false)].suits(false));
     }
 
     #[test]
     fn inactive_director_only_follows_requests() {
         let mut d = Director { current: Some(0), ..Director::default() };
         for _ in 0..(200.0 / FRAME) as usize {
-            assert_eq!(d.update(looks(), false, Some(&music(0.5)), true, FRAME), None);
+            assert_eq!(d.update(looks(), &[], false, Some(&music(0.5)), true, FRAME), None);
         }
         d.request(3);
-        let applied: Vec<usize> = (0..120).filter_map(|_| d.update(looks(), false, None, false, FRAME)).collect();
+        let applied: Vec<usize> = (0..120).filter_map(|_| d.update(looks(), &[], false, None, false, FRAME)).collect();
         assert_eq!(applied, vec![3]);
     }
 
@@ -467,7 +525,7 @@ mod tests {
         let mut switched = false;
         for _ in 0..200 {
             let before = d.darkness();
-            if d.update(looks(), false, None, false, FRAME).is_some() {
+            if d.update(looks(), &[], false, None, false, FRAME).is_some() {
                 switched = true;
                 darkest_at_switch = before;
             }
@@ -485,6 +543,36 @@ mod tests {
         assert_eq!(applied, vec![2], "locked: same look, refreshed once at the interval");
         let applied = run(&mut d, &music(1.0), Some(30), 20.0);
         assert!(applied.is_empty(), "a drop doesn't change a locked look");
+    }
+
+    /// Its own picks keep to the eligible looks while any suit; with none, any will do.
+    #[test]
+    fn picks_keep_to_eligible_looks() {
+        let d = Director { current: Some(0), ..Director::default() };
+        let favourite = looks().iter().rposition(|l| l.suits(true)).unwrap();
+        let only: Vec<bool> = (0..looks().len()).map(|i| i == favourite).collect();
+        assert_eq!(d.choose(looks(), &only, true), favourite);
+        let none = vec![false; looks().len()];
+        assert!(looks()[d.choose(looks(), &none, true)].suits(true));
+    }
+
+    /// Back steps through the looks shown, most recent first; a cut changes at once.
+    #[test]
+    fn back_returns_through_the_looks_shown() {
+        let mut d = Director { current: Some(0), ..Director::default() };
+        let go = |d: &mut Director| (0..120).filter_map(|_| d.update(looks(), &[], false, None, false, FRAME)).last();
+        for target in [3, 5] {
+            d.request(target);
+            go(&mut d);
+        }
+        assert!(d.back());
+        assert_eq!(go(&mut d), Some(3));
+        assert!(d.back());
+        assert_eq!(go(&mut d), Some(0));
+        assert!(!d.back(), "nothing further back");
+        d.cut(7);
+        assert_eq!(d.update(looks(), &[], false, None, false, FRAME), Some(7));
+        assert_eq!(d.darkness(), 0.0, "a cut doesn't fade");
     }
 
     #[test]

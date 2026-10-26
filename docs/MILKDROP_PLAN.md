@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phases A to E and G done** (E with the analyzer plan, which did most of its audio work; F not yet). Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A to E, G and I done** (E with the analyzer plan, which did most of its audio work; I with part of F: ratings, favourites, tags and hard cuts; F's blended transitions not yet). Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -634,3 +634,83 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
       with its composite.
   - Checked in the app, full screen, with the long test beat: the five looks above
     (Inferno's mandala in fire colours, Mercury's silver, Lava lamp's red blobs).
+- **Phase I (done):** library and interface.
+  - Looks without fluid: a look file may leave out `solver` and `scene`. The 2D world
+    then waits underneath, neither stepped nor drawn: each frame starts from black and
+    the picture is only the waves and shapes, carried by the feedback. Reactions still
+    flash and turn the palette. Picking a solver or a scene brings the fluid back.
+  - 32 built-in looks (23 new), with tags:
+    - 12 without fluid: Tunnel vision, Spiral galaxy, Starfield, Neon scope, Bass bloom,
+      Ripple pool, Prism, Heartbeat, Mandala, Vortex drain, Aurora, Strobe lattice. Most
+      have equations (a wandering tunnel centre, spiral arms, rings spreading from the
+      middle, a monitor trace, a strobe that inverts on the beat).
+    - 11 more with fluid: Deep current, Fountain of light, Quicksilver, Slime pit, Dye
+      tornado, Ember drift, Karman street, Ink garden (2D); Ghost smoke, Twin flames,
+      Blue torch (3D). 3D fire takes its colours from its heat, not the palette, so Blue
+      torch is turned blue by the composite's hue.
+    - The list alternates fluid and no-fluid looks, so the director's rotation does too.
+  - Ratings, favourites, history, hard cuts (moved here from phase F):
+    - Stars (1 to 5; unrated counts as 3) and favourites per look, saved in the
+      settings by name.
+    - When the director changes looks by itself it skips one-star looks, and with
+      "favourites only" keeps to favourites (if any suit the music; otherwise any look).
+    - It remembers the looks shown (50), for going back, and can cut without a fade.
+  - Hotkeys, in the shortcut table (cheat sheet and Info tab):
+    - In full screen MilkDrop's take over the keys they share: Space is the next look
+      (the director's pick, faded), H the same as a hard cut, L locks the look. Outside
+      full screen Space, H and L keep pausing and hiding particles and the liquid.
+    - Everywhere: Backspace goes back a look, + and - rate it (shown as stars), T shows
+      the song's title (the track's name, or the device listened to live), B the
+      browser, E the editor. `,` and `.` stay.
+  - The look browser (B, the grid button in the Looks group and the full-screen bar):
+    - A card per look: thumbnail, name (a pencil for the user's own), clickable stars
+      and heart. Search over names and tags, tag chips (all must match), a favourites
+      filter, and the director's favourites-only switch.
+    - Thumbnails come from the picture itself, since a fluid can't be run ahead in the
+      background: 8 s into a look, while music plays, the composite is drawn a second
+      time into a small texture, read back over the next frames without waiting, the
+      canvas cropped to 16:9 and averaged down to 192x108. They're cached as PNGs beside
+      the settings, named after the look and a fingerprint of its file, so an edited
+      look gets a new one (the old is removed). Until then a card shows the palette and
+      what the look is.
+  - The equation editor (E, or the function button):
+    - The look on screen's init, per-frame and per-pixel programs in code boxes. Each
+      keystroke that leaves them compiling takes effect at once: the clock, the beat
+      pulses, the q's and the variables both versions share carry on (`init` runs again
+      only if it was edited).
+    - A mistake is underlined (the word at its place, or the first line for a shader
+      error) with the message below, while the look keeps running its last good code.
+    - Save writes the look as Save as does, under its name (a built-in becomes the
+      user's copy); Revert goes back to the code as loaded or last saved.
+    - Each per-pixel edit builds a shader: the feedback keeps at most 32.
+  - Display, in a Screen group of the View tab (saved):
+    - The monitor for full screen; the visualizer in a window instead, optionally kept
+      on top; a frame-rate cap (30, 60, 120, 144 fps), waiting between frames rather
+      than drawing as fast as possible. The render scale was already there.
+  - Tests:
+    - Looks without fluid load, round-trip, and need both or neither of solver and
+      scene. Every built-in loads and refers to things that exist.
+    - Code swapped while running keeps its clock and variables, and reruns `init` only
+      when asked. Editor errors underline the right word.
+    - The director keeps to eligible looks while any suit, goes back through the looks
+      shown and cuts without a fade. Ratings and favourites survive the settings.
+    - In full screen the visualizer's keys win; every key is unique per context.
+    - The browser's filter searches names and tags. Thumbnails are stored, replace the
+      old one and load back; the shrink crops to 16:9 and swaps blue-first bytes.
+  - Checked in the app (release, a scratch settings folder, a 7.5-minute mono test beat,
+    muted), full screen:
+    - All 32 looks, 10 s each: no errors, and 32 thumbnails written. A first run
+      outlasted its 90 s track, and the looks after that were dark: in silence the
+      waves are flat. Thumbnails now wait for sound.
+    - Toned down from the first run: Starfield, Prism and Neon scope (blown out to
+      white), Tunnel vision and Quicksilver (washed out). Brightened: Aurora and Ripple
+      pool (brightest instead of smear). Ink garden moved to the double dam break (its
+      dye barely showed in the tank). Blue torch was orange before its hue turn.
+    - The browser: cards with thumbnails in rows (a wrapping layout first widened the
+      window to the screen), tags and filters. The editor shows the look's code.
+    - + showed the stars; T the track; Space faded to the director's pick; Backspace
+      returned.
+    - Not checked in the app: typing in the editor (posted keys don't reach egui text
+      fields; the tests cover compiling and swapping), the monitor choice (one monitor),
+      the windowed visualizer, and the frame-rate cap.
+

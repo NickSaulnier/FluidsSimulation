@@ -1,0 +1,37 @@
+[meta]
+name = "Strobe lattice"
+tags = ["no fluid", "shapes", "strobe"]
+energy = "energetic"
+
+[sim]
+palette = "Mercury"
+reactions = [
+    { trigger = "kick", effect = "flash", gain = 1.2 },
+    { trigger = "snare", effect = "flash", gain = 0.8 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.6
+zoom = 1.4
+rotation = 0.785
+
+[[shape]]
+sides = 4
+radius = 0.12
+spin = 0.0
+thickness = 2.0
+bass_pulse = 0.6
+
+[composite]
+symmetry = "quad"
+contrast = 1.4
+saturation = 0.2
+grain = 0.08
+
+[code]
+# The beat flips the picture to its negative and back.
+frame = """
+invert = if(beat > 0.6, 1, 0) * beating
+rot = if(bar_phase < 0.5, 0.785, -0.785)
+"""

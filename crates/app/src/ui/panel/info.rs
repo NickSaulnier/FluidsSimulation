@@ -66,7 +66,9 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
 
     widgets::group(ui, "Shortcuts", |ui| {
         for sc in SHORTCUTS {
-            row(ui, sc.keys, "", |ui| ui.label(sc.what));
+            let full_screen = sc.group == crate::ui::shortcuts::Group::Visualizer;
+            let what = if full_screen { format!("{} (full screen)", sc.what) } else { sc.what.to_string() };
+            row(ui, sc.keys, "", |ui| ui.label(what));
         }
         for (keys, what) in MOUSE {
             row(ui, keys, "", |ui| ui.label(*what));

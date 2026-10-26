@@ -1,0 +1,48 @@
+[meta]
+name = "Mandala"
+tags = ["no fluid", "shapes", "kaleidoscope"]
+energy = "calm"
+
+[sim]
+palette = { deep = [60, 10, 40], base = [220, 120, 40], highlight = [255, 240, 200] }
+reactions = [
+    { trigger = "brightness", effect = "hue", gain = 0.5 },
+    { trigger = "hat", effect = "flash", gain = 0.3 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.85
+zoom = 1.08
+rotation = 0.1
+echo = 0.25
+echo_zoom = 0.7
+echo_flip = "both"
+
+[[shape]]
+sides = 4
+radius = 0.25
+centre = [0.3, 0.0]
+spin = 0.5
+bass_pulse = 0.5
+thickness = 2.0
+
+[[shape]]
+sides = 5
+radius = 0.15
+spin = -0.7
+bass_pulse = 0.3
+fill = 0.4
+
+[composite]
+symmetry = "kaleidoscope"
+segments = 10
+symmetry_spin = 0.1
+vignette = 0.4
+
+[code]
+# The square circles the middle, so the kaleidoscope folds it into petals.
+frame = """
+shape1_x = 0.3 * cos(time * 0.3)
+shape1_y = 0.3 * sin(time * 0.3)
+"""

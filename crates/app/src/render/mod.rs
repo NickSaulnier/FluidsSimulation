@@ -11,6 +11,7 @@ mod overlay;
 mod particles;
 pub mod post;
 mod solid;
+pub mod thumbnail;
 pub mod timer;
 pub mod waves;
 

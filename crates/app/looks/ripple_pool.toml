@@ -1,0 +1,38 @@
+[meta]
+name = "Ripple pool"
+tags = ["no fluid", "water", "ripples"]
+energy = "calm"
+
+[sim]
+palette = "Ocean"
+reactions = [
+    { trigger = "kick", effect = "flash", gain = 0.4 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.85
+zoom = 1.04
+warp = 0.008
+warp_speed = 0.6
+
+[waves]
+mode = "line"
+y = 0.0
+scale = 0.6
+brightness = 1.0
+thickness = 2.0
+
+[composite]
+palette_map = 0.6
+vignette = 0.35
+
+[code]
+# Rings spread from the middle, quicker with the bass.
+frame = """
+q1 = time * (2 + 2 * bass_att)
+"""
+pixel = """
+zoom = zoom + 0.06 * sin(rad * 18 - q1)
+"""

@@ -4,6 +4,7 @@
 
 [meta]
 name = "Ocean pulse"
+tags = ["fluid", "water", "liquid"]
 energy = "any"
 
 [sim]

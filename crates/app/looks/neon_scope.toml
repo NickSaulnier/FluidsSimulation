@@ -1,0 +1,28 @@
+[meta]
+name = "Neon scope"
+tags = ["no fluid", "oscilloscope", "mirror"]
+energy = "any"
+
+[sim]
+palette = { deep = [10, 40, 60], base = [0, 220, 200], highlight = [230, 255, 250] }
+reactions = [
+    { trigger = "snare", effect = "flash", gain = 0.6 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.75
+zoom = 0.96
+rotation = -0.1
+
+[waves]
+mode = "xy"
+scale = 1.2
+brightness = 0.9
+thickness = 2.0
+
+[composite]
+symmetry = "mirror_x"
+aberration = 0.01
+vignette = 0.45

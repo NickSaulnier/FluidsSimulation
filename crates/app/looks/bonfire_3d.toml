@@ -1,5 +1,6 @@
 [meta]
 name = "Bonfire 3D"
+tags = ["fluid", "3d", "fire"]
 energy = "any"
 
 [sim]

@@ -1,5 +1,6 @@
 [meta]
 name = "Inferno"
+tags = ["fluid", "3d", "fire", "kaleidoscope"]
 energy = "energetic"
 
 [sim]

@@ -1,0 +1,25 @@
+[meta]
+name = "Ink garden"
+tags = ["fluid", "dye", "pastel"]
+energy = "calm"
+
+[sim]
+solver = "Stable fluids (dye)"
+scene = "Double dam break"
+palette = { deep = [90, 60, 120], base = [240, 150, 180], highlight = [255, 245, 220] }
+params = { buoyancy = 0.15, vorticity = 0.2 }
+reactions = [
+    { trigger = "bass", effect = "param", param = "buoyancy", gain = 0.6 },
+    { trigger = "snare", effect = "vortex", gain = 0.5 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.8
+flow = 1.0
+
+[composite]
+symmetry = "quad"
+saturation = 0.9
+vignette = 0.3

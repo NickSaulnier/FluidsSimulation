@@ -1,0 +1,25 @@
+[meta]
+name = "Ghost smoke"
+tags = ["fluid", "3d", "smoke"]
+energy = "calm"
+
+[sim]
+solver = "Smoke (3D GPU)"
+scene = "Chimney"
+palette = "Mercury"
+orbit = 0.1
+reactions = [
+    { trigger = "bass", effect = "param", param = "rise", gain = 0.5 },
+    { trigger = "snare", effect = "vortex", gain = 0.5 },
+    { trigger = "hat", effect = "flash", gain = 0.3 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.75
+flow = 1.0
+
+[composite]
+contrast = 1.2
+vignette = 0.5
+grain = 0.05

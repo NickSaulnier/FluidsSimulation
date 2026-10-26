@@ -1,5 +1,6 @@
 [meta]
 name = "Mercury rain"
+tags = ["fluid", "metal", "particles"]
 energy = "any"
 
 [sim]

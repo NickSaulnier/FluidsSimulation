@@ -1,5 +1,6 @@
 [meta]
 name = "Wind tunnel"
+tags = ["fluid", "wind", "dye"]
 energy = "any"
 
 [sim]

@@ -79,7 +79,7 @@ mod tests {
             onsets.clear();
             analyzer.drain_onsets(&mut onsets);
             let kicked = onsets.iter().any(|o| o.kind == OnsetKind::Kick);
-            if let Some(look) = ui.director.update(&ui.looks.looks, true, Some(analyzer.features()), kicked, FRAME) {
+            if let Some(look) = ui.director.update(&ui.looks.looks, &[], true, Some(analyzer.features()), kicked, FRAME) {
                 let l = &ui.looks.looks[look].clone();
                 visited.push(look);
                 in_3d = false;

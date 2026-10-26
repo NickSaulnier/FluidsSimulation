@@ -83,11 +83,13 @@ fn beat(ui: &mut Ui, f: &mut Frame<'_>) {
 fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
     let (d, library) = (&mut f.state.director, &f.state.looks);
     let mut notice = None;
+    let mut browse = false;
+    let mut edit = false;
     widgets::group(ui, "Looks", |ui| {
         row(ui, "Look", "A tuned solver, scene, colours, reactions and equations. Picking one fades to it.", |ui| {
             let current = d.current.and_then(|i| library.looks.get(i)).map_or("Custom", |l| l.name.as_str());
             let mut pick = None;
-            egui::ComboBox::from_id_salt("look").selected_text(current).width(150.0).truncate().show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("look").selected_text(current).width(84.0).truncate().show_ui(ui, |ui| {
                 for (i, look) in library.looks.iter().enumerate() {
                     let mine = matches!(look.source, crate::looks::Source::File(_));
                     let label = if mine { format!("{} {}", look.name, icon::PENCIL_SIMPLE) } else { look.name.clone() };
@@ -98,6 +100,12 @@ fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
             });
             if let Some(i) = pick {
                 d.request(i);
+            }
+            if icon_button(ui, icon::FUNCTION).on_hover_text(tip("Edit the look's equations, live", Action::ToggleEditor)).clicked() {
+                edit = true;
+            }
+            if icon_button(ui, icon::SQUARES_FOUR).on_hover_text(tip("Browse the looks: search, tags, stars and favourites", Action::ToggleBrowser)).clicked() {
+                browse = true;
             }
         });
         widgets::toggle(
@@ -149,6 +157,12 @@ fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
     });
     if let Some(notice) = notice {
         f.state.show_notice(notice);
+    }
+    if browse {
+        f.state.browser_open = !f.state.browser_open;
+    }
+    if edit {
+        f.state.editor_open = !f.state.editor_open;
     }
 }
 

@@ -1,0 +1,28 @@
+[meta]
+name = "Dye tornado"
+tags = ["fluid", "dye", "kaleidoscope"]
+energy = "energetic"
+
+[sim]
+solver = "Stable fluids (dye)"
+scene = "Martin & Moyce column"
+palette = "Ink"
+params = { vorticity = 0.6, buoyancy = -0.2 }
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 1.3 },
+    { trigger = "kick", effect = "vortex", gain = 1.0 },
+    { trigger = "mid", effect = "gust", gain = 0.5 },
+    { trigger = "brightness", effect = "hue", gain = 0.5 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.55
+flow = 1.5
+rotation = 0.3
+
+[composite]
+symmetry = "kaleidoscope"
+segments = 5
+symmetry_spin = 0.15
+vignette = 0.35

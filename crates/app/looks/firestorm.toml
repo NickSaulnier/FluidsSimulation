@@ -1,5 +1,6 @@
 [meta]
 name = "Firestorm"
+tags = ["fluid", "fire", "tunnel"]
 energy = "energetic"
 
 [sim]

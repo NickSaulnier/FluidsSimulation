@@ -1,5 +1,6 @@
 [meta]
 name = "Smoke dance"
+tags = ["fluid", "3d", "smoke", "mirror"]
 energy = "calm"
 
 [sim]

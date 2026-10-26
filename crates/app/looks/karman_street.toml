@@ -1,0 +1,27 @@
+[meta]
+name = "Karman street"
+tags = ["fluid", "wind", "dye"]
+energy = "calm"
+
+[sim]
+solver = "Lattice Boltzmann (dye)"
+scene = "Wind tunnel"
+palette = "Ocean"
+reactions = [
+    { trigger = "kick", effect = "vortex", gain = 0.5 },
+    { trigger = "snare", effect = "vortex", gain = 0.6 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.7
+flow = 1.6
+echo = 0.2
+echo_zoom = 1.0
+echo_flip = "vertical"
+
+[composite]
+symmetry = "mirror_y"
+palette_map = 0.3
+vignette = 0.3

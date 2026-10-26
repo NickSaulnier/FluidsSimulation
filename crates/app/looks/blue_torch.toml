@@ -1,0 +1,28 @@
+[meta]
+name = "Blue torch"
+tags = ["fluid", "3d", "fire", "blue"]
+energy = "any"
+
+[sim]
+solver = "Fire (3D GPU)"
+scene = "Torch"
+palette = { deep = [10, 20, 90], base = [40, 120, 255], highlight = [220, 240, 255] }
+orbit = 0.15
+reactions = [
+    { trigger = "kick", effect = "jet", gain = 1.0 },
+    { trigger = "snare", effect = "vortex", gain = 0.8 },
+    { trigger = "hat", effect = "param", param = "flicker", gain = 0.6 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.5
+zoom = 1.1
+drift = [0.0, 0.05]
+
+[composite]
+# Fire takes its colours from its heat, not the palette: turn them round to blue.
+hue = -160.0
+exposure = 1.1
+aberration = 0.006
+vignette = 0.45

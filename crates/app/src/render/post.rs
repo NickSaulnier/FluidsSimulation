@@ -301,6 +301,14 @@ impl PostProcess {
         let composite = self.group(device, source, &t.levels[0]);
         fullscreen(encoder, "composite", output, false, &self.composite, &composite);
     }
+
+    /// The composite of `source` again, into `output` (of the same format), with what the
+    /// last `run` set up (its glow and settings): for thumbnails.
+    pub fn composite_again(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, output: &wgpu::TextureView) {
+        let Some(t) = &self.targets else { return };
+        let composite = self.group(device, source, &t.levels[0]);
+        fullscreen(encoder, "composite again", output, false, &self.composite, &composite);
+    }
 }
 
 fn texture_2d(device: &wgpu::Device, label: &str, size: [u32; 2]) -> wgpu::TextureView {

@@ -65,10 +65,19 @@ rot = rot * (0.5 + rad)
 """
 ```
 
+The app's look browser (B, or the grid button in the Looks group) finds looks by name and
+by `tags`, and keeps your stars and favourites (in the settings, by the look's name).
+When looks change by themselves, a one-star look is never picked, and "Auto: favourites
+only" keeps to your favourites. Its equation editor (E, or the function button) edits
+the `[code]` of the look on screen while it runs; Save there writes the look as Save as
+does, under its own name.
+
 ## `[sim]`
 
 - `solver`, `scene`: names as the app shows them. A 3D solver (`Smoke (3D GPU)`,
-  `Fire (3D GPU)`) needs a 3D scene.
+  `Fire (3D GPU)`) needs a 3D scene. Leave both out for a look without fluid: the
+  picture is then only the waves and shapes, carried by the feedback (`params`,
+  `liquid` and `orbit` need a fluid; reactions can still flash and turn the colours).
 - `palette`: a palette's name (`Ocean`, `Lava`, `Slime`, `Ink`, `Mercury`), or its
   colours: `{ deep = [r, g, b], base = [r, g, b], highlight = [r, g, b] }` (0 to 255).
 - `params`: solver parameters by key: the keys the Simulate tab shows for the solver.

@@ -1,0 +1,26 @@
+[meta]
+name = "Fountain of light"
+tags = ["fluid", "water", "gold"]
+energy = "energetic"
+
+[sim]
+solver = "FLIP"
+scene = "Fountain"
+palette = { deep = [80, 40, 0], base = [230, 160, 30], highlight = [255, 250, 200] }
+liquid = true
+reactions = [
+    { trigger = "kick", effect = "jet", gain = 1.2 },
+    { trigger = "snare", effect = "splash", gain = 0.8 },
+    { trigger = "hat", effect = "flash", gain = 0.5 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.6
+zoom = 1.1
+drift = [0.0, 0.06]
+flow = 1.0
+
+[composite]
+exposure = 1.2
+vignette = 0.4

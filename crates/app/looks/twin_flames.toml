@@ -1,0 +1,25 @@
+[meta]
+name = "Twin flames"
+tags = ["fluid", "3d", "fire"]
+energy = "energetic"
+
+[sim]
+solver = "Fire (3D GPU)"
+scene = "Twin burners"
+palette = "Lava"
+orbit = 0.2
+reactions = [
+    { trigger = "kick", effect = "jet", gain = 1.2 },
+    { trigger = "bass", effect = "param", param = "burner_fuel", gain = 0.6 },
+    { trigger = "snare", effect = "vortex", gain = 0.9 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.5
+flow = 1.2
+bass_zoom = 0.3
+
+[composite]
+symmetry = "mirror_x"
+vignette = 0.4

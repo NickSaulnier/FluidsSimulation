@@ -5,7 +5,9 @@
 //! a specific solver. Whatever is left after the bars and panel is the canvas; its rect
 //! is returned so the scene view is fitted into exactly that area.
 
+pub mod browser;
 mod cheat_sheet;
+mod editor;
 mod compass;
 mod health;
 mod legend;
@@ -16,6 +18,7 @@ pub mod settings;
 pub mod shortcuts;
 mod status_bar;
 pub mod theme;
+pub mod thumbnails;
 mod tool_strip;
 mod top_bar;
 mod widgets;
@@ -32,6 +35,22 @@ pub const BRUSH_STEP: f32 = 1.15;
 /// How long the presentation overlay stays after the mouse stops, and notices last.
 const REVEAL: Duration = Duration::from_secs(3);
 const NOTICE: Duration = Duration::from_secs(4);
+
+/// Where and how the visualizer shows (F11), and how fast frames come.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Screen {
+    /// The monitor for full screen, by name (none: the window's own).
+    pub monitor: Option<String>,
+    /// The visualizer in a window instead of full screen, and that window kept on top.
+    pub windowed: bool,
+    pub on_top: bool,
+    /// Frames per second at most (0: as fast as the display allows).
+    pub fps_cap: u32,
+}
+
+/// The frame-rate caps offered.
+pub const FPS_CAPS: [u32; 5] = [0, 30, 60, 120, 144];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tool {
@@ -80,6 +99,9 @@ pub struct UiState {
     pub glow: f32,
     /// The scene's resolution relative to the window; 0 picks automatically.
     pub render_scale: f32,
+    pub screen: Screen,
+    /// The monitors' names, as the app last found them.
+    pub monitors: Vec<String>,
     pub show_particles: bool,
     pub faucet_speed: f32,
     /// Draw particles as a continuous liquid surface.
@@ -91,6 +113,16 @@ pub struct UiState {
     pub tab: Tab,
     pub panel_open: bool,
     pub cheat_sheet: bool,
+    /// The look browser and the equation editor windows.
+    pub browser_open: bool,
+    pub editor_open: bool,
+    /// What the browser shows, and the looks' thumbnails.
+    pub browser: browser::Filter,
+    pub thumbnails: thumbnails::Thumbnails,
+    /// The equation editor, and edited code for the app to run (and whether `init` runs
+    /// again).
+    pub editor: editor::Editor,
+    pub code_request: Option<(crate::looks::Code, bool)>,
     /// The fluid's colours.
     pub palette: crate::render::Palette,
     /// How each frame carries the last one (trails, tunnels, echo).
@@ -138,6 +170,8 @@ impl Default for UiState {
             overlay_opacity: 0.85,
             glow: 0.35,
             render_scale: 0.0,
+            screen: Screen::default(),
+            monitors: Vec::new(),
             show_particles: true,
             faucet_speed: 2.0,
             liquid: true,
@@ -147,6 +181,12 @@ impl Default for UiState {
             tab: Tab::Simulate,
             panel_open: true,
             cheat_sheet: false,
+            browser_open: false,
+            editor_open: false,
+            browser: browser::Filter::default(),
+            thumbnails: thumbnails::Thumbnails::default(),
+            editor: editor::Editor::default(),
+            code_request: None,
             palette: crate::render::Palette::default(),
             feedback: crate::render::feedback::FeedbackSettings::OFF,
             waves: crate::render::waves::WaveSettings::OFF,
@@ -257,9 +297,7 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
         if f.state.revealed() || ui.ctx().is_pointer_over_egui() {
             presentation::overlay(ui.ctx(), canvas, f);
         }
-        if f.state.cheat_sheet {
-            cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);
-        }
+        windows(ui.ctx(), canvas, f);
         return canvas;
     }
     egui::Panel::top("top_bar").show(ui, |ui| top_bar::show(ui, f));
@@ -271,18 +309,14 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
     if f.world3d.is_some() {
         // The 3D tools, but no overlay legend or brush outline.
         tool_strip::show(ui.ctx(), canvas, f.state, true);
-        if f.state.cheat_sheet {
-            cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);
-        }
+        windows(ui.ctx(), canvas, f);
         return canvas;
     }
     tool_strip::show(ui.ctx(), canvas, f.state, false);
     if let Some((field, range)) = overlay_legend(f) {
         legend::show(ui.ctx(), canvas, field, range, &f.state.palette);
     }
-    if f.state.cheat_sheet {
-        cheat_sheet::show(ui.ctx(), canvas, &mut f.state.cheat_sheet);
-    }
+    windows(ui.ctx(), canvas, f);
 
     // Brush outline, clipped to the canvas so it never draws over the controls, and
     // hidden over the on-canvas widgets (strokes don't start there either).
@@ -302,6 +336,19 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
         );
     }
     canvas.with_min_x((canvas.min.x + tool_strip::RESERVED_WIDTH).min(canvas.max.x))
+}
+
+/// The windows over the canvas: the browser, the editor and the cheat sheet.
+fn windows(ctx: &egui::Context, canvas: egui::Rect, f: &mut Frame<'_>) {
+    if f.state.browser_open {
+        browser::show(ctx, f);
+    }
+    if f.state.editor_open {
+        editor::show(ctx, f);
+    }
+    if f.state.cheat_sheet {
+        cheat_sheet::show(ctx, canvas, &mut f.state.cheat_sheet);
+    }
 }
 
 /// The overlay field to explain in the legend: the one the user picked, if this solver

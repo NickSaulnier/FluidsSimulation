@@ -1,0 +1,36 @@
+[meta]
+name = "Aurora"
+tags = ["no fluid", "spectrum", "sky"]
+energy = "calm"
+
+[sim]
+palette = { deep = [10, 30, 60], base = [40, 200, 140], highlight = [220, 160, 255] }
+reactions = [
+    { trigger = "brightness", effect = "hue", gain = 0.6 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.9
+drift = [0.0, 0.12]
+warp = 0.02
+warp_speed = 0.3
+
+[waves]
+mode = "spectrum"
+size = 0.5
+brightness = 1.0
+
+[composite]
+symmetry = "mirror_x"
+palette_map = 0.7
+vignette = 0.3
+
+[code]
+# Curtains sway: the drift swings across, and wobbles more higher up.
+frame = """
+dx = 0.06 * sin(time * 0.17)
+"""
+pixel = """
+warp = warp * (0.3 + 1.5 * y)
+"""

@@ -1,5 +1,9 @@
 //! Every keyboard shortcut, in one table. The key handler, the tooltips, the cheat sheet
 //! (F1) and the Info tab all read it, so they can't drift apart.
+//!
+//! In full screen the visualizer's keys (`Group::Visualizer`, MilkDrop's) take over the
+//! keys they share with the rest: Space, H and L change looks there instead of pausing
+//! or hiding things.
 
 use super::Tool;
 use winit::keyboard::KeyCode;
@@ -26,6 +30,15 @@ pub enum Action {
     PreviousLook,
     NextLook,
     ToggleAutoLooks,
+    BackLook,
+    RateUp,
+    RateDown,
+    ShowTitle,
+    ToggleBrowser,
+    ToggleEditor,
+    NextLookFade,
+    HardCut,
+    LockLook,
 }
 
 /// Cheat-sheet columns.
@@ -34,6 +47,8 @@ pub enum Group {
     Simulation,
     Tools,
     View,
+    /// Only in full screen, over the others' keys.
+    Visualizer,
 }
 
 pub struct Shortcut {
@@ -81,6 +96,15 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s(KeyCode::Comma, ",", A::PreviousLook, "previous visualizer look", G::View),
     s(KeyCode::Period, ".", A::NextLook, "next visualizer look", G::View),
     s(KeyCode::KeyA, "A", A::ToggleAutoLooks, "change looks automatically", G::View),
+    s(KeyCode::Backspace, "Backspace", A::BackLook, "back to the look before", G::View),
+    s(KeyCode::Equal, "+", A::RateUp, "rate the look higher", G::View),
+    s(KeyCode::Minus, "-", A::RateDown, "rate the look lower", G::View),
+    s(KeyCode::KeyT, "T", A::ShowTitle, "show the song's title", G::View),
+    s(KeyCode::KeyB, "B", A::ToggleBrowser, "browse the looks", G::View),
+    s(KeyCode::KeyE, "E", A::ToggleEditor, "edit the look's equations", G::View),
+    s(KeyCode::Space, "Space", A::NextLookFade, "next look", G::Visualizer),
+    s(KeyCode::KeyH, "H", A::HardCut, "next look, cut without a fade", G::Visualizer),
+    s(KeyCode::KeyL, "L", A::LockLook, "keep this look / let them change", G::Visualizer),
 ];
 
 /// Mouse actions, for the cheat sheet and the Info tab.
@@ -94,9 +118,11 @@ pub const MOUSE: &[(&str, &str)] = &[
     ("Esc", "close this sheet, leave full screen, or quit"),
 ];
 
-/// The action bound to `key`, if any (ignoring auto-repeat unless the action repeats).
-pub fn lookup(key: KeyCode, repeat: bool) -> Option<Action> {
-    SHORTCUTS.iter().find(|s| s.key == key && (s.repeats || !repeat)).map(|s| s.action)
+/// The action bound to `key`, if any (ignoring auto-repeat unless the action repeats);
+/// `presenting`: in full screen, where the visualizer's keys come first.
+pub fn lookup(key: KeyCode, repeat: bool, presenting: bool) -> Option<Action> {
+    let find = |visualizer: bool| SHORTCUTS.iter().find(|s| s.key == key && (s.group == Group::Visualizer) == visualizer && (s.repeats || !repeat));
+    presenting.then(|| find(true)).flatten().or_else(|| find(false)).map(|s| s.action)
 }
 
 /// How the key for `action` is written, for hints.
@@ -120,7 +146,9 @@ mod tests {
     fn every_key_and_action_appears_once() {
         for (i, a) in SHORTCUTS.iter().enumerate() {
             for b in &SHORTCUTS[i + 1..] {
-                assert_ne!(a.key, b.key, "{} and {} share a key", a.what, b.what);
+                if (a.group == Group::Visualizer) == (b.group == Group::Visualizer) {
+                    assert_ne!(a.key, b.key, "{} and {} share a key", a.what, b.what);
+                }
                 assert_ne!(a.action, b.action, "{} and {} share an action", a.what, b.what);
             }
         }
@@ -128,10 +156,19 @@ mod tests {
 
     #[test]
     fn auto_repeat_only_fires_repeating_actions() {
-        assert_eq!(lookup(KeyCode::KeyR, false), Some(Action::Reset));
-        assert_eq!(lookup(KeyCode::KeyR, true), None);
-        assert_eq!(lookup(KeyCode::ArrowLeft, true), Some(Action::TiltLeft));
-        assert_eq!(lookup(KeyCode::KeyQ, false), None);
+        assert_eq!(lookup(KeyCode::KeyR, false, false), Some(Action::Reset));
+        assert_eq!(lookup(KeyCode::KeyR, true, false), None);
+        assert_eq!(lookup(KeyCode::ArrowLeft, true, false), Some(Action::TiltLeft));
+        assert_eq!(lookup(KeyCode::KeyQ, false, false), None);
+    }
+
+    /// In full screen the visualizer's keys win; elsewhere they keep their old meaning.
+    #[test]
+    fn full_screen_keys_take_over() {
+        assert_eq!(lookup(KeyCode::Space, false, false), Some(Action::TogglePause));
+        assert_eq!(lookup(KeyCode::Space, false, true), Some(Action::NextLookFade));
+        assert_eq!(lookup(KeyCode::KeyH, false, true), Some(Action::HardCut));
+        assert_eq!(lookup(KeyCode::KeyR, false, true), Some(Action::Reset), "the rest still work");
     }
 
     #[test]

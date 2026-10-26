@@ -34,8 +34,11 @@ pub struct Settings {
     pub audio_latency_ms: f32,
     pub auto_looks: bool,
     pub look_interval_s: f32,
+    pub favourites_only: bool,
+    pub look_marks: std::collections::BTreeMap<String, crate::looks::Mark>,
     pub glow: f32,
     pub render_scale: f32,
+    pub screen: super::Screen,
     pub feedback: crate::render::feedback::FeedbackSettings,
     pub waves: crate::render::waves::WaveSettings,
     pub composite: crate::render::composite::CompositeSettings,
@@ -68,8 +71,11 @@ impl Settings {
             audio_latency_ms: s.audio_latency_ms,
             auto_looks: s.director.auto,
             look_interval_s: s.director.interval_s,
+            favourites_only: s.director.favourites_only,
+            look_marks: s.looks.marks.clone(),
             glow: s.glow,
             render_scale: s.render_scale,
+            screen: s.screen.clone(),
             feedback: s.feedback,
             waves: s.waves,
             composite: s.composite,
@@ -97,8 +103,11 @@ impl Settings {
         s.audio_latency_ms = clamp(self.audio_latency_ms, *crate::audio::LATENCY_MS.start(), *crate::audio::LATENCY_MS.end());
         s.director.auto = self.auto_looks;
         s.director.interval_s = clamp(self.look_interval_s, 30.0, 300.0);
+        s.director.favourites_only = self.favourites_only;
+        s.looks.marks = self.look_marks.clone();
         s.glow = clamp(self.glow, 0.0, 1.0);
         s.render_scale = if self.render_scale > 0.0 { clamp(self.render_scale, 0.5, 1.0) } else { 0.0 };
+        s.screen = super::Screen { fps_cap: if super::FPS_CAPS.contains(&self.screen.fps_cap) { self.screen.fps_cap } else { 0 }, ..self.screen.clone() };
         let f = &self.feedback;
         s.feedback = crate::render::feedback::FeedbackSettings {
             trail: clamp(f.trail, 0.0, 0.98),
@@ -199,6 +208,9 @@ mod tests {
         let mut state =
             UiState { tool: Tool::Faucet, brush_radius: 0.15, liquid: false, tab: Tab::Info, palette, ..UiState::default() };
         state.panel_open = false;
+        state.looks.marks.insert("Prism".into(), crate::looks::Mark { rating: 4, favourite: true });
+        state.director.favourites_only = true;
+        state.screen = crate::ui::Screen { monitor: Some("DISPLAY2".into()), windowed: true, on_top: true, fps_cap: 60 };
         let json = serde_json::to_string(&Settings::from_state(&state)).unwrap();
         let mut back = UiState::default();
         serde_json::from_str::<Settings>(&json).unwrap().apply(&mut back);
