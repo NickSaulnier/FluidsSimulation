@@ -1,7 +1,7 @@
 # Audio Analyzer Plan
 
-Status: **approved; phases A to C done** (C with generated songs and recorded drums from
-the Groove MIDI Dataset, see its notes). Decisions (§8) taken as recommended (2026-10-25):
+Status: **approved; phases A to D done** (C with generated songs and recorded drums from
+the Groove MIDI Dataset; D's changes from the design are in its notes). Decisions (§8) taken as recommended (2026-10-25):
 - `rtrb` for the lock-free hand-over from the audio thread;
 - `ebur128` for loudness;
 - a second, longer FFT for the low bands;
@@ -319,3 +319,87 @@ before or with MilkDrop phase E.
     91); kicks hold up (0.78 to 0.99).
   - Tests: scoring matches each hit once within the tolerance; hit lists parse; the
     generated songs are well formed; the baseline holds.
+- **Phase D (done):** hearing (`app/src/audio/analyzer.rs`).
+  - Everything now reads the 64-band filter bank: the display bands, MilkDrop's levels,
+    the hit gates and the spectrum (this settles phase B's deviation). Below 300 Hz the
+    bands take their shape from an 8192-sample FFT (about 6 Hz bins, run every fourth
+    hop) and their level from the short FFT over the same range, so they're sharp
+    without the long window's lag. Two low tones 45 and 80 Hz apart now show as two
+    peaks.
+  - Hits: SuperFlux per kind over its range's bands (each band's rise in ln(1 + energy
+    / floor) over the maximum of it and its neighbours a hop earlier; the floor 40 dB
+    under the kind's recent peak band). The kick takes the median over its bands (30 to
+    120 Hz, down from 150, under a snare's body), snares and hats the mean. The minimum
+    gap is 70 ms (it was 100), for sixteenths at 170 BPM.
+  - Changed from §5.2: hits are timed from the short FFT alone. With the long FFT's
+    shape in the kick bands, every kick was found twice (the shape changes about 70 ms
+    later, when the kick reaches the long window's centre).
+  - Changed from §5.5, kinds by shape: rules on the shape of a rise didn't hold up, so
+    each kind instead loses what the other kinds are known to spill into its range. A
+    kick's click lifts the snare's range, and a snare's top lifts the hat's. The spill is
+    learned per song at each kind's hits, as a lower envelope, so the moments two kinds
+    sound together count for little. Snares take off 1.5 times the predicted spill and
+    hats 1 times; kicks take none, since subtracting spill only lost real kicks.
+    Measured and dropped:
+    - Requiring a snare's body (150 to 500 Hz) to rise more than the kick region wins on
+      the recorded snares (hip-hop 0.28 to 0.79) but rejects every snare that lands with
+      a kick (four-on-the-floor house falls to 0.26). Claps and synthetic snares have no
+      broad body to find.
+    - Fitting each hop's rises as a non-negative mix of fixed kick, snare and hat
+      templates did no better than the plain rises (mean snare 0.50).
+  - Loudness: `ebur128` gives momentary (400 ms, read every 100 ms) and short-term (3 s,
+    read every 500 ms, since each reading sums its whole window) loudness in LUFS.
+    Silence is momentary loudness under -50 LUFS for half a second.
+  - Changed from §5.4: the level stays a per-hop envelope (it drives reactions, and a
+    400 ms window would blunt them). It's K-weighted instead, with EBU R128's filters
+    applied to the power spectrum per bin. The gain control's floor moved from -60 to
+    -66 dBFS: on the filter bank's soft band edges, a quiet track's mid band sat just
+    under -60 and stopped normalising.
+  - The Music tab's volume meter shows momentary loudness (-60 to 0 LUFS), and the
+    analysis shows both loudness readings.
+  - Results against phase C (F-measure: kick, snare, hat). The averages over the six
+    recorded grooves rose: kick 0.87 to 0.95, snare 0.46 to 0.55, hat 0.77 to 0.80.
+
+    | Clip | Phase C | Phase D |
+    |---|---|---|
+    | house 124 | 1.00 · 0.56 · 0.67 | 1.00 · 0.63 · 0.85 |
+    | breakbeat 92 | 0.96 · 0.78 · 0.90 | 0.77 · 0.83 · 0.87 |
+    | rock 140 | 0.48 · 0.57 · 0.91 | 0.50 · 0.67 · 0.81 |
+    | ambient 70 | 0.00 · 0.00 · 1.00 | 0.00 · 0.00 · 1.00 |
+    | dynamics 110 | 1.00 · 1.00 · 0.42 | 0.95 · 0.94 · 0.53 |
+    | Groove funk 138 | 0.82 · 0.53 · 0.70 | 1.00 · 0.57 · 0.73 |
+    | Groove soul 102 | 0.78 · 0.42 · 0.99 | 1.00 · 0.55 · 0.93 |
+    | Groove hip-hop 87 | 0.99 · 0.28 · 0.67 | 1.00 · 0.47 · 0.73 |
+    | Groove rock 135 | 0.85 · 0.38 · 0.78 | 0.99 · 0.56 · 0.77 |
+    | Groove samba 116 | 0.96 · 0.49 · 0.92 | 0.98 · 0.33 · 0.91 |
+    | Groove breakbeat 170 | 0.82 · 0.62 · 0.55 | 0.73 · 0.79 · 0.70 |
+
+    The ambient song's false hits fell from 2 kicks and 16 snares to 1 and 2 (its
+    zeros are false hits where there are none to find).
+  - What got worse, and why:
+    - Samba snares (0.49 to 0.33): its kicks nearly always land with a snare, so the
+      kick's learned spill includes real snares.
+    - Breakbeat kicks (0.96 to 0.77 generated, 0.82 to 0.73 recorded): false kicks on
+      snares, from the snare's body leaking into the kick bands.
+    - Rock 140 hats (0.91 to 0.81): hats on every beat lose part of their rise to the
+      kick's spill.
+  - Still open:
+    - A plucked bass note in the kick's range reads as a kick. At the short FFT's
+      resolution, 30 to 120 Hz is four bins (the rock song's kicks stay at 0.50). The
+      long FFT could tell them apart, but would make kicks about 70 ms late.
+    - Quiet hats are missed even when they sound alone (the 170 BPM breakbeat finds 92
+      of 155). Lowering the minimum rise or the floor didn't help.
+  - Cost: a minute of audio takes about 107 ms to analyse, up from 36 ms (about 0.2% of
+    one core). The long FFT and the loudness meter are most of the rise.
+  - Tests:
+    - EBU Tech 3341's first case: a 1 kHz sine at -23 dBFS reads -23 LUFS, momentary
+      and short-term.
+    - The level is K-weighted: at the same RMS, 30 Hz reads 8 dB under 1 kHz and 5 kHz
+      3 dB over.
+    - Silence follows loudness: -60 dBFS is silent, -40 dBFS isn't.
+    - A sustained bass line with vibrato and a slide fires no kicks. This held before
+      phase D too, and is kept as a guard.
+    - Close low tones resolve.
+    - The existing tests pass, including the allocation test (the meter allocates
+      nothing per hop) and identical onsets for any chunking.
+    - Not checked in the app.

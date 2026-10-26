@@ -8,7 +8,7 @@
 //! reactions either.
 
 use crate::audio::Music;
-use crate::audio::analyzer::{self, AudioFeatures, BAND_NAMES, OnsetKind};
+use crate::audio::analyzer::{self, AudioFeatures, BAND_NAMES, LUFS_FLOOR, OnsetKind};
 use crate::audio::reactions::{Effect, Reaction, Trigger, default_reactions};
 use crate::looks::LOOKS;
 use crate::ui::Frame;
@@ -137,10 +137,9 @@ fn live_card(ui: &mut Ui, music: &mut Music) {
     let device = music.live.as_ref().map_or("", |l| l.device_name.as_str());
     ui.add(egui::Label::new(format!("Listening to {device}")).truncate());
     let features = music.features();
-    let rms = features.map_or(0.0, |f| f.rms);
-    row(ui, "Volume", "Raw loudness of the captured audio", |ui| {
-        // Roughly -60..0 dBFS across the bar.
-        let fill = ((20.0 * rms.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
+    let lufs = features.map_or(LUFS_FLOOR, |f| f.loudness);
+    row(ui, "Volume", "Loudness of the captured audio as heard (EBU R128, the last 400 ms): -60 to 0 LUFS", |ui| {
+        let fill = ((lufs + 60.0) / 60.0).clamp(0.0, 1.0);
         bar(ui, 140.0, 8.0, fill, true);
     });
     // Reserved line: an error, silence, or all well.
@@ -179,7 +178,11 @@ fn analysis(ui: &mut Ui, music: &mut Music) {
             let m = f.milk;
             ui.label(RichText::new(format!("bass {:.2} · mid {:.2} · treb {:.2}", m.bass_att, m.mid_att, m.treb_att)).small());
         });
-        row(ui, "Level", "Overall loudness, relative to the last few seconds", |ui| bar(ui, 140.0, 8.0, f.level, active));
+        row(ui, "Level", "Overall loudness as heard, relative to the last few seconds", |ui| bar(ui, 140.0, 8.0, f.level, active));
+        row(ui, "Loudness", "EBU R128 loudness: momentary (400 ms) and short-term (3 s)", |ui| {
+            let text = if f.loudness <= LUFS_FLOOR { "-".to_string() } else { format!("{:.1} LUFS · 3 s {:.1}", f.loudness, f.loudness_short) };
+            ui.label(RichText::new(text).small());
+        });
         row(ui, "Brightness", "Spectral centroid: dull bass to bright treble", |ui| {
             bar(ui, 140.0, 8.0, f.brightness, active)
         });

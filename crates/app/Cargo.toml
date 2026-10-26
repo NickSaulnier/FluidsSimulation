@@ -26,6 +26,7 @@ rayon.workspace = true
 rodio.workspace = true
 rtrb.workspace = true
 realfft.workspace = true
+ebur128.workspace = true
 bytemuck.workspace = true
 pollster.workspace = true
 anyhow.workspace = true

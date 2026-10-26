@@ -1,29 +1,41 @@
 //! Streaming audio analysis: one pipeline for live capture and for track playback.
 //!
 //! The input is stereo frames. Every `HOP` frames a Hann-windowed `FFT_SIZE` real FFT of
-//! the mono mix gives the power spectrum, from which:
+//! the mono mix gives the power spectrum, and from it a filter bank: 64 log-spaced
+//! triangular bands from 20 Hz to 16 kHz. Below 300 Hz the short FFT's bins are wider
+//! than the bands, so there the bands take their shape from a `LONG_FFT_SIZE` FFT (about
+//! 6 Hz bins, run every few hops) and their level from the short one, which keeps them
+//! as quick as the rest. From the bank:
 //! - **Bands:** energy in five display bands (sub to high), as smoothed amplitude
 //!   envelopes normalised by an automatic gain control (each band's own slowly decaying
 //!   peak), so quiet and loud tracks both span 0..1.
-//! - **Level:** the same for overall loudness.
-//! - **Spectrum:** 64 log-spaced triangular bands from 20 Hz to 16 kHz, tilted up 3 dB
-//!   per octave (music's energy falls about that fast) and shown over the 60 dB below
-//!   their shared recent peak, for spectrum displays.
+//! - **Level:** the same for overall loudness as heard: the power K-weighted (EBU R128's
+//!   curve, applied per bin), so a bass-heavy and a bright mix of the same RMS differ as
+//!   they sound.
+//! - **Loudness:** EBU R128 momentary and short-term loudness in LUFS (`ebur128`).
+//! - **Spectrum:** the bank, tilted up 3 dB per octave (music's energy falls about that
+//!   fast) and shown over the 60 dB below its recent peak, for spectrum displays.
 //! - **MilkDrop's levels:** bass, mid and treble each over its own running average, so
 //!   1 is typical for the song, and their smoothed `_att` versions.
-//! - **Onsets:** kick, snare and hi-hat hits from three detection bands. The positive
-//!   frame-to-frame rise in log energy, picked against a trailing adaptive threshold
-//!   (mean + sensitivity × std over about a second), a floor from the last 10 s of
-//!   onsets (their 98th percentile, so one huge hit doesn't raise it), a minimum gap, a
-//!   loudness gate for silence, and a minimum rise. Peaks are confirmed one hop late.
-//!   The minimum rise matters for wide bands: in steady hiss the adaptive threshold
-//!   alone always finds some "unusual" random wobble (measured: about 10 snare and hat
-//!   hits a second in noise), but those wobbles stay under 1.3x per hop, while a real
-//!   hit jumps several-fold. A hit's strength is relative to a decaying maximum (a few
-//!   seconds' fall), so one huge hit doesn't make the next ones read weak for long.
+//! - **Onsets:** kick, snare and hi-hat hits. Per kind, SuperFlux (Böck and Widmer,
+//!   2013) over the bands of its range: each band's rise in compressed log energy over
+//!   the maximum of it and its neighbours a hop earlier, so pitch wobble doesn't count;
+//!   the kick takes the median over its bands (a kick raises them all, a bass note a
+//!   few), the others the mean. What the other kinds are known to spill into a kind's
+//!   range is taken off (a kick's click lifts the snare's range, a snare's top the
+//!   hat's), with the spill learned from each kind's own hits. The result is picked
+//!   against a trailing adaptive threshold (mean + sensitivity × std over about a
+//!   second), a floor from the last 10 s of onsets (their 98th percentile, so one huge
+//!   hit doesn't raise it), a minimum gap, a loudness gate for silence, and a minimum
+//!   rise. Peaks are confirmed one hop late. The minimum rise matters for wide bands: in
+//!   steady hiss the adaptive threshold alone always finds some "unusual" random wobble
+//!   (measured: about 10 snare and hat hits a second in noise), but those wobbles stay
+//!   small, while a real hit jumps several-fold. A hit's strength is relative to a
+//!   decaying maximum (a few seconds' fall), so one huge hit doesn't make the next ones
+//!   read weak for long. Hits are timed from the short FFT alone (the long one lags).
 //! - **Brightness:** the spectral centroid on a log scale, 0 (dull) to 1 (bright).
 //! - **Stereo:** balance and width, from the channels' levels and correlation.
-//! - **Silence:** quiet for half a second.
+//! - **Silence:** momentary loudness under -50 LUFS for half a second.
 //!
 //! The last `WAVEFORM_LEN` frames are kept for waveform displays. Nothing allocates per
 //! hop: every buffer is made once.
@@ -49,6 +61,12 @@ const SPECTRUM_HI_HZ: f32 = 16000.0;
 const SPECTRUM_RANGE_DB: f32 = 60.0;
 /// The spectrum's tilt is 0 dB here (and +3 dB per octave above).
 const TILT_HZ: f32 = 1000.0;
+/// The long FFT for the low bands (about 6 Hz bins), run every `LONG_EVERY` hops. The
+/// filter bank's bands centred below `LOW_SPLIT_HZ` take their shape from it and their
+/// level from the short FFT, so they're sharp in frequency without its latency.
+pub const LONG_FFT_SIZE: usize = 8192;
+const LONG_EVERY: usize = 4;
+const LOW_SPLIT_HZ: f32 = 300.0;
 /// Frames kept for the waveform view.
 pub const WAVEFORM_LEN: usize = 1024;
 /// MilkDrop's bass, mid and treble bands, Hz; the running average's time constant, the
@@ -73,10 +91,10 @@ pub enum OnsetKind {
 impl OnsetKind {
     pub const ALL: [OnsetKind; 3] = [OnsetKind::Kick, OnsetKind::Snare, OnsetKind::Hat];
 
-    /// Detection band, Hz.
+    /// Detection band, Hz. The kick's stops at 120 Hz, under a snare's body.
     fn range(self) -> (f32, f32) {
         match self {
-            OnsetKind::Kick => (30.0, 150.0),
+            OnsetKind::Kick => (30.0, 120.0),
             OnsetKind::Snare => (1000.0, 4000.0),
             OnsetKind::Hat => (6000.0, 16000.0),
         }
@@ -123,10 +141,15 @@ pub struct MilkLevels {
 pub struct AudioFeatures {
     /// Seconds of audio analysed.
     pub time: f32,
-    /// Overall loudness, normalised by the AGC: 0..1.
+    /// Overall loudness as heard (K-weighted, as EBU R128 weighs it, but over this hop
+    /// alone), normalised by the AGC: 0..1.
     pub level: f32,
     /// Overall RMS amplitude of the mono mix, raw (full scale = 1).
     pub rms: f32,
+    /// EBU R128 loudness, LUFS: momentary (the last 400 ms, updated every 100 ms) and
+    /// short-term (3 s, every 500 ms); `LUFS_FLOOR` for silence.
+    pub loudness: f32,
+    pub loudness_short: f32,
     /// Band envelopes, normalised: 0..1.
     pub bands: [f32; BANDS],
     /// The log-spaced spectrum, 20 Hz to 16 kHz, 0..1: as of this hop, and smoothed for
@@ -149,6 +172,8 @@ impl Default for AudioFeatures {
             time: 0.0,
             level: 0.0,
             rms: 0.0,
+            loudness: LUFS_FLOOR,
+            loudness_short: LUFS_FLOOR,
             bands: [0.0; BANDS],
             spectrum: [0.0; SPECTRUM_BANDS],
             spectrum_smooth: [0.0; SPECTRUM_BANDS],
@@ -167,26 +192,51 @@ const RELEASE_S: f32 = 0.2;
 const SPECTRUM_RELEASE_S: f32 = 0.12;
 /// The AGC's peak decays with this time constant, seconds.
 const AGC_S: f32 = 10.0;
-/// Amplitude treated as the quietest worth normalising (about -60 dBFS), so silence
+/// Amplitude treated as the quietest worth normalising (about -66 dBFS), so silence
 /// isn't amplified into noise.
-const AGC_FLOOR: f32 = 1e-3;
-/// Overall loudness below this (about -46 dBFS) for `SILENCE_S` counts as silence.
-const SILENCE_RMS: f32 = 0.005;
+const AGC_FLOOR: f32 = 5e-4;
+/// Momentary loudness below this for `SILENCE_S` counts as silence.
+const SILENCE_LUFS: f32 = -50.0;
 const SILENCE_S: f32 = 0.5;
+/// Loudness is read this often (EBU R128 meters update at 10 Hz), the short-term less
+/// often (each reading sums its whole window: 3 s of samples, the analyzer's biggest
+/// cost at 10 Hz), and reported no lower than `LUFS_FLOOR`.
+const LOUDNESS_EVERY_S: f32 = 0.1;
+const SHORT_TERM_EVERY: usize = 5;
+pub const LUFS_FLOOR: f32 = -70.0;
 /// Brightness maps the centroid from this (dull) to that (bright), log scale, Hz.
 const DULL_HZ: f32 = 200.0;
 const BRIGHT_HZ: f32 = 8000.0;
 
-/// Onset picking (see the module docs).
+/// Onset picking (see the module docs). The minimum gap lets sixteenth notes through
+/// at 170 BPM (88 ms apart).
 const CONTEXT_S: f32 = 0.5;
-const MIN_GAP_S: f32 = 0.1;
+const MIN_GAP_S: f32 = 0.07;
 const FLOOR_FRACTION: f32 = 0.2;
 const HISTORY_S: f32 = 10.0;
 /// A hit's strength is relative to the strongest recent rise, which falls with this
 /// time constant, seconds.
 const STRENGTH_S: f32 = 3.0;
-/// A hit must raise its band's energy by at least this factor in one hop (log: 0.4, a
-/// factor of 1.5).
+/// SuperFlux: the rise is measured against this many hops back, and band energies are
+/// compressed as ln(1 + energy / floor), the floor this far (-40 dB) below the kind's
+/// recent peak band, so quiet bands' noise barely counts whatever the track's volume.
+/// (Measured: -50 dB lets a snare's leakage into the kick bands read as kicks; -30 dB
+/// loses quiet kicks after a loud hit.)
+const FLUX_LAG: usize = 1;
+const FLUX_FLOOR: f32 = 1e-4;
+/// Per kind, whether its band rises are combined by their median rather than their
+/// mean. A kick raises every band of its range; a bass note raises the few its
+/// harmonics fall in, which the median ignores. Snares and hats are noise, broad by
+/// nature, and their quiet hits raise only part of the range, so they take the mean.
+const FLUX_MEDIAN: [bool; 3] = [true, false, false];
+/// Spill between kinds (see `Analyzer::spill`): how fast the learned ratio follows a
+/// lower one and a higher one, and how much of the spill it predicts is taken off each
+/// kind (kicks lose nothing: measured, it only cost real kicks).
+const SPILL_DOWN: f32 = 0.3;
+const SPILL_UP: f32 = 0.1;
+const SPILL_MARGIN: [f32; 3] = [0.0, 1.5, 1.0];
+/// A hit's onset value (a log rise, typically over the kind's bands) must be at least
+/// this: about a factor of 1.5 in one hop.
 const MIN_RISE: f32 = 0.4;
 /// The floor's percentile comes from a histogram of onset values over 0..`HIST_MAX`
 /// (log rises; bigger ones count in the top bin).
@@ -197,35 +247,106 @@ const HIST_MAX: f32 = 8.0;
 struct Filter {
     start: usize,
     weights: Vec<f32>,
-    /// Their sum, and the tilt for the band's centre.
+    /// Their sum.
     total: f32,
-    tilt: f32,
+}
+
+/// One FFT size's transform, window and buffers, with its power spectrum.
+struct Transform {
+    fft: Arc<dyn RealToComplex<f32>>,
+    window: Vec<f32>,
+    input: Vec<f32>,
+    output: Vec<Complex32>,
+    scratch: Vec<Complex32>,
+    /// Normalised to mean-square amplitude: a band's sum is its energy.
+    power: Vec<f32>,
+    power_scale: f32,
+    bin_hz: f32,
+    filters: Vec<Filter>,
+}
+
+impl Transform {
+    fn new(size: usize, rate: f32) -> Self {
+        let fft = RealFftPlanner::<f32>::new().plan_fft_forward(size);
+        let window: Vec<f32> = (0..size).map(|k| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * k as f32 / size as f32).cos()).collect();
+        let window_power: f32 = window.iter().map(|w| w * w).sum();
+        let bin_hz = rate / size as f32;
+        Self {
+            input: fft.make_input_vec(),
+            output: fft.make_output_vec(),
+            scratch: fft.make_scratch_vec(),
+            fft,
+            window,
+            power: vec![0.0; size / 2],
+            // One-sided spectrum: x2 for the mirrored half; Parseval with the window's power.
+            power_scale: 2.0 / (size as f32 * window_power),
+            bin_hz,
+            filters: filter_bank(bin_hz, size),
+        }
+    }
+
+    /// The power spectrum of the newest `window.len()` samples of `ring` (a ring whose
+    /// oldest sample is at `pos`).
+    fn run(&mut self, ring: &[f32], pos: usize) {
+        let start = pos + ring.len() - self.window.len();
+        for (k, (out, &w)) in self.input.iter_mut().zip(&self.window).enumerate() {
+            *out = ring[(start + k) % ring.len()] * w;
+        }
+        self.fft.process_with_scratch(&mut self.input, &mut self.output, &mut self.scratch).expect("buffers made by the plan");
+        for (p, c) in self.power.iter_mut().zip(&self.output) {
+            *p = c.norm_sqr() * self.power_scale;
+        }
+    }
+
+    /// The bins from `lo` to `hi` Hz.
+    fn bins(&self, lo: f32, hi: f32) -> (usize, usize) {
+        let a = ((lo / self.bin_hz).round() as usize).clamp(1, self.power.len() - 1);
+        let b = ((hi / self.bin_hz).round() as usize).clamp(a + 1, self.power.len());
+        (a, b)
+    }
+
+    /// Filter `band`'s energy and width, Hz.
+    fn band(&self, band: usize) -> (f32, f32) {
+        let f = &self.filters[band];
+        (f.weights.iter().zip(&self.power[f.start..]).map(|(w, p)| w * p).sum(), f.total * self.bin_hz)
+    }
 }
 
 pub struct Analyzer {
     hop_seconds: f32,
-    fft: Arc<dyn RealToComplex<f32>>,
-    window: Vec<f32>,
-    /// The last `FFT_SIZE` mono samples, a ring (oldest at `ring_pos` once full).
+    /// The last `LONG_FFT_SIZE` mono samples, a ring (oldest at `ring_pos` once full).
     ring: Vec<f32>,
     ring_pos: usize,
     filled: usize,
     since_hop: usize,
     hops: usize,
-    input: Vec<f32>,
-    output: Vec<Complex32>,
-    scratch: Vec<Complex32>,
-    power: Vec<f32>,
-    /// Bin ranges for the display, onset and MilkDrop bands.
-    band_bins: [(usize, usize); BANDS],
-    onset_bins: [(usize, usize); 3],
-    milk_bins: [(usize, usize); 3],
-    filters: Vec<Filter>,
-    /// Power-spectrum normalisation: band energy in mean-square amplitude.
-    power_scale: f32,
-    bin_hz: f32,
+    short: Transform,
+    long: Transform,
+    /// The filter bank's bands centred below `LOW_SPLIT_HZ`, and the bins of each FFT
+    /// they span (for scaling the long FFT's shape to the short one's level).
+    low_bands: usize,
+    low_bins: [(usize, usize); 2],
+    /// The long FFT's low bands as of its last run, and their total over `low_bins`;
+    /// `None` until the ring is full.
+    long_low: Option<([f32; SPECTRUM_BANDS], f32)>,
+    /// This hop's filter-bank energies and widths (Hz), and the energies from the short
+    /// FFT alone (for timing hits: the long FFT's shape lags).
+    bank: [f32; SPECTRUM_BANDS],
+    short_bank: [f32; SPECTRUM_BANDS],
+    widths: [f32; SPECTRUM_BANDS],
+    /// Filter-bank band ranges for the display, onset and MilkDrop bands.
+    band_ranges: [(usize, usize); BANDS],
+    onset_ranges: [(usize, usize); 3],
+    milk_ranges: [(usize, usize); 3],
     band_env: [Envelope; BANDS],
     level_env: Envelope,
+    /// Per short-FFT bin, the K-weighting's power gain.
+    k_weights: Vec<f32>,
+    /// EBU R128 loudness: the meter, the frames since the last hop (interleaved stereo),
+    /// and the hops between readings.
+    meter: ebur128::EbuR128,
+    meter_frames: Vec<f32>,
+    loudness_every: usize,
     /// The spectrum's shared AGC peak (power density, tilted).
     spectrum_peak: f32,
     milk_average: [f32; 3],
@@ -235,6 +356,17 @@ pub struct Analyzer {
     wave: Vec<Frame>,
     wave_pos: usize,
     pickers: [OnsetPicker; 3],
+    /// SuperFlux: the compressed filter-bank logs of the last `FLUX_LAG + 1` hops (a ring,
+    /// this hop's at `hops % (FLUX_LAG + 1)`), and each hit kind's decaying peak band
+    /// energy, which sets its compression floor.
+    flux_logs: [[f32; SPECTRUM_BANDS]; FLUX_LAG + 1],
+    flux_peaks: [f32; 3],
+    /// Spill: `spill[from][to]`, the share of kind `from`'s rise that shows in kind `to`'s
+    /// range (a kick's click in the snare's, a snare's top in the hat's), learned at
+    /// `from`'s hits as a lower envelope (so the moments both sound together count
+    /// little); and the previous hop's rises, as hits are confirmed a hop late.
+    spill: [[f32; 3]; 3],
+    prev_rises: [f32; 3],
     quiet_for: f32,
     features: AudioFeatures,
     onsets: Vec<Onset>,
@@ -243,46 +375,45 @@ pub struct Analyzer {
 impl Analyzer {
     pub fn new(sample_rate: u32) -> Self {
         let rate = sample_rate as f32;
-        let fft = RealFftPlanner::<f32>::new().plan_fft_forward(FFT_SIZE);
-        let window: Vec<f32> =
-            (0..FFT_SIZE).map(|k| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * k as f32 / FFT_SIZE as f32).cos()).collect();
-        let window_power: f32 = window.iter().map(|w| w * w).sum();
-        let bin_hz = rate / FFT_SIZE as f32;
-        let bins = |lo: f32, hi: f32| {
-            let a = ((lo / bin_hz).round() as usize).clamp(1, FFT_SIZE / 2 - 1);
-            let b = ((hi / bin_hz).round() as usize).clamp(a + 1, FFT_SIZE / 2);
-            (a, b)
-        };
         let hop_seconds = HOP as f32 / rate;
-        let (input, output, scratch) = (fft.make_input_vec(), fft.make_output_vec(), fft.make_scratch_vec());
+        let short = Transform::new(FFT_SIZE, rate);
+        let long = Transform::new(LONG_FFT_SIZE, rate);
+        let low_bands = (0..SPECTRUM_BANDS).take_while(|&b| band_centre(b as isize) < LOW_SPLIT_HZ).count();
+        let (low_lo, low_hi) = (band_centre(-1), band_centre(low_bands as isize));
         Self {
             hop_seconds,
-            window,
-            ring: vec![0.0; FFT_SIZE],
+            ring: vec![0.0; LONG_FFT_SIZE],
             ring_pos: 0,
             filled: 0,
             since_hop: 0,
             hops: 0,
-            input,
-            output,
-            scratch,
-            power: vec![0.0; FFT_SIZE / 2],
-            band_bins: std::array::from_fn(|b| bins(BAND_EDGES[b], BAND_EDGES[b + 1])),
-            onset_bins: OnsetKind::ALL.map(|k| bins(k.range().0, k.range().1)),
-            milk_bins: std::array::from_fn(|b| bins(MILK_EDGES[b], MILK_EDGES[b + 1])),
-            filters: filter_bank(bin_hz),
-            fft,
-            // One-sided spectrum: x2 for the mirrored half; Parseval with the window's power.
-            power_scale: 2.0 / (FFT_SIZE as f32 * window_power),
-            bin_hz,
+            low_bands,
+            low_bins: [short.bins(low_lo, low_hi), long.bins(low_lo, low_hi)],
+            short,
+            long,
+            long_low: None,
+            bank: [0.0; SPECTRUM_BANDS],
+            short_bank: [0.0; SPECTRUM_BANDS],
+            widths: [1.0; SPECTRUM_BANDS],
+            band_ranges: std::array::from_fn(|b| bank_range(BAND_EDGES[b], BAND_EDGES[b + 1])),
+            onset_ranges: OnsetKind::ALL.map(|k| bank_range(k.range().0, k.range().1)),
+            milk_ranges: std::array::from_fn(|b| bank_range(MILK_EDGES[b], MILK_EDGES[b + 1])),
             band_env: Default::default(),
             level_env: Envelope::default(),
+            k_weights: k_weights(rate, FFT_SIZE),
+            meter: ebur128::EbuR128::new(2, sample_rate, ebur128::Mode::M | ebur128::Mode::S).expect("a stereo meter at any audio rate"),
+            meter_frames: Vec::with_capacity(2 * FFT_SIZE),
+            loudness_every: ((LOUDNESS_EVERY_S / hop_seconds).round() as usize).max(1),
             spectrum_peak: 0.0,
             milk_average: [0.0; 3],
             stereo_sums: [0.0; 3],
             wave: vec![[0.0; 2]; WAVEFORM_LEN],
             wave_pos: 0,
             pickers: std::array::from_fn(|_| OnsetPicker::new(hop_seconds)),
+            flux_logs: [[0.0; SPECTRUM_BANDS]; FLUX_LAG + 1],
+            flux_peaks: [0.0; 3],
+            spill: [[0.0; 3]; 3],
+            prev_rises: [0.0; 3],
             quiet_for: 0.0,
             features: AudioFeatures { silent: true, ..AudioFeatures::default() },
             onsets: Vec::with_capacity(16),
@@ -327,50 +458,131 @@ impl Analyzer {
         self.stereo_sums[0] += left * left;
         self.stereo_sums[1] += right * right;
         self.stereo_sums[2] += left * right;
+        self.meter_frames.extend_from_slice(&[left, right]);
         self.ring[self.ring_pos] = 0.5 * (left + right);
-        self.ring_pos = (self.ring_pos + 1) % FFT_SIZE;
-        self.filled = (self.filled + 1).min(FFT_SIZE);
+        self.ring_pos = (self.ring_pos + 1) % LONG_FFT_SIZE;
+        self.filled = (self.filled + 1).min(LONG_FFT_SIZE);
         self.since_hop += 1;
-        if self.filled == FFT_SIZE && self.since_hop >= HOP {
+        if self.filled >= FFT_SIZE && self.since_hop >= HOP {
             self.since_hop = 0;
             self.hop(sensitivity);
         }
     }
 
-    fn hop(&mut self, sensitivity: f32) {
-        for (k, (out, &w)) in self.input.iter_mut().zip(&self.window).enumerate() {
-            *out = self.ring[(self.ring_pos + k) % FFT_SIZE] * w;
+    /// This hop's filter bank: every band from the short FFT, except that once the long
+    /// FFT has run, the low bands take its shape scaled to the short FFT's level over
+    /// the same range.
+    fn fill_bank(&mut self) {
+        for b in 0..SPECTRUM_BANDS {
+            (self.bank[b], self.widths[b]) = self.short.band(b);
         }
-        self.fft.process_with_scratch(&mut self.input, &mut self.output, &mut self.scratch).expect("buffers made by the plan");
-        for (p, c) in self.power.iter_mut().zip(&self.output) {
-            *p = c.norm_sqr() * self.power_scale;
+        self.short_bank = self.bank;
+        if self.filled == LONG_FFT_SIZE && self.hops.is_multiple_of(LONG_EVERY) {
+            self.long.run(&self.ring, self.ring_pos);
+            let mut low = [0.0; SPECTRUM_BANDS];
+            for (b, e) in low.iter_mut().enumerate().take(self.low_bands) {
+                *e = self.long.band(b).0;
+            }
+            let (a, z) = self.low_bins[1];
+            self.long_low = Some((low, self.long.power[a..z].iter().sum()));
         }
-        let power = &self.power;
-        let energy = |(a, b): (usize, usize)| power[a..b].iter().sum::<f32>();
+        if let Some((low, long_total)) = &self.long_low {
+            let (a, z) = self.low_bins[0];
+            let short_total: f32 = self.short.power[a..z].iter().sum();
+            let scale = if *long_total > 0.0 { short_total / long_total } else { 0.0 };
+            for (b, &e) in low.iter().enumerate().take(self.low_bands) {
+                self.bank[b] = e * scale;
+                self.widths[b] = self.long.filters[b].total * self.long.bin_hz;
+            }
+        }
+    }
 
+    /// Each hit kind's SuperFlux rise this hop: per band of its range, the rise in
+    /// compressed log energy over the band and its neighbours `FLUX_LAG` hops ago (the
+    /// maximum of the three, so a note bending into the next band doesn't count),
+    /// combined over the range (see `FLUX_MEDIAN`).
+    fn superflux(&mut self, dt: f32) -> [f32; 3] {
+        let n = FLUX_LAG + 1;
+        let (now, then) = (self.hops % n, (self.hops + 1) % n);
+        let mut values = [0.0; 3];
+        for (k, &(a, z)) in self.onset_ranges.iter().enumerate() {
+            let peak = self.short_bank[a..z].iter().fold(0.0f32, |m, &e| m.max(e));
+            self.flux_peaks[k] = peak.max(self.flux_peaks[k] * (-dt / AGC_S).exp());
+            let floor = (self.flux_peaks[k] * FLUX_FLOOR).max(1e-12);
+            for b in a..z {
+                self.flux_logs[now][b] = (1.0 + self.short_bank[b] / floor).ln();
+            }
+            if self.hops < FLUX_LAG {
+                continue;
+            }
+            let prev = &self.flux_logs[then];
+            let mut rises = [0.0f32; SPECTRUM_BANDS];
+            for (r, b) in rises.iter_mut().zip(a..z) {
+                let before = prev[b.saturating_sub(1)].max(prev[b]).max(prev[(b + 1).min(SPECTRUM_BANDS - 1)]);
+                *r = (self.flux_logs[now][b] - before).max(0.0);
+            }
+            let rises = &mut rises[..z - a];
+            values[k] = if FLUX_MEDIAN[k] {
+                *rises.select_nth_unstable_by(rises.len() / 2, f32::total_cmp).1
+            } else {
+                rises.iter().sum::<f32>() / rises.len() as f32
+            };
+        }
+        values
+    }
+
+    /// Each kind's onset value: its rise less what the other kinds' rises are known to
+    /// spill into its range, so one hit doesn't read as two kinds.
+    fn unspill(&self, rises: [f32; 3]) -> [f32; 3] {
+        std::array::from_fn(|to| {
+            let spilled: f32 = (0..3).filter(|&from| from != to).map(|from| self.spill[from][to] * rises[from]).sum();
+            (rises[to] - SPILL_MARGIN[to] * spilled).max(0.0)
+        })
+    }
+
+    fn hop(&mut self, sensitivity: f32) {
+        self.short.run(&self.ring, self.ring_pos);
+        self.fill_bank();
         let dt = self.hop_seconds;
+        let rises = self.superflux(dt);
+        let values = self.unspill(rises);
+        let power = &self.short.power;
+        let bank = &self.bank;
+        let energy = |(a, z): (usize, usize)| bank[a..z].iter().sum::<f32>();
+
         let time = self.hops as f32 * dt + 0.5 * FFT_SIZE as f32 * dt / HOP as f32;
         let total: f32 = power[1..].iter().sum();
         let rms = total.sqrt();
         let f = &mut self.features;
         f.time = time;
         f.rms = rms;
-        f.level = self.level_env.update(rms, dt);
-        for b in 0..BANDS {
-            f.bands[b] = self.band_env[b].update(energy(self.band_bins[b]).sqrt(), dt);
+        let heard: f32 = power.iter().zip(&self.k_weights).skip(1).map(|(p, w)| p * w).sum();
+        f.level = self.level_env.update(heard.sqrt(), dt);
+        // The meter can only fail on frames that aren't whole (they always are).
+        let _ = self.meter.add_frames_f32(&self.meter_frames);
+        self.meter_frames.clear();
+        if self.hops.is_multiple_of(self.loudness_every) {
+            let lufs = |r: Result<f64, ebur128::Error>| r.map_or(LUFS_FLOOR, |l| (l as f32).max(LUFS_FLOOR));
+            f.loudness = lufs(self.meter.loudness_momentary());
+            if self.hops.is_multiple_of(self.loudness_every * SHORT_TERM_EVERY) {
+                f.loudness_short = lufs(self.meter.loudness_shortterm());
+            }
         }
-        let weighted: f32 = power.iter().enumerate().skip(1).map(|(k, p)| k as f32 * self.bin_hz * p).sum();
+        for b in 0..BANDS {
+            f.bands[b] = self.band_env[b].update(energy(self.band_ranges[b]).sqrt(), dt);
+        }
+        let bin_hz = self.short.bin_hz;
+        let weighted: f32 = power.iter().enumerate().skip(1).map(|(k, p)| k as f32 * bin_hz * p).sum();
         let centroid = if total > 0.0 { weighted / total } else { DULL_HZ };
         let bright = ((centroid.max(1.0) / DULL_HZ).ln() / (BRIGHT_HZ / DULL_HZ).ln()).clamp(0.0, 1.0);
         f.brightness += (bright - f.brightness) * smoothing(dt, RELEASE_S);
-        self.quiet_for = if rms < SILENCE_RMS { self.quiet_for + dt } else { 0.0 };
+        self.quiet_for = if f.loudness < SILENCE_LUFS { self.quiet_for + dt } else { 0.0 };
         f.silent = self.quiet_for >= SILENCE_S;
 
         // The spectrum: each band's tilted power density, in dB below the shared peak.
         let mut loudest = 0.0f32;
-        for (s, filter) in f.spectrum.iter_mut().zip(&self.filters) {
-            let e: f32 = filter.weights.iter().zip(&power[filter.start..]).map(|(w, p)| w * p).sum();
-            let density = e / filter.total * filter.tilt;
+        for (b, s) in f.spectrum.iter_mut().enumerate() {
+            let density = bank[b] / self.widths[b] * band_centre(b as isize) / TILT_HZ;
             loudest = loudest.max(density);
             *s = density;
         }
@@ -386,7 +598,7 @@ impl Analyzer {
         // MilkDrop's levels: each band's amplitude over its running average.
         let mut levels = [0.0f32; 3];
         for (j, level) in levels.iter_mut().enumerate() {
-            let amplitude = energy(self.milk_bins[j]).sqrt();
+            let amplitude = energy(self.milk_ranges[j]).sqrt();
             let average = &mut self.milk_average[j];
             *average = if *average == 0.0 { amplitude } else { *average + (amplitude - *average) * smoothing(dt, MILK_AVERAGE_S) };
             *level = (amplitude / average.max(AGC_FLOOR * 0.1)).min(MILK_MAX);
@@ -411,15 +623,64 @@ impl Analyzer {
         }
 
         for (k, kind) in OnsetKind::ALL.into_iter().enumerate() {
-            let e = energy(self.onset_bins[k]);
-            let audible = e.sqrt() > kind.gate();
-            if let Some((hop, strength)) = self.pickers[k].push(e, audible, sensitivity) {
+            let audible = energy(self.onset_ranges[k]).sqrt() > kind.gate();
+            if let Some((hop, strength)) = self.pickers[k].push(values[k], audible, sensitivity) {
+                learn_spill(&mut self.spill, &self.prev_rises, k);
                 // `hop` is the previous hop: peaks are confirmed one hop late.
                 self.onsets.push(Onset { kind, time: time - (self.hops - hop) as f32 * dt, strength });
             }
         }
+        self.prev_rises = rises;
         self.hops += 1;
     }
+}
+
+/// After a hit of kind `kind` with these rises, learn how much of its rise spilled into
+/// the other kinds' ranges.
+fn learn_spill(spill: &mut [[f32; 3]; 3], rises: &[f32; 3], kind: usize) {
+    if rises[kind] <= 0.0 {
+        return;
+    }
+    for to in (0..3).filter(|&to| to != kind) {
+        let ratio = (rises[to] / rises[kind]).min(2.0);
+        let s = &mut spill[kind][to];
+        *s += (ratio - *s) * if ratio < *s { SPILL_DOWN } else { SPILL_UP };
+    }
+}
+
+/// The K-weighting's power gain at each bin of an FFT: the two filters of EBU R128 (ITU-R
+/// BS.1770), a high shelf of about +4 dB above 2 kHz and a high-pass at 38 Hz, as
+/// libebur128 designs them for any sample rate.
+fn k_weights(rate: f32, fft_size: usize) -> Vec<f32> {
+    let rate = f64::from(rate);
+    let (f0, gain_db, q) = (1681.974450955533, 3.999843853973347, 0.7071752369554196);
+    let k = (std::f64::consts::PI * f0 / rate).tan();
+    let vh = 10f64.powf(gain_db / 20.0);
+    let vb = vh.powf(0.4996667741545416);
+    let a0 = 1.0 + k / q + k * k;
+    let shelf = ([(vh + vb * k / q + k * k) / a0, 2.0 * (k * k - vh) / a0, (vh - vb * k / q + k * k) / a0], [
+        1.0,
+        2.0 * (k * k - 1.0) / a0,
+        (1.0 - k / q + k * k) / a0,
+    ]);
+    let (f0, q) = (38.13547087602444, 0.5003270373238773);
+    let k = (std::f64::consts::PI * f0 / rate).tan();
+    let a0 = 1.0 + k / q + k * k;
+    let high_pass = ([1.0, -2.0, 1.0], [1.0, 2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0]);
+    // |b(z)|² / |a(z)|² on the unit circle.
+    let power = |(b, a): &([f64; 3], [f64; 3]), w: f64| {
+        let at = |c: &[f64; 3]| {
+            let (re, im) = (c[0] + c[1] * w.cos() + c[2] * (2.0 * w).cos(), -(c[1] * w.sin() + c[2] * (2.0 * w).sin()));
+            re * re + im * im
+        };
+        at(b) / at(a)
+    };
+    (0..fft_size / 2)
+        .map(|bin| {
+            let w = 2.0 * std::f64::consts::PI * bin as f64 / fft_size as f64;
+            (power(&shelf, w) * power(&high_pass, w)) as f32
+        })
+        .collect()
 }
 
 /// The fraction of the way an exponential smoother moves in `dt` with time constant
@@ -432,10 +693,9 @@ fn smoothing(dt: f32, tau: f32) -> f32 {
 /// to its neighbours' centres, so neighbouring weights sum to 1 across the range. A
 /// band narrower than a bin (at the bottom, where bins are 20-odd Hz wide) instead
 /// interpolates between the two bins around its centre.
-fn filter_bank(bin_hz: f32) -> Vec<Filter> {
-    let ratio = (SPECTRUM_HI_HZ / SPECTRUM_LO_HZ).powf(1.0 / (SPECTRUM_BANDS - 1) as f32);
-    let centre = |i: isize| SPECTRUM_LO_HZ * ratio.powi(i as i32);
-    let last_bin = FFT_SIZE / 2 - 1;
+fn filter_bank(bin_hz: f32, fft_size: usize) -> Vec<Filter> {
+    let centre = band_centre;
+    let last_bin = fft_size / 2 - 1;
     (0..SPECTRUM_BANDS as isize)
         .map(|i| {
             let (lo, c, hi) = (centre(i - 1), centre(i), centre(i + 1));
@@ -447,15 +707,29 @@ fn filter_bank(bin_hz: f32) -> Vec<Filter> {
             };
             let weights: Vec<f32> = (first..=last.max(first)).map(weight).collect();
             let total: f32 = weights.iter().sum();
-            let tilt = c / TILT_HZ;
             if total >= 1.0 {
-                return Filter { start: first, weights, total, tilt };
+                return Filter { start: first, weights, total };
             }
             let x = (c / bin_hz).clamp(1.0, (last_bin - 1) as f32);
             let k = x.floor();
-            Filter { start: k as usize, weights: vec![1.0 - (x - k), x - k], total: 1.0, tilt }
+            Filter { start: k as usize, weights: vec![1.0 - (x - k), x - k], total: 1.0 }
         })
         .collect()
+}
+
+/// The centre of the filter bank's band `i`, Hz (log-spaced; also past the ends, for
+/// their edges).
+fn band_centre(i: isize) -> f32 {
+    let ratio = (SPECTRUM_HI_HZ / SPECTRUM_LO_HZ).powf(1.0 / (SPECTRUM_BANDS - 1) as f32);
+    SPECTRUM_LO_HZ * ratio.powi(i as i32)
+}
+
+/// The filter bank's bands centred from `lo` up to `hi` Hz (the top band included when
+/// `hi` is the top of the range).
+fn bank_range(lo: f32, hi: f32) -> (usize, usize) {
+    let below = |hz: f32| (0..SPECTRUM_BANDS).take_while(|&b| band_centre(b as isize) < hz * 0.9999).count();
+    let top = if hi >= SPECTRUM_HI_HZ { SPECTRUM_BANDS } else { below(hi) };
+    (below(lo), top.max(below(lo) + 1))
 }
 
 /// A smoothed amplitude with an automatic gain control: the output is the envelope over
@@ -481,7 +755,6 @@ impl Envelope {
 struct OnsetPicker {
     hop_seconds: f32,
     hops: usize,
-    prev_log: Option<f32>,
     /// Onset values over the threshold window, newest last, and their sum and sum of
     /// squares.
     recent: VecDeque<f32>,
@@ -510,7 +783,6 @@ impl OnsetPicker {
         Self {
             hop_seconds,
             hops: 0,
-            prev_log: None,
             recent: VecDeque::with_capacity(recent_cap),
             recent_cap,
             sums: (0.0, 0.0),
@@ -576,12 +848,9 @@ impl OnsetPicker {
         (mean as f32, var.sqrt() as f32)
     }
 
-    /// Push this hop's band energy. Returns (hop index, strength) for a confirmed hit at
-    /// the previous hop.
-    fn push(&mut self, energy: f32, audible: bool, sensitivity: f32) -> Option<(usize, f32)> {
-        let log = (energy + 1e-9).ln();
-        let value = self.prev_log.map_or(0.0, |prev| (log - prev).max(0.0));
-        self.prev_log = Some(log);
+    /// Push this hop's onset value (a rise in log energy). Returns (hop index, strength)
+    /// for a confirmed hit at the previous hop.
+    fn push(&mut self, value: f32, audible: bool, sensitivity: f32) -> Option<(usize, f32)> {
         self.remember(value);
 
         let mut hit = None;
@@ -756,7 +1025,7 @@ pub mod tests {
     #[test]
     fn the_spectrum_bands_tile_the_range() {
         let bin_hz = 48_000.0 / FFT_SIZE as f32;
-        let filters = filter_bank(bin_hz);
+        let filters = filter_bank(bin_hz, FFT_SIZE);
         assert_eq!(filters.len(), SPECTRUM_BANDS);
         assert!(filters.iter().all(|f| f.total > 0.0 && f.weights.iter().all(|w| (0.0..=1.0).contains(w))));
         let mut sum = vec![0.0f32; FFT_SIZE / 2];
@@ -837,8 +1106,7 @@ pub mod tests {
         let mut rng = SplitMix64::new(42);
         let mut all = Vec::new();
         for _ in 0..3000 {
-            let e = (1.0 + 3.0 * rng.next_f32()).exp();
-            p.push(e, true, 1.5);
+            p.push((3.0 * rng.next_f32() - 1.5).max(0.0), true, 1.5);
             all.push(*p.recent.back().unwrap());
         }
         let window: Vec<f32> = p.recent.iter().take(p.recent.len() - 1).copied().collect();
@@ -873,6 +1141,76 @@ pub mod tests {
         });
         assert_eq!(count, 0, "allocated {count} times");
         assert!(!onsets.is_empty(), "the beat should still be heard");
+    }
+
+    /// EBU Tech 3341's first test: a 1 kHz sine at -23 dBFS on both channels reads -23
+    /// LUFS, momentary and short-term.
+    #[test]
+    fn a_reference_tone_reads_its_loudness() {
+        let rate = 48_000;
+        let amplitude = 10f32.powf(-23.0 / 20.0);
+        let (a, _) = analyse(&tone(rate, 1000.0, 4.0, amplitude), rate, 1000);
+        let f = a.features();
+        assert!((f.loudness + 23.0).abs() < 0.1, "momentary {} LUFS", f.loudness);
+        assert!((f.loudness_short + 23.0).abs() < 0.1, "short-term {} LUFS", f.loudness_short);
+    }
+
+    /// The level hears as EBU R128 does: at the same RMS, a deep bass tone counts for less
+    /// than a 1 kHz one, and a bright one for more.
+    #[test]
+    fn the_level_is_k_weighted() {
+        let rate = 48_000;
+        let heard = |hz: f32| analyse(&tone(rate, hz, 1.0, 0.1), rate, 1000).0.level_env.value;
+        let (deep, mid, bright) = (heard(30.0), heard(1000.0), heard(5000.0));
+        let db = |x: f32| 20.0 * (x / mid).log10();
+        assert!(db(deep) < -4.0, "30 Hz at {:.1} dB", db(deep));
+        assert!((2.0..5.0).contains(&db(bright)), "5 kHz at {:.1} dB", db(bright));
+    }
+
+    /// Silence follows loudness: a tone at -60 dBFS is silent, one at -40 dBFS isn't.
+    #[test]
+    fn silence_is_quiet_as_heard() {
+        let rate = 48_000;
+        let at = |dbfs: f32| analyse(&tone(rate, 1000.0, 2.0, 10f32.powf(dbfs / 20.0)), rate, 1000).0.features().silent;
+        assert!(at(-60.0), "-60 dBFS should be silent");
+        assert!(!at(-40.0), "-40 dBFS should be heard");
+    }
+
+    /// A sustained bass line, with vibrato and a slide between notes, fires no kicks: its
+    /// energy holds steady while its pitch moves. (A plucked bass note in the kick's range
+    /// still reads as a kick: at the short FFT's resolution, 30 to 120 Hz is four bins.)
+    #[test]
+    fn a_sustained_bass_line_fires_no_kicks() {
+        let rate = 48_000;
+        let mut phase = 0.0f32;
+        let bass: Vec<f32> = (0..6 * rate)
+            .map(|k| {
+                let t = k as f32 / rate as f32;
+                let note = if t < 3.0 { 55.0 } else { 55.0 + 18.0 * ((t - 3.0) / 0.5).min(1.0) };
+                phase += 2.0 * PI * note * (1.0 + 0.03 * (2.0 * PI * 5.5 * t).sin()) / rate as f32;
+                // A sawtooth's first harmonics, fading in over 50 ms.
+                let fade = (t / 0.05).min(1.0);
+                fade * 0.3 * (1..6).map(|h| (h as f32 * phase).sin() / h as f32).sum::<f32>()
+            })
+            .collect();
+        let (_, onsets) = analyse(&bass, rate, 1000);
+        let kicks = times(&onsets, OnsetKind::Kick);
+        assert!(kicks.iter().all(|&t| t < 0.5), "kicks in a bass line: {kicks:?}");
+    }
+
+    /// The long FFT resolves low tones the short one can't: 45 and 80 Hz together show as
+    /// two peaks with a dip between.
+    #[test]
+    fn the_low_bands_resolve_close_tones() {
+        let rate = 48_000;
+        let (a, b) = (tone(rate, 45.0, 1.0, 0.2), tone(rate, 80.0, 1.0, 0.2));
+        let mix: Vec<f32> = a.iter().zip(&b).map(|(x, y)| x + y).collect();
+        let (an, _) = analyse(&mix, rate, 1000);
+        let s = &an.features().spectrum;
+        let band = |hz: f32| (0..SPECTRUM_BANDS).min_by(|&i, &j| (band_centre(i as isize) / hz).ln().abs().total_cmp(&(band_centre(j as isize) / hz).ln().abs())).unwrap();
+        let (low, dip, high) = (s[band(45.0)], s[band(60.0)], s[band(80.0)]);
+        // 0.1 on the spectrum's scale is 6 dB.
+        assert!(dip < low - 0.1 && dip < high - 0.1, "45 Hz {low:.2}, 60 Hz {dip:.2}, 80 Hz {high:.2}");
     }
 
     /// Silence: no onsets, flagged silent, bands at zero.

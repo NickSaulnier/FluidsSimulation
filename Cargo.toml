@@ -25,6 +25,7 @@ egui-phosphor = "=0.14.0"
 rodio      = "=0.22.2"
 realfft    = "3.5"
 rtrb       = "0.4"
+ebur128    = "0.1.10"
 rayon      = "1.12"
 glam       = { version = "0.34", features = ["bytemuck"] }
 bytemuck   = { version = "1", features = ["derive"] }
