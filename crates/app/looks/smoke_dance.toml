@@ -34,3 +34,9 @@ radius = 0.2
 spin = -0.4
 bass_pulse = 0.5
 fill = 0.3
+
+[code]
+# Sways one way and back over each bar, while there's a steady beat.
+frame = """
+rot = rot + 0.3 * sin(6.2832 * bar_phase) * beating
+"""

@@ -9,6 +9,7 @@ palette = "Slime"
 reactions = [
     { trigger = "snare", effect = "vortex", gain = 1.0 },
     { trigger = "kick", effect = "vortex", gain = 0.6 },
+    { trigger = "beat", effect = "vortex", gain = 0.4 },
     { trigger = "hat", effect = "flash", gain = 0.5 },
     { trigger = "brightness", effect = "hue", gain = 0.4 },
 ]

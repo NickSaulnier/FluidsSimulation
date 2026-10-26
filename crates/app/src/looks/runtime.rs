@@ -6,14 +6,17 @@
 
 use super::Code;
 use crate::audio::analyzer::{AudioFeatures, Onset, OnsetKind};
+use crate::audio::sections::SectionKind;
 use crate::expr::eval::{Layout, Machine};
 use crate::expr::{FRAME_OUTPUTS, MOTION, Program, SHARED, Stage, slot};
 use crate::render::feedback::FeedbackSettings;
 use crate::render::waves::WaveSettings;
 use utils::rng::SplitMix64;
 
-/// Hit and beat pulses fall from 1 with this time constant, seconds.
+/// Hit and beat pulses fall from 1 with this time constant, seconds; section changes
+/// (bigger moments) with this one.
 const PULSE_S: f32 = 0.1;
+const SECTION_PULSE_S: f32 = 0.5;
 
 /// What the music did this frame, for the inputs.
 #[derive(Clone, Copy, Default)]
@@ -55,8 +58,11 @@ pub struct Runtime {
     started: bool,
     time: f32,
     frames: f32,
-    /// Kick, snare, hat and beat, each 1 when it happens and falling after.
+    /// Kick, snare, hat and beat, each 1 when it happens and falling after; any section
+    /// change, a drop and a breakdown, the same; and the section changes seen so far.
     pulses: [f32; 4],
+    section_pulses: [f32; 3],
+    sections_seen: u32,
 }
 
 impl Default for Runtime {
@@ -81,6 +87,8 @@ impl Runtime {
             time: 0.0,
             frames: 0.0,
             pulses: [0.0; 4],
+            section_pulses: [0.0; 3],
+            sections_seen: 0,
         }
     }
 
@@ -100,6 +108,22 @@ impl Runtime {
         if sound.beats > 0 {
             self.pulses[3] = 1.0;
         }
+        let fall = (-dt / SECTION_PULSE_S).exp();
+        for p in &mut self.section_pulses {
+            *p *= fall;
+        }
+        let sections = sound.features.map(|f| f.sections).unwrap_or_default();
+        if sections.changes > self.sections_seen
+            && let Some(s) = sections.last
+        {
+            self.section_pulses[0] = 1.0;
+            match s.kind {
+                SectionKind::Drop => self.section_pulses[1] = 1.0,
+                SectionKind::Breakdown => self.section_pulses[2] = 1.0,
+                SectionKind::Change => {}
+            }
+        }
+        self.sections_seen = sections.changes;
 
         // The inputs.
         let f = sound.features.cloned().unwrap_or_else(|| AudioFeatures { silent: true, ..AudioFeatures::default() });
@@ -129,6 +153,11 @@ impl Runtime {
         set("bpm", t.bpm);
         set("beating", f32::from(u8::from(t.beating)));
         set("silent", f32::from(u8::from(f.silent)));
+        set("novelty", f.sections.novelty);
+        set("buildup", f.sections.buildup);
+        for (name, v) in ["section", "drop", "breakdown"].into_iter().zip(self.section_pulses) {
+            set(name, v);
+        }
 
         // The motion and the outputs start from the settings each frame (the q's and the
         // program's own variables carry over).
@@ -262,6 +291,25 @@ mod tests {
         let f = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, Sound { features: Some(&features), ..Sound::default() }, 0.5, 1.0);
         assert!((f.shared[slot("zoom")] - 1.12).abs() < 1e-6, "n carried on from init");
         assert!(f.params[0].1 < 0.01, "the kick's pulse fell: {:?}", f.params);
+    }
+
+    /// A section change arrives as pulses (any change, and its kind), falling slowly;
+    /// novelty and build-up as they are.
+    #[test]
+    fn sections_arrive_as_pulses() {
+        let c = code("", "q1 = section; q2 = drop; q3 = breakdown; q4 = buildup");
+        let mut r = Runtime::new(&c);
+        let mut f = AudioFeatures::default();
+        f.sections.buildup = 0.7;
+        f.sections.changes = 1;
+        f.sections.last = Some(crate::audio::sections::Section { kind: SectionKind::Drop, time: 0.0 });
+        let sound = Sound { features: Some(&f), ..Sound::default() };
+        let out = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, sound, 1.0 / 60.0, 1.0);
+        let q = |i: usize| out.shared[slot(&format!("q{i}"))];
+        assert!(q(1) > 0.9 && q(2) > 0.9 && q(3) == 0.0 && (q(4) - 0.7).abs() < 1e-6, "{:?}", [q(1), q(2), q(3), q(4)]);
+        let out = r.step(&FeedbackSettings::OFF, &WaveSettings::OFF, sound, 0.5, 1.0);
+        let drop = out.shared[slot("q2")];
+        assert!((0.2..0.5).contains(&drop), "the same change again isn't new, and the pulse falls over half a second: {drop}");
     }
 
     /// Equations that make no number fall back to the settings, and outputs stay in range.

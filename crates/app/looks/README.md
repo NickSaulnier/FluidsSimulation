@@ -62,8 +62,8 @@ rot = rot * (0.5 + rad)
 - `params`: solver parameters by key: the keys the Simulate tab shows for the solver.
 - `reactions`: each one `trigger`, `effect`, `gain` (1 if left out) and, for
   `effect = "param"`, the parameter's key. `enabled = false` keeps one off.
-  - Triggers: `kick`, `snare`, `hat`, `sub`, `bass`, `lowmid`, `mid`, `high`, `level`,
-    `brightness`.
+  - Triggers: `kick`, `snare`, `hat`, `beat` (every beat of a steady beat, even a quiet
+    one), `sub`, `bass`, `lowmid`, `mid`, `high`, `level`, `brightness`.
   - Effects: `splash`, `jet`, `vortex`, `flash`, `gust`, `slosh`, `breathe`, `hue`,
     `param`.
 
@@ -131,6 +131,9 @@ if(c, a, b) above(a, b) below(a, b) equal(a, b)`, and `rand()` (0 to 1, per fram
 | `beat_phase`, `bar_phase` | 0 to 1 from one beat (or bar) to the next |
 | `bpm`, `beating` | the tempo, and 1 while there's a steady beat |
 | `silent` | 1 in silence |
+| `novelty` | how different the last two seconds are from the eight before: about 1 for music carrying on, 3 or more at a change of section |
+| `buildup` | how much the music is building up (rising loudness and busier hits), 0 to 1 |
+| `section`, `drop`, `breakdown` | 1 at a change of section (any; a drop; a breakdown), falling to 0 over about a second and a half |
 
 ### What they set
 

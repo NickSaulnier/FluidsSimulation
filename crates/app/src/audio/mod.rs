@@ -12,6 +12,7 @@ pub mod analyzer;
 pub mod eval;
 pub mod live;
 pub mod reactions;
+pub mod sections;
 #[cfg(test)]
 pub mod songs;
 pub mod tempo;
@@ -289,6 +290,7 @@ impl Music {
     /// intensity (a look's equations can set it).
     pub fn react(&mut self, reactions: &[Reaction], domain: Vec2, base_gravity: Vec2, idle: bool, dt: f32, scale: f32) -> ReactionOutput {
         self.engine.idle = idle;
+        self.engine.beats = self.frame_beats.len();
         let features = self.analyzer.as_ref().map(Analyzer::features);
         self.engine.evaluate(reactions, features, &self.frame_onsets, domain, base_gravity, self.intensity * scale, dt)
     }

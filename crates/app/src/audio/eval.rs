@@ -10,13 +10,16 @@
 //! and downbeats are scored the same way within `BEAT_TOLERANCE_S` (as in mir_eval),
 //! past `BEAT_WARM_UP_S` (the tracker needs a few seconds of music to find the tempo);
 //! the tempo found at the end counts as right within `TEMPO_TOLERANCE` (and as an octave
-//! error at half or double).
+//! error at half or double). Section changes match within `SECTION_TOLERANCE_S`,
+//! whatever their kind (which is counted apart); a clip with none marked should have
+//! none found.
 //!
 //! Run `cargo test --release -p app detection -- --nocapture` to see the table;
 //! set `UPDATE_ANALYZER_BASELINE=1` to record new scores as the baseline.
 
 use super::analyzer::{Analyzer, Frame, Onset, OnsetKind};
 use super::live::to_stereo;
+use super::sections::{Section, SectionKind};
 use super::songs;
 use super::tempo::{Beat, MusicalTime};
 use std::path::{Path, PathBuf};
@@ -28,6 +31,7 @@ const WARM_UP_S: f32 = 1.5;
 pub const BEAT_TOLERANCE_S: f32 = 0.07;
 const BEAT_WARM_UP_S: f32 = 5.0;
 pub const TEMPO_TOLERANCE: f32 = 0.04;
+pub const SECTION_TOLERANCE_S: f32 = 2.0;
 const SENSITIVITY: f32 = 1.5;
 /// Audio is fed in chunks of this many frames, like a frame loop would.
 const CHUNK: usize = 1024;
@@ -77,24 +81,28 @@ pub fn score(found: &[f32], truth: &[f32], tolerance: f32) -> Score {
     Score { matched, found: found.len(), truth: truth.len() }
 }
 
-/// Known hits: (seconds, kind); and known beats: (seconds, whether it starts a bar).
+/// Known hits: (seconds, kind); known beats: (seconds, whether it starts a bar); known
+/// section changes: (seconds, kind).
 pub type Hits = Vec<(f32, OnsetKind)>;
 pub type Beats = Vec<(f32, bool)>;
+pub type Changes = Vec<(f32, SectionKind)>;
 
-/// Audio with known hits, and known beats if it has a steady one (else none).
+/// Audio with known hits, known beats if it has a steady one (else none), and its
+/// section changes (none if it doesn't change).
 pub struct Clip {
     pub name: String,
     pub rate: u32,
     pub frames: Vec<Frame>,
     pub hits: Hits,
     pub beats: Beats,
+    pub sections: Changes,
 }
 
 /// The generated songs, then the annotated clips in the fixtures folder.
 pub fn clips() -> Vec<Clip> {
     let mut clips: Vec<Clip> = songs::all()
         .into_iter()
-        .map(|s| Clip { name: s.name.to_string(), rate: songs::RATE, frames: s.frames, hits: s.hits, beats: s.beats })
+        .map(|s| Clip { name: s.name.to_string(), rate: songs::RATE, frames: s.frames, hits: s.hits, beats: s.beats, sections: s.sections })
         .collect();
     clips.extend(fixture_clips(&fixtures_dir()));
     clips
@@ -105,8 +113,8 @@ pub fn fixtures_dir() -> PathBuf {
 }
 
 /// Every audio file in `dir` with a hit list beside it (the same name, `.txt`: one per
-/// line, `seconds kind`, kind being kick, snare, hat, beat or downbeat; `#` starts a
-/// comment).
+/// line, `seconds kind`, kind being kick, snare, hat, beat, downbeat, change, drop or
+/// breakdown; `#` starts a comment).
 fn fixture_clips(dir: &Path) -> Vec<Clip> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut paths: Vec<PathBuf> = entries
@@ -125,48 +133,76 @@ fn fixture_clips(dir: &Path) -> Vec<Clip> {
             };
             let c = usize::from(loaded.channels.get());
             let frames = loaded.samples.chunks_exact(c).map(|f| to_stereo(f.iter().copied())).collect();
-            let (hits, beats) = parse_hits(&text, &audio);
-            Some(Clip { name, rate: loaded.rate.get(), frames, hits, beats })
+            let (hits, beats, sections) = parse_hits(&text, &audio);
+            Some(Clip { name, rate: loaded.rate.get(), frames, hits, beats, sections })
         })
         .collect()
 }
 
-/// A hit list's hits and beats, each sorted.
-fn parse_hits(text: &str, path: &Path) -> (Hits, Beats) {
-    let (mut hits, mut beats) = (Vec::new(), Vec::new());
+/// A hit list's hits, beats and section changes, each sorted.
+fn parse_hits(text: &str, path: &Path) -> (Hits, Beats, Changes) {
+    let (mut hits, mut beats, mut sections) = (Vec::new(), Vec::new(), Vec::new());
     for l in text.lines().map(|l| l.split('#').next().unwrap_or("").trim()).filter(|l| !l.is_empty()) {
         let mut parts = l.split_whitespace();
         let time: Option<f32> = parts.next().and_then(|t| t.parse().ok());
         let kind = parts.next().unwrap_or("");
         match (time, kind) {
             (Some(t), "beat" | "downbeat") => beats.push((t, kind == "downbeat")),
+            (Some(t), "change") => sections.push((t, SectionKind::Change)),
+            (Some(t), "drop") => sections.push((t, SectionKind::Drop)),
+            (Some(t), "breakdown") => sections.push((t, SectionKind::Breakdown)),
             (Some(t), k) if let Some(kind) = OnsetKind::ALL.into_iter().find(|kind| kind.name() == k) => hits.push((t, kind)),
-            _ => panic!("{}: can't read line {l:?} (want `seconds kick|snare|hat|beat|downbeat`)", path.display()),
+            _ => panic!("{}: can't read line {l:?} (want `seconds kick|snare|hat|beat|downbeat|change|drop|breakdown`)", path.display()),
         }
     }
     hits.sort_by(|a, b| a.0.total_cmp(&b.0));
     beats.sort_by(|a, b| a.0.total_cmp(&b.0));
-    (hits, beats)
+    sections.sort_by(|a, b| a.0.total_cmp(&b.0));
+    (hits, beats, sections)
 }
 
 /// What the analyzer reported on a clip.
 pub struct Run {
     pub onsets: Vec<Onset>,
     pub beats: Vec<Beat>,
+    pub sections: Vec<Section>,
+    /// The build-up measure after each chunk: (seconds, value).
+    pub buildup: Vec<(f32, f32)>,
     /// As of the end.
     pub musical: MusicalTime,
 }
 
-/// The analyzer's hits and beats on `clip`, fed in frame-loop-sized chunks.
+/// The analyzer's hits, beats and sections on `clip`, fed in frame-loop-sized chunks.
 pub fn detect(clip: &Clip) -> Run {
     let mut analyzer = Analyzer::new(clip.rate);
-    let (mut onsets, mut beats) = (Vec::new(), Vec::new());
+    let (mut onsets, mut beats, mut sections, mut buildup) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut changes = 0;
     for chunk in clip.frames.chunks(CHUNK) {
         analyzer.process(chunk, SENSITIVITY);
         analyzer.drain_onsets(&mut onsets);
         analyzer.drain_beats(&mut beats);
+        let f = analyzer.features();
+        if f.sections.changes > changes {
+            changes = f.sections.changes;
+            sections.extend(f.sections.last);
+        }
+        buildup.push((f.time, f.sections.buildup));
     }
-    Run { onsets, beats, musical: analyzer.features().musical }
+    Run { onsets, beats, sections, buildup, musical: analyzer.features().musical }
+}
+
+/// Section changes found against the clip's: matched within the tolerance (any kind),
+/// and how many of the matched were of the right kind.
+pub fn evaluate_sections(clip: &Clip, run: &Run) -> (Score, usize) {
+    let found: Vec<f32> = run.sections.iter().map(|s| s.time).collect();
+    let truth: Vec<f32> = clip.sections.iter().map(|s| s.0).collect();
+    let s = score(&found, &truth, SECTION_TOLERANCE_S);
+    let right_kind = clip
+        .sections
+        .iter()
+        .filter(|(t, kind)| run.sections.iter().any(|f| (f.time - t).abs() <= SECTION_TOLERANCE_S && f.kind == *kind))
+        .count();
+    (s, right_kind)
 }
 
 /// Scores per hit kind (`OnsetKind::ALL` order), past the warm-up.
@@ -237,9 +273,11 @@ mod tests {
 
     #[test]
     fn hit_lists_parse_with_comments() {
-        let (hits, beats) = parse_hits("# clip\n0.50 kick\n1.25 snare  # a ghost\n\n0.75 hat\n0.5 downbeat\n1.0 beat\n", Path::new("x.txt"));
+        let (hits, beats, sections) =
+            parse_hits("# clip\n0.50 kick\n1.25 snare  # a ghost\n\n0.75 hat\n0.5 downbeat\n1.0 beat\n9 drop\n4 change\n", Path::new("x.txt"));
         assert_eq!(hits, vec![(0.5, OnsetKind::Kick), (0.75, OnsetKind::Hat), (1.25, OnsetKind::Snare)]);
         assert_eq!(beats, vec![(0.5, true), (1.0, false)]);
+        assert_eq!(sections, vec![(4.0, SectionKind::Change), (9.0, SectionKind::Drop)]);
     }
 
     /// The generated songs place every hit and beat inside the song, in order.
@@ -269,7 +307,7 @@ mod tests {
     #[test]
     fn detection_holds_its_baseline() {
         let mut rows: Vec<Row> = Vec::new();
-        let mut tempos = Vec::new();
+        let (mut tempos, mut sections) = (Vec::new(), Vec::new());
         for clip in clips() {
             let run = detect(&clip);
             rows.extend(OnsetKind::ALL.into_iter().zip(evaluate(&clip, &run)).map(|(kind, s)| (clip.name.clone(), kind.name(), s)));
@@ -278,6 +316,10 @@ mod tests {
                 rows.push((clip.name.clone(), "downbeat", b.downbeats));
                 tempos.push((clip.name.clone(), b.bpm, b.true_bpm, b.tempo_verdict()));
             }
+            let (s, right_kind) = evaluate_sections(&clip, &run);
+            rows.push((clip.name.clone(), "section", s));
+            let found: Vec<String> = run.sections.iter().map(|f| format!("{:?} {:.1}", f.kind, f.time)).collect();
+            sections.push((clip.name.clone(), right_kind, clip.sections.len(), found.join(", ")));
         }
         eprintln!("{:<18} {:<8} {:>6} {:>6} {:>6} {:>12}", "clip", "kind", "P", "R", "F", "found/true");
         for (name, kind, s) in &rows {
@@ -294,6 +336,10 @@ mod tests {
         eprintln!("\n{:<18} {:>8} {:>8}  tempo", "clip", "BPM", "true");
         for (name, bpm, truth, verdict) in &tempos {
             eprintln!("{name:<18} {bpm:>8.1} {truth:>8.1}  {verdict}");
+        }
+        eprintln!("\n{:<18} {:>10}  sections found", "clip", "right kind");
+        for (name, right, total, found) in &sections {
+            eprintln!("{name:<18} {:>10}  {found}", format!("{right}/{total}"));
         }
         if std::env::var_os("UPDATE_ANALYZER_BASELINE").is_some() {
             let mut text = String::from("# Hit and beat F-measures (see audio/eval.rs). Regenerate with UPDATE_ANALYZER_BASELINE=1.\n");
@@ -318,5 +364,23 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "detection got worse:\n{}", failures.join("\n"));
+    }
+
+    /// The build-up measure is high while the anthem builds up (past its first second or
+    /// two) and low elsewhere.
+    #[test]
+    fn buildups_are_heard() {
+        let song = songs::all().into_iter().find(|s| !s.buildups.is_empty()).expect("a song with build-ups");
+        let clip = Clip { name: song.name.into(), rate: songs::RATE, frames: song.frames, hits: song.hits, beats: song.beats, sections: song.sections };
+        let run = detect(&clip);
+        let during = |t: f32| song.buildups.iter().any(|&(a, b)| t >= a + 2.0 && t <= b);
+        let near = |t: f32| song.buildups.iter().any(|&(a, b)| t >= a - 1.0 && t <= b + 2.0);
+        let mean = |keep: &dyn Fn(f32) -> bool| {
+            let v: Vec<f32> = run.buildup.iter().filter(|(t, _)| *t > 10.0 && keep(*t)).map(|(_, b)| *b).collect();
+            v.iter().sum::<f32>() / v.len().max(1) as f32
+        };
+        let (inside, outside) = (mean(&during), mean(&|t| !near(t)));
+        eprintln!("build-up: {inside:.2} during, {outside:.2} elsewhere");
+        assert!(inside > 0.4 && outside < 0.15, "build-up {inside:.2} during, {outside:.2} elsewhere");
     }
 }

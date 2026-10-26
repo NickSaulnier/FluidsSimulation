@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phases A to D done** (and the analyzer plan, which covers phase E's audio work). Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A to E done** (E with the analyzer plan, which did most of its audio work). Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -521,3 +521,63 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
   - Seen in passing, and the same before this phase: Lava lamp starts dim, and its
     hexagon (a thin outline in the palette's dark red) hardly shows. For tuning in
     phase I.
+- **Phase E (done):** audio upgrades.
+  - Already done by the analyzer plan: MilkDrop's `bass`, `mid`, `treb` and `_att`
+    (its phase B), and tempo, beats, bars, the latency offset and the calibration
+    flash (its phase E). The equations read them all since phase D.
+  - Sections (`app/src/audio/sections.rs`), from the analyzer's filter bank in quarter-
+    second blocks: timbre (16 band groups, relative to their mean), loudness, low end
+    and onset density.
+    - Novelty: the last 2 s against the 8 s before. Each group's and the loudness's change
+      is measured against how much it varies anyway over the long window (a
+      t-statistic): steady pads make small changes count, busy drums make fills count
+      less.
+    - Changes: novelty peaks of 3 or more, 4 s apart. A fall in loudness or low end makes
+      it a breakdown, anything else a plain change. Plain changes aren't reported while
+      the music builds up.
+    - Drops: loudness and low end jumping together, with the low end a large share of the
+      mix. They're reported as soon as they show, rather than at a novelty peak (novelty
+      is already high through a build-up).
+    - Build-up: loudness and onset density rising along a line over the last 8 s, each
+      scaled to a full rate and weighted by how well the line fits.
+    - Nothing is compared across silence, so a new song isn't a section change. The first
+      second (the analyzer warming up) is left out.
+  - Measured on generated songs only: there's no openly licensed audio with section
+    annotations.
+    - A new 72 s song, "anthem 128", has an intro, a build-up (a snare roll speeding up
+      to 32nds, a riser), a drop, a breakdown, another build-up and a drop. All five of
+      its changes are found, of the right kind, 0.15 to 0.6 s after them (reported up
+      to 2 s later).
+    - The dynamics song's breakdown is found. Nothing is found in the five loops or the
+      six drum grooves, which never change.
+    - Build-up reads 0.47 through the anthem's build-ups and 0.02 elsewhere.
+    - The first version found a change about 8 s into almost every clip (the warm-up)
+      and fills in the drum grooves; self-normalised novelty and the warm-up rule fixed
+      both.
+    - Real music will be the test: the thresholds are set on generated songs.
+  - The director (changing looks with the music) now follows sections instead of a jump
+    in loudness:
+    - A drop changes at once to an energetic look, and a breakdown to a calm one.
+    - A plain change makes a change due, once half the interval has passed. Sections need
+      15 s of a look first.
+  - Changes land on bar lines: with a steady beat, a change the director decides on
+    (timer, breakdown, plain change, refreshing a locked look) starts its fade-out over
+    what's left of the bar, so the new look arrives on the downbeat. The fade shortens to
+    the time left, down to 0.15 s. Without a beat it waits for a kick, as before. Drops
+    don't wait. Hard cuts belong to phase F.
+  - Motion locked to the beat:
+    - A Beat trigger for reactions fires on every beat of a steady beat, even a quiet one.
+    - Equations read `novelty`, `buildup`, and `section`, `drop` and `breakdown` as pulses
+      (1 at a change, falling over about 1.5 s).
+    - Smoke dance sways one way and back over each bar while there's a beat. Wind tunnel
+      gets a vortex on each beat.
+  - Tests:
+    - Section scoring in the analyzer's baseline (12 clips), and the build-up test.
+    - Director: a drop changes at once to an energetic look, a breakdown to a calm one, and
+      a plain change only past half the interval. Its changes switch within 1.5 frames of
+      a bar line at 90, 128 and 174 BPM.
+    - The Beat trigger fires and pulses. Equations get section pulses.
+  - Checked in the app, full screen, with the anthem (muted, in a scratch settings
+    folder): looks changed 2.3 s after the first drop, 3.3 s after the breakdown (reported
+    2 s late, then waiting for the bar line) and 2.5 s after the second drop, and nowhere
+    else. The log's whole seconds can't show the bar line itself: the tests check that.

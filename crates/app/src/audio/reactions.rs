@@ -3,8 +3,9 @@
 //! rocking, a colour shift, a solver parameter...) at some gain.
 //!
 //! Any trigger can drive any effect:
-//! - Hits (kick, snare, hat) fire one-shot effects directly, and drive continuous
-//!   effects through a short decaying pulse.
+//! - Hits (kick, snare, hat) and beats (from the beat tracker: every beat, even a quiet
+//!   one) fire one-shot effects directly, and drive continuous effects through a short
+//!   decaying pulse.
 //! - Envelopes (bands, level, brightness) drive continuous effects directly, and fire
 //!   one-shot effects when they surge past a threshold (with hysteresis).
 //!
@@ -24,6 +25,7 @@ pub enum Trigger {
     Kick,
     Snare,
     Hat,
+    Beat,
     Sub,
     Bass,
     LowMid,
@@ -34,10 +36,11 @@ pub enum Trigger {
 }
 
 impl Trigger {
-    pub const ALL: [Trigger; 10] = [
+    pub const ALL: [Trigger; 11] = [
         Trigger::Kick,
         Trigger::Snare,
         Trigger::Hat,
+        Trigger::Beat,
         Trigger::Sub,
         Trigger::Bass,
         Trigger::LowMid,
@@ -52,6 +55,7 @@ impl Trigger {
             Trigger::Kick => "Kick",
             Trigger::Snare => "Snare",
             Trigger::Hat => "Hi-hat",
+            Trigger::Beat => "Beat",
             Trigger::Sub => "Sub",
             Trigger::Bass => "Bass",
             Trigger::LowMid => "Low-mid",
@@ -81,7 +85,7 @@ impl Trigger {
             Trigger::High => f.bands[4],
             Trigger::Level => f.level,
             Trigger::Brightness => f.brightness,
-            Trigger::Kick | Trigger::Snare | Trigger::Hat => 0.0,
+            Trigger::Kick | Trigger::Snare | Trigger::Hat | Trigger::Beat => 0.0,
         }
     }
 }
@@ -231,6 +235,9 @@ struct Impulse {
 pub struct ReactionEngine {
     /// Drift gently during long silences (set by the app each frame).
     pub idle: bool,
+    /// Beats heard this frame (set by the app each frame).
+    pub beats: usize,
+    beat_env: f32,
     silent_for: f32,
     time: f32,
     impulses: Vec<Impulse>,
@@ -270,6 +277,7 @@ impl ReactionEngine {
         };
         let decay = (-dt / HIT_DECAY_S).exp();
         self.hit_env.iter_mut().for_each(|e| *e *= decay);
+        self.beat_env = if self.beats > 0 { 1.0 } else { self.beat_env * decay };
         for o in onsets {
             let k = OnsetKind::ALL.iter().position(|&kind| kind == o.kind).unwrap_or(0);
             self.hit_env[k] = self.hit_env[k].max(o.strength);
@@ -281,6 +289,7 @@ impl ReactionEngine {
             let gain = r.gain * intensity;
             // The trigger's continuous value, and this frame's firings (with strengths).
             let (value, firings): (f32, Vec<f32>) = match r.trigger.hit() {
+                _ if r.trigger == Trigger::Beat => (self.beat_env, vec![1.0; self.beats]),
                 Some(kind) => {
                     let k = OnsetKind::ALL.iter().position(|&x| x == kind).unwrap_or(0);
                     (self.hit_env[k], onsets.iter().filter(|o| o.kind == kind).map(|o| o.strength).collect())
@@ -503,6 +512,20 @@ mod tests {
         assert!(step(&mut e, Some(&features(0.3, 0.5)), 0.01).brushes.is_empty(), "music stops the drift");
         let mut off = ReactionEngine::default();
         assert!(off.evaluate(&r, None, &[], DOMAIN, G, 1.0, 10.0).brushes.is_empty(), "idle off: no drift");
+    }
+
+    /// A beat fires one-shot effects, and drives continuous ones through its pulse.
+    #[test]
+    fn beats_fire_and_pulse() {
+        let mut e = ReactionEngine::default();
+        let r = [Reaction::new(Trigger::Beat, Effect::Splash, 1.0, true), Reaction::new(Trigger::Beat, Effect::Hue, 1.0, true)];
+        e.beats = 1;
+        let on = e.evaluate(&r, Some(&features(0.0, 0.5)), &[], DOMAIN, G, 1.0, 0.01);
+        assert!(!on.brushes.is_empty(), "no splash on the beat");
+        assert!(on.hue_shift > 80.0, "the pulse is at its top: hue {}", on.hue_shift);
+        e.beats = 0;
+        let later = e.evaluate(&r, Some(&features(0.0, 0.5)), &[], DOMAIN, G, 1.0, 0.5);
+        assert!(later.hue_shift < 0.0, "the pulse fell: hue {}", later.hue_shift);
     }
 
     #[test]

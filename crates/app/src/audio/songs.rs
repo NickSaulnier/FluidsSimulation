@@ -8,6 +8,7 @@
 //! Everything is deterministic (seeded noise), so scores are repeatable.
 
 use super::analyzer::{Frame, OnsetKind};
+use super::sections::SectionKind;
 use std::f32::consts::TAU;
 use utils::rng::SplitMix64;
 
@@ -20,11 +21,14 @@ pub struct Song {
     pub hits: Vec<(f32, OnsetKind)>,
     /// Every beat: (seconds, whether it starts a bar).
     pub beats: Vec<(f32, bool)>,
+    /// Every change of section: (seconds, kind), and the build-ups (from, to).
+    pub sections: Vec<(f32, SectionKind)>,
+    pub buildups: Vec<(f32, f32)>,
 }
 
 /// All the generated songs.
 pub fn all() -> Vec<Song> {
-    vec![house(), breakbeat(), rock(), ambient(), dynamics()]
+    vec![house(), breakbeat(), rock(), ambient(), dynamics(), anthem()]
 }
 
 /// A one-pole low-pass filter.
@@ -51,12 +55,14 @@ struct Mix {
     rng: SplitMix64,
     hits: Vec<(f32, OnsetKind)>,
     beats: Vec<(f32, bool)>,
+    sections: Vec<(f32, SectionKind)>,
+    buildups: Vec<(f32, f32)>,
 }
 
 impl Mix {
     fn new(seconds: f32, seed: u64) -> Self {
         let n = (seconds * RATE as f32) as usize;
-        Self { left: vec![0.0; n], right: vec![0.0; n], rng: SplitMix64::new(seed), hits: Vec::new(), beats: Vec::new() }
+        Self { left: vec![0.0; n], right: vec![0.0; n], rng: SplitMix64::new(seed), hits: Vec::new(), beats: Vec::new(), sections: Vec::new(), buildups: Vec::new() }
     }
 
     fn seconds(&self) -> f32 {
@@ -181,6 +187,23 @@ impl Mix {
         self.add(t, &sound, gain, 0.2);
     }
 
+    /// A riser: noise through a low-pass opening from 300 Hz to 8 kHz, swelling over
+    /// `length`.
+    fn riser(&mut self, t: f32, length: f32, gain: f32) {
+        let n = (length * RATE as f32) as usize;
+        let noise = self.noise(n);
+        let mut y = 0.0f32;
+        let sound: Vec<f32> = (0..n)
+            .map(|k| {
+                let x = k as f32 / n as f32;
+                let cutoff = 300.0 * (8000.0f32 / 300.0).powf(x);
+                y += (noise[k] - y) * (1.0 - (-TAU * cutoff / RATE as f32).exp());
+                y * x * x
+            })
+            .collect();
+        self.add(t, &sound, gain, 0.0);
+    }
+
     /// The beats from `start`, `beat` apart, to the end: four to a bar.
     fn beats(&mut self, start: f32, beat: f32) {
         let mut k = 0;
@@ -195,7 +218,7 @@ impl Mix {
         let peak = self.left.iter().chain(&self.right).fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
         let scale = 0.8 / peak;
         let frames = self.left.iter().zip(&self.right).map(|(l, r)| [l * scale, r * scale]).collect();
-        Song { name, frames, hits: self.hits, beats: self.beats }
+        Song { name, frames, hits: self.hits, beats: self.beats, sections: self.sections, buildups: self.buildups }
     }
 }
 
@@ -317,6 +340,69 @@ fn ambient() -> Song {
     m.finish("ambient 70")
 }
 
+/// 128 BPM with a song's structure: an intro (pads and soft hats), a build-up (a snare
+/// roll speeding up from quarters to 32nds and a riser, no kick or bass), a drop (four on
+/// the floor, a bass line, claps, open hats and a lead), a breakdown (pads and soft hats
+/// again), another build-up and a last drop. For sections; the hits are all there too.
+fn anthem() -> Song {
+    let beat = 60.0 / 128.0;
+    let bar = 4.0 * beat;
+    let mut m = Mix::new(72.0, 6);
+    let start = 0.2;
+    let roots = [45.0, 41.0, 43.0, 40.0];
+    let parts: [(&str, usize); 6] = [("intro", 8), ("build", 4), ("drop", 8), ("breakdown", 6), ("build", 4), ("drop", 8)];
+    let mut t = start;
+    for (part, bars) in parts {
+        match part {
+            "build" => {
+                m.sections.push((t, SectionKind::Change));
+                m.buildups.push((t, t + bars as f32 * bar));
+                m.riser(t, bars as f32 * bar, 0.5);
+            }
+            "drop" => m.sections.push((t, SectionKind::Drop)),
+            "breakdown" => m.sections.push((t, SectionKind::Breakdown)),
+            _ => {}
+        }
+        for b in 0..bars {
+            let bar_start = t + b as f32 * bar;
+            let root = roots[b % 4];
+            let at = |q: f32| bar_start + q * beat;
+            match part {
+                "intro" | "breakdown" => {
+                    m.pad(bar_start, bar, &[midi(root + 24.0), midi(root + 28.0), midi(root + 31.0)], 0.3, 1.0);
+                    for e in 0..8 {
+                        m.hat(at(0.5 * e as f32), if e % 2 == 1 { 0.12 } else { 0.06 }, false);
+                    }
+                }
+                "build" => {
+                    m.pad(bar_start, bar, &[midi(root + 24.0), midi(root + 28.0), midi(root + 31.0)], 0.3, 1.0);
+                    // The roll: quarters, eighths, sixteenths, 32nds, a bar each, swelling.
+                    let per_beat = 1usize << b.min(3);
+                    for k in 0..4 * per_beat {
+                        let swell = (b as f32 + k as f32 / (4 * per_beat) as f32) / bars as f32;
+                        m.snare(at(k as f32 / per_beat as f32), 0.25 + 0.6 * swell);
+                    }
+                }
+                _ => {
+                    m.pad(bar_start, bar, &[midi(root + 24.0), midi(root + 28.0), midi(root + 31.0)], 0.3, 1.0);
+                    for q in 0..4 {
+                        m.kick(at(q as f32), 1.0);
+                        m.bass(at(q as f32 + 0.5), 0.45 * beat, midi(root), None, 0.55, 0.0, 1.0);
+                        m.hat(at(q as f32 + 0.5), 0.35, true);
+                    }
+                    m.snare(at(1.0), 0.7);
+                    m.snare(at(3.0), 0.7);
+                    m.lead(at(0.0), 1.5 * beat, midi(root + 36.0), 0.15);
+                    m.lead(at(2.0), 1.5 * beat, midi(root + 40.0), 0.15);
+                }
+            }
+        }
+        t += bars as f32 * bar;
+    }
+    m.beats(start, beat);
+    m.finish("anthem 128")
+}
+
 /// 110 BPM, four bars as normal, then one huge hit (kick, snare and an open hat at three
 /// times the level), then four bars at a third of the level: the quiet hits after the
 /// big one must still be heard.
@@ -337,6 +423,9 @@ fn dynamics() -> Song {
         }
         m.hat(t + if b == 16 { 0.0 } else { 0.5 * beat }, 0.35 * gain, b == 16);
         m.bass(t, 0.9 * beat, midi(38.0), None, 0.4 * gain, 0.0, 1.0);
+        if b == 17 {
+            m.sections.push((t, SectionKind::Breakdown));
+        }
         t += beat;
         b += 1;
     }

@@ -43,6 +43,7 @@
 //! Times are seconds since the analyzer started, at the centre of each analysis window
 //! (where a hit's energy rise is detected).
 
+use super::sections::{self, SectionTracker, Sections};
 use super::tempo::{Beat, BeatTracker, MusicalTime};
 use realfft::num_complex::Complex32;
 use realfft::{RealFftPlanner, RealToComplex};
@@ -167,6 +168,8 @@ pub struct AudioFeatures {
     pub silent: bool,
     /// Tempo, beats and bars (see `tempo`).
     pub musical: MusicalTime,
+    /// Section changes and build-ups (see `sections`).
+    pub sections: Sections,
 }
 
 impl Default for AudioFeatures {
@@ -186,6 +189,7 @@ impl Default for AudioFeatures {
             width: 0.0,
             silent: false,
             musical: MusicalTime::default(),
+            sections: Sections::default(),
         }
     }
 }
@@ -370,6 +374,9 @@ pub struct Analyzer {
     strength_peaks: [f32; SPECTRUM_BANDS],
     strength_logs: [[f32; SPECTRUM_BANDS]; 2],
     tracker: BeatTracker,
+    /// The song's sections, and the filter bank's low-end bands.
+    sections: SectionTracker,
+    low_end: usize,
     /// Spill: `spill[from][to]`, the share of kind `from`'s rise that shows in kind `to`'s
     /// range (a kick's click in the snare's, a snare's top in the hat's), learned at
     /// `from`'s hits as a lower envelope (so the moments both sound together count
@@ -424,6 +431,8 @@ impl Analyzer {
             strength_peaks: [0.0; SPECTRUM_BANDS],
             strength_logs: [[0.0; SPECTRUM_BANDS]; 2],
             tracker: BeatTracker::new(hop_seconds),
+            sections: SectionTracker::new(hop_seconds),
+            low_end: (0..SPECTRUM_BANDS).take_while(|&b| band_centre(b as isize) < sections::LOW_HZ).count(),
             spill: [[0.0; 3]; 3],
             prev_rises: [0.0; 3],
             quiet_for: 0.0,
@@ -681,6 +690,8 @@ impl Analyzer {
         }
         self.prev_rises = rises;
         self.features.musical = self.tracker.time();
+        self.sections.push(time, &self.bank, self.low_end, heard, strength);
+        self.features.sections = self.sections.state();
         self.hops += 1;
     }
 }

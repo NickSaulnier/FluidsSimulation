@@ -12,7 +12,9 @@ falls more than 0.02 below `baseline.txt`.
    the attribution below).
 2. Beside it, `name.txt` with one hit per line: the time in seconds, then `kick`,
    `snare` or `hat`. If the music has a steady beat, add its beats too: `beat`, or
-   `downbeat` for the first beat of a bar. `#` starts a comment.
+   `downbeat` for the first beat of a bar. Mark where its sections change, as `drop`,
+   `breakdown` or `change` (anything else); a clip with none marked should have none
+   found. `#` starts a comment.
 
    ```
    # name.wav: 120 BPM, hand-marked

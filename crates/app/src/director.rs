@@ -4,20 +4,27 @@
 //!
 //! When it's active (full screen, auto on) it changes look on:
 //! - **A new song:** at least `SONG_GAP_S` of silence, then `LISTEN_S` of sound.
-//! - **A drop:** loudness jumping well above its recent average (`DROP_JUMP`).
-//! - **A timer:** once `interval_s` has passed, on the next kick, so the cut lands on
-//!   the beat; or `KICK_WAIT_S` later if no kick comes (ambient music, say).
+//! - **The song's sections** (see `audio::sections`): a drop changes at once to an
+//!   energetic look; a breakdown to a calm one; any other change of section makes a
+//!   change due, once half the interval has passed.
+//! - **A timer:** once `interval_s` has passed.
 //!
-//! The first two wait at least `MIN_LOOK_S` into a look. The next look suits the
+//! Section changes wait at least `MIN_LOOK_S` into a look. The next look suits the
 //! music's energy (calm looks for quiet passages, energetic ones for loud) and, of
 //! those, is the one gone longest unseen, so every look keeps coming round. For a new
 //! song that's the energy of its opening seconds, not the end of the song before.
+//!
+//! Changes land on bar lines: with a steady beat, the fade starts so the new look
+//! arrives on the next downbeat (the fade shortened to the time left); without one, on
+//! the next kick, or `KICK_WAIT_S` later if no kick comes (ambient music, say). Drops
+//! don't wait: the drop has just happened.
 //!
 //! With auto off (the look locked) it still refreshes the look on new songs and at the
 //! interval: the same look fades back in with a fresh scene. Left alone for long, dye
 //! mixes to a uniform smear and solid fuel burns out.
 
 use crate::audio::analyzer::AudioFeatures;
+use crate::audio::sections::SectionKind;
 use crate::looks::Look;
 
 const FADE_OUT_S: f32 = 0.5;
@@ -26,11 +33,10 @@ const SONG_GAP_S: f32 = 2.0;
 /// How long a new song is heard before its look is chosen.
 const LISTEN_S: f32 = 2.0;
 const MIN_LOOK_S: f32 = 15.0;
-/// How long past the interval the timer waits for a kick.
+/// How long a change waits for a kick, without a steady beat.
 const KICK_WAIT_S: f32 = 4.0;
-/// A drop: the fast loudness average exceeds the slow one by this much (both 0..1).
-const DROP_JUMP: f32 = 0.35;
-const FAST_S: f32 = 0.4;
+/// The shortest fade-out when it's fitted to the bar.
+const MIN_FADE_OUT_S: f32 = 0.15;
 const SLOW_S: f32 = 8.0;
 /// Slow loudness above this counts as energetic music.
 const ENERGETIC: f32 = 0.5;
@@ -38,7 +44,8 @@ const ENERGETIC: f32 = 0.5;
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Fade {
     None,
-    Out { t: f32, target: usize },
+    /// Fading out over `length` seconds.
+    Out { t: f32, target: usize, length: f32 },
     In { t: f32 },
 }
 
@@ -52,10 +59,13 @@ pub struct Director {
     pub current: Option<usize>,
     elapsed: f32,
     silence: f32,
-    fast: f32,
     slow: f32,
-    /// The timer has run out: change on the next kick.
+    /// A change is due (the timer ran out, or the music changed).
     due: bool,
+    /// A change waiting for the bar line (or a kick): the look, and how long it's waited.
+    waiting: Option<(usize, f32)>,
+    /// Section changes the analysis has reported so far, as last seen.
+    sections_seen: u32,
     fade: Fade,
     /// A new song began: seconds of it heard so far, and its loudness summed over them.
     listening: Option<(f32, f32)>,
@@ -72,9 +82,10 @@ impl Default for Director {
             current: None,
             elapsed: 0.0,
             silence: 0.0,
-            fast: 0.0,
             slow: 0.0,
             due: false,
+            waiting: None,
+            sections_seen: 0,
             fade: Fade::None,
             listening: None,
             shown: Vec::new(),
@@ -86,8 +97,14 @@ impl Default for Director {
 impl Director {
     /// Fade to look `target` (a manual choice, or the director's own).
     pub fn request(&mut self, target: usize) {
+        self.fade_to(target, FADE_OUT_S);
+    }
+
+    /// Fade out over `length` seconds to `target`.
+    fn fade_to(&mut self, target: usize, length: f32) {
         if !matches!(self.fade, Fade::Out { .. }) {
-            self.fade = Fade::Out { t: 0.0, target };
+            self.fade = Fade::Out { t: 0.0, target, length };
+            self.waiting = None;
         }
     }
 
@@ -105,12 +122,13 @@ impl Director {
     pub fn reindex(&mut self, before: &[String], looks: &[Look]) {
         let now = |i: usize| before.get(i).and_then(|name| looks.iter().position(|l| &l.name == name));
         self.current = self.current.and_then(now);
-        if let Fade::Out { t, target } = self.fade {
+        if let Fade::Out { t, target, length } = self.fade {
             self.fade = match now(target) {
-                Some(target) => Fade::Out { t, target },
+                Some(target) => Fade::Out { t, target, length },
                 None => Fade::None,
             };
         }
+        self.waiting = self.waiting.and_then(|(target, waited)| Some((now(target)?, waited)));
         let mut shown = vec![0; looks.len()];
         for (i, &when) in self.shown.iter().enumerate() {
             if let Some(j) = now(i) {
@@ -124,7 +142,7 @@ impl Director {
     pub fn darkness(&self) -> f32 {
         match self.fade {
             Fade::None => 0.0,
-            Fade::Out { t, .. } => (t / FADE_OUT_S).min(1.0),
+            Fade::Out { t, length, .. } => (t / length).min(1.0),
             Fade::In { t } => 1.0 - (t / FADE_IN_S).min(1.0),
         }
     }
@@ -136,16 +154,22 @@ impl Director {
     pub fn update(&mut self, looks: &[Look], presenting: bool, features: Option<&AudioFeatures>, kicked: bool, dt: f32) -> Option<usize> {
         self.elapsed += dt;
         let level = features.map_or(0.0, |f| f.level);
-        self.fast += (level - self.fast) * (1.0 - (-dt / FAST_S).exp());
         self.slow += (level - self.slow) * (1.0 - (-dt / SLOW_S).exp());
+        // A new section since last frame (a new analyzer starts its count again).
+        let sections = features.map(|f| f.sections).unwrap_or_default();
+        if sections.changes < self.sections_seen {
+            self.sections_seen = sections.changes;
+        }
+        let section = (sections.changes > self.sections_seen).then_some(sections.last).flatten().map(|s| s.kind);
+        self.sections_seen = sections.changes;
         let silent = features.is_none_or(|f| f.silent);
         let song_change = !silent && self.silence >= SONG_GAP_S;
         self.silence = if silent { self.silence + dt } else { 0.0 };
 
         match self.fade {
-            Fade::Out { t, target } => {
+            Fade::Out { t, target, length } => {
                 let t = t + dt;
-                if t >= FADE_OUT_S {
+                if t >= length {
                     self.fade = Fade::In { t: 0.0 };
                     if target >= looks.len() {
                         return None;
@@ -156,7 +180,7 @@ impl Director {
                     self.shown[target] = self.applied;
                     return Some(target);
                 }
-                self.fade = Fade::Out { t, target };
+                self.fade = Fade::Out { t, target, length };
                 return None;
             }
             Fade::In { t } => {
@@ -175,9 +199,11 @@ impl Director {
             // Locked: refresh the same look, so it doesn't go stale.
             if let Some(current) = self.current
                 && ((settled && song_change) || self.due)
+                && self.waiting.is_none()
             {
-                self.request(current);
+                self.waiting = Some((current, 0.0));
             }
+            self.land_on_the_bar(features, kicked, dt);
             return None;
         }
         if settled && song_change {
@@ -197,13 +223,44 @@ impl Director {
             };
             return None;
         }
-        let drop = settled && self.fast - self.slow > DROP_JUMP;
-        let overdue = self.elapsed >= self.interval_s + KICK_WAIT_S;
-        if drop || (self.due && (kicked || overdue)) {
-            let target = self.choose(looks, self.slow > ENERGETIC);
-            self.request(target);
+        match section {
+            Some(SectionKind::Drop) if settled => {
+                // The drop has just happened: change now.
+                let target = self.choose(looks, true);
+                self.request(target);
+                return None;
+            }
+            Some(SectionKind::Breakdown) if settled => self.waiting = Some((self.choose(looks, false), 0.0)),
+            Some(SectionKind::Change) if self.elapsed >= MIN_LOOK_S.max(0.5 * self.interval_s) => self.due = true,
+            _ => {}
         }
+        if self.due && self.waiting.is_none() {
+            self.waiting = Some((self.choose(looks, self.slow > ENERGETIC), 0.0));
+        }
+        self.land_on_the_bar(features, kicked, dt);
         None
+    }
+
+    /// Start a waiting change when it will land on the bar line: with a steady beat,
+    /// fading out over what's left of the bar once that's a fade's length; without one,
+    /// on a kick, or after waiting a while.
+    fn land_on_the_bar(&mut self, features: Option<&AudioFeatures>, kicked: bool, dt: f32) {
+        let Some((target, waited)) = self.waiting else { return };
+        let waited = waited + dt;
+        let beat = features.map(|f| f.musical).filter(|m| m.beating && m.bpm > 0.0);
+        let fade = match beat {
+            Some(m) => {
+                let bar = 4.0 * 60.0 / m.bpm;
+                let left = (1.0 - m.bar_phase) * bar;
+                // A bar and a half with no line found (the beat lost): go anyway.
+                (left <= FADE_OUT_S || waited > 1.5 * bar).then_some(left.clamp(MIN_FADE_OUT_S, FADE_OUT_S))
+            }
+            None => (kicked || waited >= KICK_WAIT_S).then_some(FADE_OUT_S),
+        };
+        match fade {
+            Some(length) => self.fade_to(target, length),
+            None => self.waiting = Some((target, waited)),
+        }
     }
 
     /// The look gone longest unseen that suits the music's energy; ties go to the
@@ -222,6 +279,7 @@ impl Director {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::sections::SectionKind;
     use crate::looks::Library;
     use std::sync::LazyLock;
 
@@ -319,14 +377,68 @@ mod tests {
         assert!(run(&mut d, &music(0.3), None, 2.0).is_empty());
     }
 
+    /// Music reporting `changes` section changes, the last of `kind`.
+    fn sectioned(level: f32, changes: u32, kind: SectionKind) -> AudioFeatures {
+        let mut f = music(level);
+        f.sections.changes = changes;
+        f.sections.last = Some(crate::audio::sections::Section { kind, time: 0.0 });
+        f
+    }
+
+    /// Music with a steady beat at `bpm`, `t` seconds in (bars from 0).
+    fn beating(level: f32, bpm: f32, t: f32) -> AudioFeatures {
+        let mut f = music(level);
+        let bar = 4.0 * 60.0 / bpm;
+        f.musical = crate::audio::tempo::MusicalTime { bpm, confidence: 0.5, beating: true, bar_phase: (t / bar).fract(), ..Default::default() };
+        f
+    }
+
     #[test]
-    fn a_drop_changes_to_an_energetic_look() {
+    fn a_drop_changes_at_once_to_an_energetic_look() {
         let mut d = settled(0.2);
-        let applied = run(&mut d, &music(1.0), None, 3.0);
+        let mut applied = run(&mut d, &sectioned(0.2, 1, SectionKind::Drop), None, 1.0);
+        applied.extend(run(&mut d, &sectioned(0.2, 1, SectionKind::Drop), None, 1.0));
         assert_eq!(applied.len(), 1, "{applied:?}");
-        // Loudness was still averaging low when the drop hit, so the choice is by the
-        // slow average; either way it's a different look.
-        assert_ne!(applied[0], 0);
+        assert!(looks()[applied[0]].suits(true) && applied[0] != 0, "{}", looks()[applied[0]].name);
+    }
+
+    #[test]
+    fn a_breakdown_changes_to_a_calm_look() {
+        let mut d = settled(0.8);
+        let mut applied = run(&mut d, &sectioned(0.8, 1, SectionKind::Breakdown), Some(30), 1.0);
+        applied.extend(run(&mut d, &sectioned(0.8, 1, SectionKind::Breakdown), Some(30), 1.0));
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert!(looks()[applied[0]].suits(false), "{} isn't calm", looks()[applied[0]].name);
+    }
+
+    /// A plain change of section early in a look waits; past half the interval it changes.
+    #[test]
+    fn a_plain_change_counts_past_half_the_interval() {
+        let mut d = settled(0.3);
+        assert!(run(&mut d, &sectioned(0.3, 1, SectionKind::Change), Some(30), 2.0).is_empty(), "changed 22 s into a 90 s interval");
+        run(&mut d, &music(0.3), None, 30.0);
+        assert_eq!(run(&mut d, &sectioned(0.3, 2, SectionKind::Change), Some(30), 2.0).len(), 1, "didn't change past half the interval");
+    }
+
+    /// With a steady beat, the timer's change switches on a downbeat.
+    #[test]
+    fn changes_land_on_the_bar_line() {
+        for bpm in [90.0, 128.0, 174.0] {
+            let mut d = settled(0.3);
+            let bar = 4.0 * 60.0 / bpm;
+            let mut t = 0.37; // not on a bar line
+            let mut switched = None;
+            for _ in 0..(80.0 / FRAME) as usize {
+                if d.update(looks(), true, Some(&beating(0.3, bpm, t)), false, FRAME).is_some() {
+                    switched = Some(t);
+                    break;
+                }
+                t += FRAME;
+            }
+            let t = switched.unwrap_or_else(|| panic!("{bpm} BPM: never changed"));
+            let off = ((t / bar).round() - t / bar).abs() * bar;
+            assert!(off <= 1.5 * FRAME, "{bpm} BPM: switched {:.0} ms from a bar line", off * 1e3);
+        }
     }
 
     #[test]
