@@ -31,6 +31,7 @@ pub struct Settings {
     pub tab: Tab,
     pub palette: Palette,
     pub reactions: Vec<crate::audio::reactions::Reaction>,
+    pub audio_latency_ms: f32,
     pub auto_looks: bool,
     pub look_interval_s: f32,
     pub glow: f32,
@@ -63,6 +64,7 @@ impl Settings {
             tab: s.tab,
             palette: s.palette,
             reactions: s.reactions.clone(),
+            audio_latency_ms: s.audio_latency_ms,
             auto_looks: s.director.auto,
             look_interval_s: s.director.interval_s,
             glow: s.glow,
@@ -90,6 +92,7 @@ impl Settings {
         s.tab = self.tab;
         s.palette = self.palette;
         s.reactions = self.reactions.clone();
+        s.audio_latency_ms = clamp(self.audio_latency_ms, *crate::audio::LATENCY_MS.start(), *crate::audio::LATENCY_MS.end());
         s.director.auto = self.auto_looks;
         s.director.interval_s = clamp(self.look_interval_s, 30.0, 300.0);
         s.glow = clamp(self.glow, 0.0, 1.0);

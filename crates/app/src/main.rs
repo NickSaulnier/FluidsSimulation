@@ -442,6 +442,7 @@ impl State {
         let cursor = self.input.cursor().map(|pos| ui::Cursor { pos, px_per_metre: view.px_per_metre });
         let perf = self.perf.latest();
         let render_times = self.timer.as_ref().map(|t| t.latest().to_vec()).unwrap_or_default();
+        self.music.latency_ms = self.ui.audio_latency_ms;
         self.music.update();
         self.music.waveform(&mut self.waveform);
         self.waves.update(&self.waveform, self.frame_dt);

@@ -1,34 +1,54 @@
-# Hit detection F-measures (see audio/eval.rs). Regenerate with UPDATE_ANALYZER_BASELINE=1.
+# Hit and beat F-measures (see audio/eval.rs). Regenerate with UPDATE_ANALYZER_BASELINE=1.
 house 124	kick	1.000
 house 124	snare	0.633
 house 124	hat	0.851
+house 124	beat	0.931
+house 124	downbeat	0.000
 breakbeat 92	kick	0.774
 breakbeat 92	snare	0.833
 breakbeat 92	hat	0.872
+breakbeat 92	beat	0.955
+breakbeat 92	downbeat	0.909
 rock 140	kick	0.500
 rock 140	snare	0.667
 rock 140	hat	0.814
+rock 140	beat	0.955
+rock 140	downbeat	0.000
 ambient 70	kick	0.000
 ambient 70	snare	0.000
 ambient 70	hat	1.000
+ambient 70	beat	0.560
+ambient 70	downbeat	0.000
 dynamics 110	kick	0.952
 dynamics 110	snare	0.941
 dynamics 110	hat	0.528
+dynamics 110	beat	0.943
+dynamics 110	downbeat	0.833
 gmd_breakbeat_170	kick	0.730
 gmd_breakbeat_170	snare	0.787
 gmd_breakbeat_170	hat	0.702
+gmd_breakbeat_170	beat	0.853
+gmd_breakbeat_170	downbeat	0.737
 gmd_funk_138	kick	1.000
 gmd_funk_138	snare	0.569
 gmd_funk_138	hat	0.732
+gmd_funk_138	beat	0.906
+gmd_funk_138	downbeat	0.875
 gmd_hiphop_87	kick	1.000
 gmd_hiphop_87	snare	0.468
 gmd_hiphop_87	hat	0.727
+gmd_hiphop_87	beat	0.176
+gmd_hiphop_87	downbeat	0.000
 gmd_rock_135	kick	0.986
 gmd_rock_135	snare	0.559
 gmd_rock_135	hat	0.771
+gmd_rock_135	beat	0.952
+gmd_rock_135	downbeat	0.500
 gmd_samba_116	kick	0.978
 gmd_samba_116	snare	0.333
 gmd_samba_116	hat	0.907
 gmd_soul_102	kick	1.000
 gmd_soul_102	snare	0.552
 gmd_soul_102	hat	0.931
+gmd_soul_102	beat	0.936
+gmd_soul_102	downbeat	1.000

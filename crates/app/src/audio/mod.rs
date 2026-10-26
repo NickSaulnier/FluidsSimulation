@@ -14,15 +14,21 @@ pub mod live;
 pub mod reactions;
 #[cfg(test)]
 pub mod songs;
+pub mod tempo;
 
 use analyzer::{Analyzer, AudioFeatures, Onset, OnsetKind};
 use reactions::{Reaction, ReactionEngine, ReactionOutput};
 use rodio::Source;
 use sim::Vec2;
+use std::collections::VecDeque;
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tempo::Beat;
+
+/// The latency offset's range, milliseconds (see `Music::latency_ms`).
+pub const LATENCY_MS: std::ops::RangeInclusive<f32> = -200.0..=400.0;
 
 /// Track playback that jumps further than this (seeking) restarts the feed there
 /// instead of analysing everything skipped.
@@ -55,6 +61,15 @@ pub struct Music {
     /// (`OnsetKind::ALL` order).
     pub hits: [usize; 3],
     pub last_hit: [Option<Instant>; 3],
+    /// How much later than it's analysed the audio is heard, milliseconds: positive when
+    /// the capture runs ahead of the speakers (output buffering, wireless headphones).
+    /// Hits are held back by it, and beats (which are predicted) shifted either way.
+    pub latency_ms: f32,
+    /// Beats since the source started, and when the last was heard; flash the screen on
+    /// each, for setting the latency by eye.
+    pub beats: usize,
+    pub last_beat: Option<Instant>,
+    pub calibrating: bool,
     /// The analyzer for the current source (its sample rate is the source's).
     analyzer: Option<Analyzer>,
     /// The output device, opened on first load (playback stops if it's dropped).
@@ -67,8 +82,13 @@ pub struct Music {
     fed_frames: usize,
     /// Scratch: this frame's audio as stereo frames.
     stereo: Vec<live::Frame>,
-    /// This frame's hits.
+    /// This frame's hits and beats (beats are only counted here), and hits held back by
+    /// the latency (when each is heard).
     frame_onsets: Vec<Onset>,
+    frame_beats: Vec<Beat>,
+    held: VecDeque<(Instant, Onset)>,
+    /// Scratch: hits just found.
+    found: Vec<Onset>,
     engine: ReactionEngine,
 }
 
@@ -83,6 +103,10 @@ impl Default for Music {
             muted: false,
             hits: [0; 3],
             last_hit: [None; 3],
+            latency_ms: 0.0,
+            beats: 0,
+            last_beat: None,
+            calibrating: false,
             analyzer: None,
             device: None,
             player: None,
@@ -91,6 +115,9 @@ impl Default for Music {
             fed_frames: 0,
             stereo: Vec::new(),
             frame_onsets: Vec::new(),
+            frame_beats: Vec::new(),
+            held: VecDeque::new(),
+            found: Vec::new(),
             engine: ReactionEngine::default(),
         }
     }
@@ -138,10 +165,11 @@ impl Music {
         self.live.is_some()
     }
 
-    /// This frame's hits.
+    /// This frame's hits (as heard: see `latency_ms`).
     pub fn onsets(&self) -> &[Onset] {
         &self.frame_onsets
     }
+
 
     /// The latest analysis of the current source, if there is one.
     pub fn features(&self) -> Option<&AudioFeatures> {
@@ -230,13 +258,29 @@ impl Music {
             self.fed_frames = now;
         }
         self.frame_onsets.clear();
+        self.frame_beats.clear();
         let Some(analyzer) = &mut self.analyzer else { return };
+        analyzer.set_beat_offset(self.latency_ms / 1000.0);
         analyzer.process(&self.stereo, self.sensitivity);
-        analyzer.drain_onsets(&mut self.frame_onsets);
+        analyzer.drain_beats(&mut self.frame_beats);
+        // Hits are held back until they're heard (a negative latency can't bring them
+        // earlier: they're only known once analysed).
+        let now = Instant::now();
+        let delay = Duration::from_secs_f32(self.latency_ms.max(0.0) / 1000.0);
+        analyzer.drain_onsets(&mut self.found);
+        self.held.extend(self.found.drain(..).map(|o| (now + delay, o)));
+        while self.held.front().is_some_and(|(due, _)| *due <= now) {
+            let (_, onset) = self.held.pop_front().expect("checked");
+            self.frame_onsets.push(onset);
+        }
         for onset in &self.frame_onsets {
             let k = OnsetKind::ALL.iter().position(|&kind| kind == onset.kind).unwrap_or(0);
             self.hits[k] += 1;
-            self.last_hit[k] = Some(Instant::now());
+            self.last_hit[k] = Some(now);
+        }
+        if !self.frame_beats.is_empty() {
+            self.beats += self.frame_beats.len();
+            self.last_beat = Some(now);
         }
     }
 
@@ -253,6 +297,9 @@ impl Music {
         self.analyzer = rate.map(Analyzer::new);
         self.hits = [0; 3];
         self.last_hit = [None; 3];
+        self.beats = 0;
+        self.last_beat = None;
+        self.held.clear();
         self.fed_frames = 0;
     }
 

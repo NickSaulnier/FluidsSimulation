@@ -1,7 +1,7 @@
 # Audio Analyzer Plan
 
-Status: **approved; phases A to D done** (C with generated songs and recorded drums from
-the Groove MIDI Dataset; D's changes from the design are in its notes). Decisions (§8) taken as recommended (2026-10-25):
+Status: **approved; all phases done** (A to E; C with generated songs and recorded drums
+from the Groove MIDI Dataset; changes from the design are in each phase's notes). Decisions (§8) taken as recommended (2026-10-25):
 - `rtrb` for the lock-free hand-over from the audio thread;
 - `ebur128` for loudness;
 - a second, longer FFT for the low bands;
@@ -402,4 +402,89 @@ before or with MilkDrop phase E.
     - Close low tones resolve.
     - The existing tests pass, including the allocation test (the meter allocates
       nothing per hop) and identical onsets for any chunking.
+    - Not checked in the app.
+- **Phase E (done):** musical time (`app/src/audio/tempo.rs`).
+  - The analyzer feeds a beat tracker one onset-strength value per hop: SuperFlux over
+    all 64 bands, each band compressed against its own recent peak, so quiet treble
+    counts as much as loud bass. It also feeds the kick's rise, for downbeats.
+  - Tempo: the autocorrelation over the last 8 s, every 0.5 s, from 60 to 200 BPM,
+    weighted by a log-normal prior around 120 BPM.
+    - Each lag scores its own correlation plus those two beats and a bar on (searched
+      within the multiple's rounding: the bar term first missed the onset peaks by 1.7
+      hops at 90 BPM).
+    - The octave is then the best of the lag, its half and its double, by its own
+      correlation and the prior.
+    - The prior's spread is 0.7 octave: a 1-octave spread (librosa's) put soul at double
+      tempo, and 0.5 let tempos two thirds or four thirds of the real one win.
+  - Beats:
+    - A clock whose period follows the tempo found, smoothed. Its phase is pulled
+      halfway, at each update, toward where a comb over the last 4 s of onsets puts the
+      latest beat.
+    - The comb prefers beats near where the clock expects them: without that, the funk
+      groove's clock jumped to the off-beat and its tempo swung from 126 to 151.
+    - A different tempo has to be found 3 updates in a row to reset the clock.
+    - Changed from §5.6: correcting the period from phase errors as well (a full
+      phase-locked loop) made it swing, so the period follows the tempo found alone.
+  - Beats are reported while the confidence (the share of the onsets' variation that
+    repeats at the beat) is at least 0.1 and the tempo found has agreed with the clock,
+    or been half or double it, for 2 s. Random hits reach the same confidence as a
+    sparse real beat (0.15 against 0.16), but their tempo doesn't hold.
+  - Bars: four beats to a bar; the downbeat is the beat position with the strongest kick
+    rises over the last bars (falling 10% a bar). Overall onset strength, and kick less
+    snare, both did worse.
+  - Outputs: `AudioFeatures::musical` (BPM, confidence, whether beating, beat and bar
+    phase, the next beat's time) and the beats themselves (`Analyzer::drain_beats`, each
+    with its index and whether it's a downbeat). MilkDrop phase E will use them; no
+    reaction does yet.
+  - Latency: a saved setting from -200 to +400 ms, for audio heard later (or earlier)
+    than it's analysed. Beats and musical time shift by it either way, since beats are
+    predicted. Hits are held back by a positive latency, but can't come earlier than
+    they're found.
+  - The Music tab has a Beat group: the tempo and the bar position (four dots), the
+    beat count, the latency, and "Flash on every beat", which flashes the window on each
+    beat so the latency can be set by eye.
+  - Measuring:
+    - The fixtures can now mark beats (`beat` and `downbeat` lines). The Groove MIDI clips
+      have them from the MIDI's quarter-note grid (the drummers played to a click), except
+      the samba, whose playing sits off that grid.
+    - Beats and downbeats are scored within 70 ms after the first 5 s. The tempo at the
+      end is right within 4%, with octave errors counted apart.
+    - The baseline test is now `detection_holds_its_baseline`, and covers beats and
+      downbeats too.
+
+    | Clip | Beat F | Downbeat F | Tempo found (true) |
+    |---|---|---|---|
+    | house 124 | 0.93 | 0.00 | 123.7 (124) |
+    | breakbeat 92 | 0.95 | 0.91 | 92.1 (92) |
+    | rock 140 | 0.96 | 0.00 | 139.9 (140) |
+    | ambient 70 | 0.56 | 0.00 | 69.9 (70) |
+    | dynamics 110 | 0.94 | 0.83 | 110.0 (110) |
+    | Groove breakbeat 170 | 0.85 | 0.74 | 169.4 (170) |
+    | Groove funk 138 | 0.91 | 0.88 | 138.0 (138) |
+    | Groove hip-hop 87 | 0.18 | 0.00 | 86.5 (87) |
+    | Groove rock 135 | 0.95 | 0.50 | 136.0 (135) |
+    | Groove soul 102 | 0.94 | 1.00 | 101.2 (102) |
+
+    Precision is near 1 throughout. Recall is lower because beats wait for a steady
+    tempo.
+  - Weak spots:
+    - Hip-hop locks onto 117 BPM, four thirds of 87, for most of the clip: by the
+      tracker's own measure (beat, two beats and bar together) that rhythm is the
+      strongest, from the groove's dotted-eighth figure. It finds 87 near the end.
+    - The ambient song has few drums, so its confidence only passes 0.1 after 14 s.
+    - Downbeats from kicks alone can't break the tie between beats 1 and 3 when kicks
+      fall on both (house's four-on-the-floor, rock's 1 and 3). Harmonic changes (chords
+      on the downbeat) would break it.
+  - Cost: a minute of audio takes about 120 ms to analyse, up from 107 ms.
+  - Tests:
+    - From 70 to 180 BPM, straight and swung: the tempo within 2%, and every beat after
+      8 s within 30 ms. Three of the ten are an octave off, all toward 120 BPM (70 read
+      as 140, 180 as 90, where a listener might tap either way); the test allows three,
+      and checks their beats against that octave's grid.
+    - Through a dropped bar the clock stays on the beat.
+    - A tempo change from 100 to 130 BPM is followed, back on the beat within 6 s.
+    - The offset shifts when beats are reported, earlier or later, but not where they
+      fall.
+    - Random hits report no steady beat.
+    - Analysing allocates nothing, now including the beat tracker once it's reporting.
     - Not checked in the app.

@@ -99,6 +99,9 @@ pub struct UiState {
     pub waves: crate::render::waves::WaveSettings,
     /// How the music drives the fluid.
     pub reactions: Vec<crate::audio::reactions::Reaction>,
+    /// How much later than it's analysed the audio is heard, milliseconds (see
+    /// `Music::latency_ms`).
+    pub audio_latency_ms: f32,
     /// The full-screen visualizer: no controls, the scene filling the screen.
     pub presenting: bool,
     /// In presentation mode, the overlay (and cursor) show until then.
@@ -140,6 +143,7 @@ impl Default for UiState {
             feedback: crate::render::feedback::FeedbackSettings::OFF,
             waves: crate::render::waves::WaveSettings::OFF,
             reactions: crate::audio::reactions::default_reactions(),
+            audio_latency_ms: 0.0,
             presenting: false,
             reveal_until: None,
             notice: None,

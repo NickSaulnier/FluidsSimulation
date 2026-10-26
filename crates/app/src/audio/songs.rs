@@ -18,6 +18,8 @@ pub struct Song {
     pub frames: Vec<Frame>,
     /// Every drum hit: (seconds, kind).
     pub hits: Vec<(f32, OnsetKind)>,
+    /// Every beat: (seconds, whether it starts a bar).
+    pub beats: Vec<(f32, bool)>,
 }
 
 /// All the generated songs.
@@ -48,12 +50,13 @@ struct Mix {
     right: Vec<f32>,
     rng: SplitMix64,
     hits: Vec<(f32, OnsetKind)>,
+    beats: Vec<(f32, bool)>,
 }
 
 impl Mix {
     fn new(seconds: f32, seed: u64) -> Self {
         let n = (seconds * RATE as f32) as usize;
-        Self { left: vec![0.0; n], right: vec![0.0; n], rng: SplitMix64::new(seed), hits: Vec::new() }
+        Self { left: vec![0.0; n], right: vec![0.0; n], rng: SplitMix64::new(seed), hits: Vec::new(), beats: Vec::new() }
     }
 
     fn seconds(&self) -> f32 {
@@ -178,12 +181,21 @@ impl Mix {
         self.add(t, &sound, gain, 0.2);
     }
 
+    /// The beats from `start`, `beat` apart, to the end: four to a bar.
+    fn beats(&mut self, start: f32, beat: f32) {
+        let mut k = 0;
+        while start + k as f32 * beat < self.seconds() {
+            self.beats.push((start + k as f32 * beat, k % 4 == 0));
+            k += 1;
+        }
+    }
+
     fn finish(mut self, name: &'static str) -> Song {
         self.hits.sort_by(|a, b| a.0.total_cmp(&b.0));
         let peak = self.left.iter().chain(&self.right).fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
         let scale = 0.8 / peak;
         let frames = self.left.iter().zip(&self.right).map(|(l, r)| [l * scale, r * scale]).collect();
-        Song { name, frames, hits: self.hits }
+        Song { name, frames, hits: self.hits, beats: self.beats }
     }
 }
 
@@ -214,6 +226,7 @@ fn house() -> Song {
         t += beat;
         b += 1;
     }
+    m.beats(0.2, 60.0 / 124.0);
     m.finish("house 124")
 }
 
@@ -244,6 +257,7 @@ fn breakbeat() -> Song {
         bar_start += 4.0 * beat;
         bar += 1;
     }
+    m.beats(0.2, 60.0 / 92.0);
     m.finish("breakbeat 92")
 }
 
@@ -273,6 +287,7 @@ fn rock() -> Song {
         bar_start += 4.0 * beat;
         bar += 1;
     }
+    m.beats(0.2, 60.0 / 140.0);
     m.finish("rock 140")
 }
 
@@ -298,6 +313,7 @@ fn ambient() -> Song {
     // Hits past the end were never heard.
     let end = m.seconds();
     m.hits.retain(|h| h.0 < end);
+    m.beats(0.2, 60.0 / 70.0);
     m.finish("ambient 70")
 }
 
@@ -324,5 +340,6 @@ fn dynamics() -> Song {
         t += beat;
         b += 1;
     }
+    m.beats(0.2, 60.0 / 110.0);
     m.finish("dynamics 110")
 }

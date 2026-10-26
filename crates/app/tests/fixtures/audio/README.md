@@ -1,8 +1,8 @@
 # Analyzer fixtures
 
-Audio with known hit times, for measuring the analyzer's hit detection
-(`crates/app/src/audio/eval.rs`). The test `hit_detection_holds_its_baseline` scores
-every clip here, plus the generated songs (`audio/songs.rs`), and fails if a score
+Audio with known hit and beat times, for measuring the analyzer's hit detection and
+beat tracking (`crates/app/src/audio/eval.rs`). The test `detection_holds_its_baseline`
+scores every clip here, plus the generated songs (`audio/songs.rs`), and fails if a score
 falls more than 0.02 below `baseline.txt`.
 
 ## Adding a clip
@@ -11,21 +11,24 @@ falls more than 0.02 below `baseline.txt`.
    and only commit audio you may redistribute: public domain, CC0, or CC BY (then add
    the attribution below).
 2. Beside it, `name.txt` with one hit per line: the time in seconds, then `kick`,
-   `snare` or `hat`. `#` starts a comment.
+   `snare` or `hat`. If the music has a steady beat, add its beats too: `beat`, or
+   `downbeat` for the first beat of a bar. `#` starts a comment.
 
    ```
    # name.wav: 120 BPM, hand-marked
+   0.500 downbeat
    0.512 kick
+   1.000 beat
    0.998 snare
    1.250 hat
    ```
 
    Mark every hit you can hear, including quiet ones (ghost notes). The first 1.5 s
-   aren't scored, so the detector can warm up.
+   aren't scored for hits, so the detector can warm up, nor the first 5 s for beats.
 3. Record its scores into the baseline:
 
    ```
-   UPDATE_ANALYZER_BASELINE=1 cargo test --release -p app hit_detection -- --nocapture
+   UPDATE_ANALYZER_BASELINE=1 cargo test --release -p app detection -- --nocapture
    ```
 
 ## Attribution
@@ -52,4 +55,6 @@ Changes: each recording is cut to its first 20 s and mixed to mono. Its hit list
 comes from the dataset's MIDI for the same performance: kick from note 36; snare from
 38, 40 and 37 (head, rim, cross-stick); hat from the hi-hats (42, 22, 44, 46, 26), ride
 (51, 59, 53) and crashes (49, 55, 57, 52). Toms are left out, and notes of one kind
-within 30 ms of each other count as one hit.
+within 30 ms of each other count as one hit. The beats are the MIDI's quarter-note grid
+(the drummers played to a click), a downbeat every four; the samba has none, as its
+playing sits off that grid.

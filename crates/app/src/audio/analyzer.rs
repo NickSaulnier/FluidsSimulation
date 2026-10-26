@@ -43,6 +43,7 @@
 //! Times are seconds since the analyzer started, at the centre of each analysis window
 //! (where a hit's energy rise is detected).
 
+use super::tempo::{Beat, BeatTracker, MusicalTime};
 use realfft::num_complex::Complex32;
 use realfft::{RealFftPlanner, RealToComplex};
 use std::collections::VecDeque;
@@ -164,6 +165,8 @@ pub struct AudioFeatures {
     /// Stereo width: 0 mono, about 0.5 for unrelated channels, 1 for opposite ones.
     pub width: f32,
     pub silent: bool,
+    /// Tempo, beats and bars (see `tempo`).
+    pub musical: MusicalTime,
 }
 
 impl Default for AudioFeatures {
@@ -182,6 +185,7 @@ impl Default for AudioFeatures {
             balance: 0.0,
             width: 0.0,
             silent: false,
+            musical: MusicalTime::default(),
         }
     }
 }
@@ -361,6 +365,11 @@ pub struct Analyzer {
     /// energy, which sets its compression floor.
     flux_logs: [[f32; SPECTRUM_BANDS]; FLUX_LAG + 1],
     flux_peaks: [f32; 3],
+    /// The onset strength for the beat tracker: per band, a decaying peak (each band's own
+    /// compression floor) and the compressed logs of the last two hops.
+    strength_peaks: [f32; SPECTRUM_BANDS],
+    strength_logs: [[f32; SPECTRUM_BANDS]; 2],
+    tracker: BeatTracker,
     /// Spill: `spill[from][to]`, the share of kind `from`'s rise that shows in kind `to`'s
     /// range (a kick's click in the snare's, a snare's top in the hat's), learned at
     /// `from`'s hits as a lower envelope (so the moments both sound together count
@@ -412,6 +421,9 @@ impl Analyzer {
             pickers: std::array::from_fn(|_| OnsetPicker::new(hop_seconds)),
             flux_logs: [[0.0; SPECTRUM_BANDS]; FLUX_LAG + 1],
             flux_peaks: [0.0; 3],
+            strength_peaks: [0.0; SPECTRUM_BANDS],
+            strength_logs: [[0.0; SPECTRUM_BANDS]; 2],
+            tracker: BeatTracker::new(hop_seconds),
             spill: [[0.0; 3]; 3],
             prev_rises: [0.0; 3],
             quiet_for: 0.0,
@@ -427,6 +439,17 @@ impl Analyzer {
     /// Move the onsets found since the last call into `out`.
     pub fn drain_onsets(&mut self, out: &mut Vec<Onset>) {
         out.append(&mut self.onsets);
+    }
+
+    /// Move the beats reported since the last call into `out`.
+    pub fn drain_beats(&mut self, out: &mut Vec<Beat>) {
+        self.tracker.drain_beats(out);
+    }
+
+    /// Report beats and musical time this much later (seconds; negative for earlier): for
+    /// audio heard after (or before) it's analysed.
+    pub fn set_beat_offset(&mut self, seconds: f32) {
+        self.tracker.set_offset(seconds);
     }
 
     /// The last `WAVEFORM_LEN` frames, oldest first, into `out` (replacing its contents).
@@ -531,6 +554,30 @@ impl Analyzer {
         values
     }
 
+    /// The onset strength over the whole spectrum, for the beat tracker: SuperFlux's rise
+    /// per band (as for the hits), averaged over every band, each compressed against its
+    /// own recent peak so the quiet treble counts as much as the loud bass.
+    fn onset_strength(&mut self, dt: f32) -> f32 {
+        let (now, then) = (self.hops % 2, (self.hops + 1) % 2);
+        let fall = (-dt / AGC_S).exp();
+        for b in 0..SPECTRUM_BANDS {
+            let e = self.short_bank[b];
+            self.strength_peaks[b] = e.max(self.strength_peaks[b] * fall);
+            self.strength_logs[now][b] = (1.0 + e / (self.strength_peaks[b] * FLUX_FLOOR).max(1e-12)).ln();
+        }
+        if self.hops == 0 {
+            return 0.0;
+        }
+        let (logs, prev) = (&self.strength_logs[now], &self.strength_logs[then]);
+        let rise: f32 = (0..SPECTRUM_BANDS)
+            .map(|b| {
+                let before = prev[b.saturating_sub(1)].max(prev[b]).max(prev[(b + 1).min(SPECTRUM_BANDS - 1)]);
+                (logs[b] - before).max(0.0)
+            })
+            .sum();
+        rise / SPECTRUM_BANDS as f32
+    }
+
     /// Each kind's onset value: its rise less what the other kinds' rises are known to
     /// spill into its range, so one hit doesn't read as two kinds.
     fn unspill(&self, rises: [f32; 3]) -> [f32; 3] {
@@ -545,12 +592,14 @@ impl Analyzer {
         self.fill_bank();
         let dt = self.hop_seconds;
         let rises = self.superflux(dt);
+        let strength = self.onset_strength(dt);
+        let time = self.hops as f32 * dt + 0.5 * FFT_SIZE as f32 * dt / HOP as f32;
+        self.tracker.push(time, strength, rises[0]);
         let values = self.unspill(rises);
         let power = &self.short.power;
         let bank = &self.bank;
         let energy = |(a, z): (usize, usize)| bank[a..z].iter().sum::<f32>();
 
-        let time = self.hops as f32 * dt + 0.5 * FFT_SIZE as f32 * dt / HOP as f32;
         let total: f32 = power[1..].iter().sum();
         let rms = total.sqrt();
         let f = &mut self.features;
@@ -631,6 +680,7 @@ impl Analyzer {
             }
         }
         self.prev_rises = rises;
+        self.features.musical = self.tracker.time();
         self.hops += 1;
     }
 }
@@ -1125,22 +1175,27 @@ pub mod tests {
     #[test]
     fn analysing_allocates_nothing() {
         let rate = 48_000;
-        let (signal, _, _) = synthetic_beat(rate, 4.0, 120.0, 1.0);
+        let (signal, _, _) = synthetic_beat(rate, 14.0, 120.0, 1.0);
         let frames: Vec<Frame> = signal.iter().map(|&x| [x, 0.5 * x]).collect();
-        let (warm, rest) = frames.split_at(2 * rate as usize);
+        // Long enough for the beat tracker to have started.
+        let (warm, rest) = frames.split_at(9 * rate as usize);
         let mut a = Analyzer::new(rate);
-        let mut onsets = Vec::with_capacity(256);
+        let (mut onsets, mut beats) = (Vec::with_capacity(256), Vec::with_capacity(64));
         a.process(warm, 1.5);
         a.drain_onsets(&mut onsets);
+        a.drain_beats(&mut beats);
         onsets.clear();
+        beats.clear();
         let count = crate::test_alloc::allocations(|| {
             for chunk in rest.chunks(800) {
                 a.process(chunk, 1.5);
                 a.drain_onsets(&mut onsets);
+                a.drain_beats(&mut beats);
             }
         });
         assert_eq!(count, 0, "allocated {count} times");
         assert!(!onsets.is_empty(), "the beat should still be heard");
+        assert!(!beats.is_empty(), "and its beats reported");
     }
 
     /// EBU Tech 3341's first test: a 1 kHz sine at -23 dBFS on both channels reads -23

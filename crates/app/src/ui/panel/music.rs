@@ -7,7 +7,7 @@
 //! shown, with or without an audio source, so switching source doesn't move the
 //! reactions either.
 
-use crate::audio::Music;
+use crate::audio::{LATENCY_MS, Music};
 use crate::audio::analyzer::{self, AudioFeatures, BAND_NAMES, LUFS_FLOOR, OnsetKind};
 use crate::audio::reactions::{Effect, Reaction, Trigger, default_reactions};
 use crate::looks::LOOKS;
@@ -33,7 +33,51 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
     source(ui, f.music);
     looks(ui, f);
     analysis(ui, f.music);
+    beat(ui, f);
     reactions(ui, f);
+}
+
+/// Musical time: the tempo and where the bar is, and the latency between analysing the
+/// audio and hearing it, with a flash on every beat to set it by eye.
+fn beat(ui: &mut Ui, f: &mut Frame<'_>) {
+    let music = &mut *f.music;
+    let time = music.features().map(|f| f.musical).unwrap_or_default();
+    widgets::group(ui, "Beat", |ui| {
+        row(ui, "Tempo", "Beats per minute, and where the bar is (four beats; the first is the downbeat)", |ui| {
+            if time.beating {
+                ui.label(RichText::new(format!("{:.1} BPM", time.bpm)).small());
+                let beat = ((time.bar_phase * 4.0) as usize).min(3);
+                let dots: String = (0..4).map(|b| if b == beat { '●' } else { '○' }).collect();
+                ui.label(RichText::new(dots).small());
+            } else {
+                ui.label(RichText::new("No steady beat").small().weak());
+            }
+        });
+        row(ui, "Beats", "Beats counted since the source started", |ui| {
+            let flash = music.last_beat.is_some_and(|t| t.elapsed() < Duration::from_millis(120));
+            let text = RichText::new(format!("{}", music.beats)).small().color(if flash { theme::WARN } else { DIM });
+            ui.label(text);
+        });
+        row(ui, "Latency", "How much later the audio is heard than analysed: raise it if the visuals land early (wireless headphones, big audio buffers)", |ui| {
+            ui.add(egui::Slider::new(&mut f.state.audio_latency_ms, LATENCY_MS).suffix(" ms").step_by(5.0));
+        });
+        widgets::toggle(
+            ui,
+            &mut music.calibrating,
+            "Flash on every beat",
+            "Flashes the window on each beat: adjust the latency until the flashes land with what you hear",
+        );
+    });
+    if music.calibrating
+        && let Some(t) = music.last_beat
+    {
+        let fade = 1.0 - t.elapsed().as_secs_f32() / 0.15;
+        if fade > 0.0 {
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("beat flash")));
+            painter.rect_filled(ui.ctx().content_rect(), 0.0, Color32::from_white_alpha((fade * 90.0) as u8));
+        }
+        ui.ctx().request_repaint();
+    }
 }
 
 /// Visualizer looks: pick one, and whether the director changes them by itself.
