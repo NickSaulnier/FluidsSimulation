@@ -78,8 +78,10 @@ resolution in full screen if the simulation falls behind real time.
   (compiled to WGSL), reading the music and setting the warp, waves, shapes, composite
   and solver parameters. The editor (E) runs edits as you type.
 - **The director:** in full screen it changes looks on new songs, drops and
-  breakdowns, and at least every interval, landing changes on the bar line. It skips
-  one-star looks and can keep to favourites.
+  breakdowns, and at least every interval. Changes blend the old picture into the new
+  look (a dissolve, from the middle out, in patches, or a zoom blur) and land on the
+  downbeat; drops cut on the beat. Better-rated looks come round more often, and it can
+  keep to favourites or to picked tags.
 - **The browser** (B): every look with a thumbnail (taken the first time a look plays),
   search, tags, stars and favourites.
 - **Screen:** the monitor for full screen, the visualizer in a window kept on top, a
@@ -146,5 +148,4 @@ The design notes and progress, phase by phase, are in `docs/`:
 [PLAN.md](docs/PLAN.md) (the fluid toy), [3D_PLAN.md](docs/3D_PLAN.md),
 [UI_REDESIGN.md](docs/UI_REDESIGN.md), [VISUALIZER_PLAN.md](docs/VISUALIZER_PLAN.md),
 [ANALYZER_PLAN.md](docs/ANALYZER_PLAN.md) and [MILKDROP_PLAN.md](docs/MILKDROP_PLAN.md).
-Still to come there: blended transitions between looks, song metadata and album art,
-and classic `.milk` preset import.
+Still to come there: song metadata and album art, and classic `.milk` preset import.

@@ -225,6 +225,13 @@ impl UiState {
         self.reveal_until.is_some_and(|t| Instant::now() < t)
     }
 
+    /// How much the director favours each look (see `Library::weights`), with the
+    /// favourites and tags it's asked to keep to.
+    pub fn look_weights(&self) -> Vec<f32> {
+        let tags: &[String] = if self.director.tags_only { &self.browser.tags } else { &[] };
+        self.looks.weights(self.director.favourites_only, tags)
+    }
+
     pub fn show_notice(&mut self, text: String) {
         self.notice = Some((text, Instant::now() + NOTICE));
     }
@@ -283,12 +290,6 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
         } else {
             f.state.notice = None;
         }
-    }
-    // A look change fades the scene through black.
-    let darkness = f.state.director.darkness();
-    if darkness > 0.0 {
-        let area = if f.state.presenting { ui.max_rect() } else { ui.available_rect_before_wrap() };
-        ui.painter().rect_filled(area, 0, egui::Color32::from_black_alpha((255.0 * darkness) as u8));
     }
     if f.state.presenting {
         // The whole window is canvas; the overlay shows while the mouse is active (or on

@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phases A to E, G and I done** (E with the analyzer plan, which did most of its audio work; I with part of F: ratings, favourites, tags and hard cuts; F's blended transitions not yet). Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A to G and I done** (E with the analyzer plan, which did most of its audio work; part of F came with I). Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -713,4 +713,41 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
     - Not checked in the app: typing in the editor (posted keys don't reach egui text
       fields; the tests cover compiling and swapping), the monitor choice (one monitor),
       the windowed visualizer, and the frame-rate cap.
+- **Phase F (done):** transitions and the director (`app/src/director.rs`,
+  `render/composite.rs`, `post.wgsl`). Ratings, favourites, tags, history and hard cuts
+  came earlier, with phase I.
+  - Blends instead of fades through black:
+    - While a change is on its way the composite is drawn a second time each frame into
+      a still (two textures, so the one being blended from is never the one written).
+    - After the switch the new look takes over from the still over 2.5 s (5 s into a
+      breakdown), eased. The old picture drifts toward the viewer meanwhile.
+    - Patterns, one at random per change: a dissolve, from the middle out, in noise
+      patches, and a zoom blur (the old picture rushing and smearing along its rays).
+    - The feedback isn't cleared on a blend, so the new look's warp starts from the old
+      picture: looks grow out of each other. A new fluid still restarts, under the blend.
+    - A change asked for during a blend holds the blend where it is and captures that.
+  - Timing:
+    - A blend's switch lands on the next downbeat, as the fade did (the still captured
+      over the half second before); without a beat, on a kick or after 4 s.
+    - Drops cut, with a fresh feedback, on the next beat rather than the next downbeat
+      (changed from §5.2): the drop is found 0.15 to 0.6 s late, and the next downbeat
+      can be a bar further.
+    - Manual changes (`,` `.`, Space, the browser, Backspace) blend at once; H cuts.
+  - Choosing: weights from the stars (one star never by itself, then 0.6, 1, 1.5, 2) scale
+    how long a look has gone unseen, so a five-star look comes round about twice as
+    often. "Favourites only" and "the picked tags only" (the browser's tags, as in "only
+    water looks tonight") shut the rest out while any look qualifies; both are saved.
+    Playlists are left out: favourites and tags cover them.
+  - Tests:
+    - Director: a blend waits for the capture, then rises steadily to 1; a drop cuts on
+      the beat at 128 BPM (within 1.5 frames); a weight-2 look comes round 1.6 to 2.6
+      times as often; blends still land on the bar line at 90, 128 and 174 BPM.
+    - GPU: the still shows at the start and the new picture at the end, half and half
+      midway; the radial pattern starts in the middle; a still captured mid-blend holds
+      that mix.
+    - Library weights follow the stars, favourites and tags; the settings keep them.
+  - Checked in the app (release, full screen, the long test beat): three blends (Ink storm
+    into Firestorm, with the purple carried into Firestorm's warp; Firestorm into Wind
+    tunnel and Wind tunnel into Lava lamp, through noise patches) and a hard cut, clean
+    150 ms after the key.
 

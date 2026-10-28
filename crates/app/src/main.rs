@@ -117,6 +117,11 @@ struct State {
     no_fluid: Option<(usize, u64)>,
     /// The composite's kaleidoscope turn, hue drift and grain seed.
     composite_clock: render::composite::CompositeClock,
+    /// The pattern and seed of the blend into the current look (see `director`), chosen
+    /// at random for each.
+    blend_pattern: render::composite::BlendPattern,
+    blend_seed: f32,
+    rng: utils::rng::SplitMix64,
     /// Thumbnails being taken, and the look whose one to take this frame (its key).
     thumbnailer: render::thumbnail::Thumbnailer,
     thumbnail_key: Option<String>,
@@ -279,6 +284,9 @@ impl State {
             look_runtime: looks::runtime::Runtime::default(),
             look_frame: looks::runtime::Frame::plain(&render::feedback::FeedbackSettings::OFF, &render::waves::WaveSettings::OFF, &render::composite::CompositeSettings::OFF),
             composite_clock: render::composite::CompositeClock::default(),
+            blend_pattern: render::composite::BlendPattern::Dissolve,
+            blend_seed: 0.0,
+            rng: utils::rng::SplitMix64::new(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64)),
             thumbnailer: render::thumbnail::Thumbnailer::default(),
             thumbnail_key: None,
             look_pixel: String::new(),
@@ -389,7 +397,7 @@ impl State {
             self.start_code(&look);
             self.applied_look = Some(look);
         } else {
-            self.apply_look(index);
+            self.apply_look(index, true);
         }
         if self.ui.looks.errors.is_empty() {
             self.ui.show_notice(format!("reloaded {}", self.ui.looks.looks[index].name));
@@ -469,12 +477,19 @@ impl State {
     }
 
     /// Switch to look `index`, moving between the 2D and 3D worlds if it needs to.
-    fn apply_look(&mut self, index: usize) {
+    /// `fresh`: start the feedback afresh (for a cut, or a look reloaded from its file);
+    /// otherwise the new look's warp starts from the old picture, as a blend should.
+    fn apply_look(&mut self, index: usize, fresh: bool) {
         let Some(look) = self.ui.looks.looks.get(index).cloned() else { return };
-        // Put back any parameters the last look's reactions were modulating, and start
-        // the feedback afresh (the old look's trails would linger for seconds).
+        // Put back any parameters the last look's reactions were modulating.
         self.modulate_params(&[], &[]);
-        self.feedback.pause();
+        if fresh {
+            self.feedback.pause();
+        } else {
+            let patterns = render::composite::BlendPattern::ALL;
+            self.blend_pattern = patterns[(self.rng.next_u64() % patterns.len() as u64) as usize];
+            self.blend_seed = 100.0 * self.rng.next_f32();
+        }
         self.start_code(&look);
         if !look.has_fluid() {
             // Only the picture: the 2D world waits underneath, neither stepped nor drawn.
@@ -605,8 +620,7 @@ impl State {
                 }
             }
             Action::NextLookFade | Action::HardCut => {
-                let eligible = ui.looks.eligible(ui.director.favourites_only);
-                let next = ui.director.pick(&ui.looks.looks, &eligible);
+                let next = ui.director.pick(&ui.looks.looks, &ui.look_weights());
                 if action == Action::HardCut { ui.director.cut(next) } else { ui.director.request(next) }
             }
             Action::RateUp | Action::RateDown => {
@@ -693,8 +707,9 @@ impl State {
         self.reload_looks(now);
         // The director: change looks with the music (by itself only in full screen).
         let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
-        if let Some(look) = self.ui.director.update(&self.ui.looks.looks, &self.ui.looks.eligible(self.ui.director.favourites_only), self.ui.presenting, self.music.features(), kicked, real_dt) {
-            self.apply_look(look);
+        let weights = self.ui.look_weights();
+        if let Some(change) = self.ui.director.update(&self.ui.looks.looks, &weights, self.ui.presenting, self.music.features(), kicked, real_dt) {
+            self.apply_look(change.look, change.cut);
         }
         if self.no_fluid.is_some_and(|at| self.world3d.is_some() || at != (self.world.solver_index, self.world.scene_generation)) {
             self.no_fluid = None;
@@ -935,9 +950,15 @@ impl State {
             scene.clone()
         };
         mark(&self.timer, &mut encoder, Stage::Glow);
-        let composite = render::composite::Composite { settings: self.look_frame.composite, clock: self.composite_clock, palette: self.palette_now };
+        let blend = render::composite::Blend { amount: self.ui.director.blend(), pattern: self.blend_pattern, seed: self.blend_seed };
+        let composite = render::composite::Composite { settings: self.look_frame.composite, clock: self.composite_clock, palette: self.palette_now, blend };
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
         self.post.run(device, queue, &mut encoder, &picture, &target, self.ui.glow, feedback.echo(), &composite, self.timer.as_ref());
+        if self.ui.director.capturing() {
+            // A change is on its way: keep this frame as the still to blend from.
+            self.post.capture(device, &mut encoder, &picture, surface);
+            self.ui.director.captured();
+        }
         if let Some(key) = self.thumbnail_key.take() {
             let thumbnail = self.thumbnailer.target(device, surface, self.gpu.config.format);
             self.post.composite_again(device, &mut encoder, &picture, &thumbnail);
@@ -992,7 +1013,7 @@ impl State {
         let d = &self.ui.director;
         // In silence most looks are still or dark: wait for the music.
         let silent = self.music.features().is_none_or(|f| f.silent);
-        if self.thumbnailer.busy() || self.ui.paused || silent || d.darkness() > 0.0 || d.elapsed() < THUMBNAIL_AFTER_S {
+        if self.thumbnailer.busy() || self.ui.paused || silent || d.changing() || d.elapsed() < THUMBNAIL_AFTER_S {
             return None;
         }
         let look = d.current.and_then(|i| self.ui.looks.looks.get(i)).filter(|l| self.applied_look.as_ref() == Some(*l))?.clone();

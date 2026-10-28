@@ -4,6 +4,10 @@
 //! The tone curve leaves colours up to `TONE_KNEE` (0.85, linear) alone, so the 2D
 //! scenes look as they did when they drew straight to the screen; only highlights above
 //! it (fire, glows, bloom) roll off toward white (Reinhard-style) instead of clipping.
+//!
+//! For blends between looks it keeps a still of the picture (`capture`): the composite
+//! drawn a second time into one of two textures, so the still being blended from is
+//! never the one being written.
 
 use super::composite::{self, Composite};
 use super::timer::{GpuTimer, Stage};
@@ -45,7 +49,9 @@ struct Uniforms {
     vignette: f32,
     grain: f32,
     seed: f32,
-    _pad: [f32; 3],
+    blend: f32,
+    blend_pattern: u32,
+    blend_seed: f32,
     deep: [f32; 4],
     base: [f32; 4],
     highlight: [f32; 4],
@@ -75,7 +81,9 @@ impl Uniforms {
             vignette: s.vignette.clamp(0.0, 1.0),
             grain: s.grain.clamp(0.0, 1.0),
             seed: c.clock.seed,
-            _pad: [0.0; 3],
+            blend: c.blend.amount.clamp(0.0, 1.0),
+            blend_pattern: c.blend.pattern.index(),
+            blend_seed: c.blend.seed,
             deep: composite::linear(c.palette.deep),
             base: composite::linear(c.palette.base),
             highlight: composite::linear(c.palette.highlight),
@@ -135,6 +143,11 @@ pub struct PostProcess {
     up: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     targets: Option<Targets>,
+    /// The composite's format, for the stills.
+    output: wgpu::TextureFormat,
+    /// Stills of the picture for blends (made when first captured), and which one shows.
+    stills: [Option<(wgpu::TextureView, [u32; 2])>; 2],
+    still: usize,
 }
 
 impl PostProcess {
@@ -175,6 +188,7 @@ impl PostProcess {
                     count: None,
                 },
                 texture(3),
+                texture(4),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -219,6 +233,9 @@ impl PostProcess {
             down: pipeline("fs_down", SCENE_FORMAT, None),
             up: pipeline("fs_up", SCENE_FORMAT, Some(wgpu::BlendState { color: add, alpha: add })),
             composite: pipeline("fs_composite", output, None),
+            output,
+            stills: [None, None],
+            still: 0,
             layout,
             uniforms,
             sampler,
@@ -246,12 +263,12 @@ impl PostProcess {
         if levels.is_empty() {
             levels.push(texture_2d(device, "bloom level", size.map(|v| (v / 2).max(1))));
         }
-        let down = levels.windows(2).map(|w| self.group(device, &w[0], &self.blank)).collect();
-        let up = levels.windows(2).map(|w| self.group(device, &w[1], &self.blank)).collect();
+        let down = levels.windows(2).map(|w| self.group(device, &w[0], &self.blank, &self.blank)).collect();
+        let up = levels.windows(2).map(|w| self.group(device, &w[1], &self.blank, &self.blank)).collect();
         Targets { size, scene, levels, down, up }
     }
 
-    fn group(&self, device: &wgpu::Device, src: &wgpu::TextureView, bloom: &wgpu::TextureView) -> wgpu::BindGroup {
+    fn group(&self, device: &wgpu::Device, src: &wgpu::TextureView, bloom: &wgpu::TextureView, still: &wgpu::TextureView) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post"),
             layout: &self.layout,
@@ -260,6 +277,7 @@ impl PostProcess {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(bloom) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(still) },
             ],
         })
     }
@@ -286,7 +304,7 @@ impl PostProcess {
         let uniforms = Uniforms::new(strength, echo, aspect, composite);
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         if strength > 0.0 {
-            let prefilter = self.group(device, source, &self.blank);
+            let prefilter = self.group(device, source, &self.blank, &self.blank);
             fullscreen(encoder, "bloom prefilter", &t.levels[0], false, &self.prefilter, &prefilter);
             for (k, group) in t.down.iter().enumerate() {
                 fullscreen(encoder, "bloom down", &t.levels[k + 1], false, &self.down, group);
@@ -298,15 +316,44 @@ impl PostProcess {
         if let Some(timer) = timer {
             timer.mark(encoder, Stage::Composite);
         }
-        let composite = self.group(device, source, &t.levels[0]);
+        let composite = self.group(device, source, &t.levels[0], self.still_view());
         fullscreen(encoder, "composite", output, false, &self.composite, &composite);
+    }
+
+    /// The still a blend shows the old picture from (a stand-in before any capture).
+    fn still_view(&self) -> &wgpu::TextureView {
+        self.stills[self.still].as_ref().map_or(&self.blank, |(view, _)| view)
+    }
+
+    /// Keep this frame's picture, `size` pixels (the window's), as the still to blend
+    /// from: the composite of `source` drawn again, with what the last `run` set up.
+    pub fn capture(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, size: [u32; 2]) {
+        let next = 1 - self.still;
+        if self.stills[next].as_ref().is_none_or(|(_, s)| *s != size) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("still"),
+                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.output,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.stills[next] = Some((texture.create_view(&Default::default()), size));
+        }
+        let Some(t) = &self.targets else { return };
+        let (target, _) = self.stills[next].as_ref().expect("just made");
+        let composite = self.group(device, source, &t.levels[0], self.still_view());
+        fullscreen(encoder, "capture", target, false, &self.composite, &composite);
+        self.still = next;
     }
 
     /// The composite of `source` again, into `output` (of the same format), with what the
     /// last `run` set up (its glow and settings): for thumbnails.
     pub fn composite_again(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, output: &wgpu::TextureView) {
         let Some(t) = &self.targets else { return };
-        let composite = self.group(device, source, &t.levels[0]);
+        let composite = self.group(device, source, &t.levels[0], self.still_view());
         fullscreen(encoder, "composite again", output, false, &self.composite, &composite);
     }
 }
@@ -380,7 +427,7 @@ pub(crate) mod tests {
             );
             let output = texture_2d(device, "output", size);
             let mut encoder = device.create_command_encoder(&Default::default());
-            let composite = Composite { settings, clock: CompositeClock::default(), palette };
+            let composite = Composite { settings, clock: CompositeClock::default(), palette, blend: super::composite::Blend::NONE };
             post.run(device, queue, &mut encoder, &scene, &output, 0.0, Echo::NONE, &composite, None);
             queue.submit([encoder.finish()]);
             half_float::read(device, queue, output.texture(), size)
@@ -428,6 +475,62 @@ pub(crate) mod tests {
         let highlight = crate::render::composite::linear(palette.highlight);
         let white = at(&ramp, 60, 10);
         assert!(at(&ramp, 4, 10)[0] < 1e-3 && (0..3).all(|c| close(white[c], highlight[c], 0.02)), "palette map: black {:?}, white {white:?} (highlight {highlight:?})", at(&ramp, 4, 10));
+    }
+
+    /// Blends on a headless GPU: a captured still shows at the start and the new picture
+    /// at the end, half and half dissolved midway; the radial pattern brings the new look
+    /// in from the middle; and a still captured mid-blend holds the blend as it was.
+    #[test]
+    fn blends_mix_in_the_captured_still() {
+        use crate::render::composite::{Blend, BlendPattern};
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let mut post = PostProcess::new(device, SCENE_FORMAT);
+        let size = [64u32, 64];
+        let scene = post.scene_target(device, size);
+        let fill = |rgb: [f32; 3]| {
+            let data = vec![half_float::F16x4::rgb(rgb); (size[0] * size[1]) as usize];
+            queue.write_texture(
+                scene.texture().as_image_copy(),
+                bytemuck::cast_slice(&data),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: None },
+                wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+            );
+        };
+        let draw = |post: &mut PostProcess, blend: Blend, capture: bool| {
+            let output = texture_2d(device, "output", size);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            post.run(device, queue, &mut encoder, &scene, &output, 0.0, Echo::NONE, &Composite { blend, ..Composite::NONE }, None);
+            if capture {
+                post.capture(device, &mut encoder, &scene, size);
+            }
+            queue.submit([encoder.finish()]);
+            half_float::read(device, queue, output.texture(), size)
+        };
+        let at = |img: &[[f32; 4]], x: u32, y: u32| img[(y * size[0] + x) as usize];
+        let close = |p: [f32; 4], rgb: [f32; 3]| (0..3).all(|c| (p[c] - rgb[c]).abs() < 0.02);
+        let blend = |amount, pattern| Blend { amount, pattern, seed: 0.0 };
+
+        fill([0.5, 0.0, 0.0]);
+        draw(&mut post, Blend::NONE, true);
+        fill([0.0, 0.5, 0.0]);
+        let start = draw(&mut post, blend(0.0, BlendPattern::Dissolve), false);
+        assert!(close(at(&start, 32, 32), [0.5, 0.0, 0.0]), "the start isn't the still: {:?}", at(&start, 32, 32));
+        let end = draw(&mut post, blend(1.0, BlendPattern::Dissolve), false);
+        assert!(close(at(&end, 32, 32), [0.0, 0.5, 0.0]), "the end isn't the new look: {:?}", at(&end, 32, 32));
+        let half = draw(&mut post, blend(0.5, BlendPattern::Dissolve), false);
+        assert!(close(at(&half, 5, 50), [0.25, 0.25, 0.0]), "midway: {:?}", at(&half, 5, 50));
+        let radial = draw(&mut post, blend(0.5, BlendPattern::Radial), false);
+        assert!(close(at(&radial, 32, 32), [0.0, 0.5, 0.0]) && close(at(&radial, 0, 0), [0.5, 0.0, 0.0]), "radial: centre {:?}, corner {:?}", at(&radial, 32, 32), at(&radial, 0, 0));
+
+        // Captured halfway through a dissolve, then blended from at the start.
+        draw(&mut post, blend(0.5, BlendPattern::Dissolve), true);
+        fill([0.0, 0.0, 0.5]);
+        let held = draw(&mut post, blend(0.0, BlendPattern::Dissolve), false);
+        assert!(close(at(&held, 32, 32), [0.25, 0.25, 0.0]), "the mid-blend still: {:?}", at(&held, 32, 32));
     }
 
     #[test]

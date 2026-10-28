@@ -67,8 +67,9 @@ rot = rot * (0.5 + rad)
 
 The app's look browser (B, or the grid button in the Looks group) finds looks by name and
 by `tags`, and keeps your stars and favourites (in the settings, by the look's name).
-When looks change by themselves, a one-star look is never picked, and "Auto: favourites
-only" keeps to your favourites. Its equation editor (E, or the function button) edits
+When looks change by themselves, better-rated looks come round more often, a one-star
+look is never picked, and the browser can keep them to your favourites or to the tags
+picked there. Its equation editor (E, or the function button) edits
 the `[code]` of the look on screen while it runs; Save there writes the look as Save as
 does, under its own name.
 

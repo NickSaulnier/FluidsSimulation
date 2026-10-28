@@ -52,8 +52,16 @@ fn contents(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         if ui.button("Clear").on_hover_text("Show every look").clicked() {
             s.browser = Filter::default();
         }
-        ui.checkbox(&mut s.director.favourites_only, "Auto: favourites only")
-            .on_hover_text("When looks change by themselves, pick only favourites (if there are any). One-star looks are never picked by themselves.");
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("When looks change by themselves:").small().weak());
+        ui.checkbox(&mut s.director.favourites_only, "favourites only")
+            .on_hover_text("Pick only favourites (if there are any). Better-rated looks come round more often; one-star looks never by themselves.");
+        ui.add_enabled_ui(!s.browser.tags.is_empty() || s.director.tags_only, |ui| {
+            let what = if s.browser.tags.is_empty() { "the picked tags only".to_string() } else { format!("only {}", s.browser.tags.join(" + ")) };
+            ui.checkbox(&mut s.director.tags_only, what)
+                .on_hover_text("Pick only looks with all the tags picked below (\"only water looks tonight\")");
+        });
     });
     let mut tags: Vec<&String> = s.looks.looks.iter().flat_map(|l| &l.tags).collect();
     tags.sort();

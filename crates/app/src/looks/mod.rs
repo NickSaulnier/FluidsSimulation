@@ -60,6 +60,10 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("strobe_lattice.toml", include_str!("../../looks/strobe_lattice.toml")),
 ];
 
+/// How much the director favours a look by its stars (one to five), when picking by
+/// itself: a weight-2 look comes round twice as often as a weight-1 one.
+pub const STAR_WEIGHTS: [f32; 5] = [0.0, 0.6, 1.0, 1.5, 2.0];
+
 /// How often the user's folder is checked for changed files, seconds.
 const POLL_S: f32 = 1.0;
 
@@ -224,12 +228,22 @@ impl Library {
         mark.rating
     }
 
-    /// Which looks the director may pick by itself: not rated one star, and only
-    /// favourites if `favourites_only` (while there are any).
-    pub fn eligible(&self, favourites_only: bool) -> Vec<bool> {
-        let marks: Vec<Mark> = self.looks.iter().map(|l| self.mark(&l.name)).collect();
-        let only = favourites_only && marks.iter().any(|m| m.favourite);
-        marks.iter().map(|m| m.stars() > 1 && (!only || m.favourite)).collect()
+    /// How much the director favours each look when picking by itself (see
+    /// `Director::update`): by its stars (`STAR_WEIGHTS`: one star never, three as
+    /// usual, five twice as often), and never for a look that isn't a favourite if
+    /// `favourites_only`, or lacks any of `tags` (each only while some look qualifies).
+    pub fn weights(&self, favourites_only: bool, tags: &[String]) -> Vec<f32> {
+        let favourite = |l: &Look| self.mark(&l.name).favourite;
+        let tagged = |l: &Look| tags.iter().all(|t| l.tags.contains(t));
+        let only_favourites = favourites_only && self.looks.iter().any(favourite);
+        let only_tagged = !tags.is_empty() && self.looks.iter().any(tagged);
+        self.looks
+            .iter()
+            .map(|l| {
+                let kept = (!only_favourites || favourite(l)) && (!only_tagged || tagged(l));
+                if kept { STAR_WEIGHTS[usize::from(self.mark(&l.name).stars()) - 1] } else { 0.0 }
+            })
+            .collect()
     }
 
     /// Check the folder for changed files (at most every `POLL_S`), and read every look
@@ -517,6 +531,25 @@ mod tests {
                 assert!(params::float_param(&mut world, key, None).is_some(), "{}: equation sets unknown {key}", look.name);
             }
         }
+    }
+
+    /// Weights follow the stars, and favourites or tags shut the rest out (while any
+    /// look qualifies).
+    #[test]
+    fn weights_follow_marks_and_tags() {
+        let mut l = library();
+        let name = |i: usize| l.looks[i].name.clone();
+        let (a, b) = (name(0), name(1));
+        l.marks.insert(a.clone(), Mark { rating: 5, favourite: true });
+        l.marks.insert(b.clone(), Mark { rating: 1, favourite: false });
+        let w = l.weights(false, &[]);
+        assert_eq!((w[0], w[1], w[2]), (2.0, 0.0, 1.0));
+        let w = l.weights(true, &[]);
+        assert!(w[0] > 0.0 && w[2..].iter().all(|&x| x == 0.0), "favourites only");
+        let water = vec!["water".to_string()];
+        let w = l.weights(false, &water);
+        assert!(l.looks.iter().zip(&w).all(|(look, &x)| (x > 0.0) == (look.tags.contains(&water[0]) && look.name != b)));
+        assert!(l.weights(false, &["no such tag".into()]).iter().filter(|&&x| x > 0.0).count() > 2, "a tag nothing has shuts nothing out");
     }
 
     #[test]

@@ -35,6 +35,9 @@ pub struct Settings {
     pub auto_looks: bool,
     pub look_interval_s: f32,
     pub favourites_only: bool,
+    /// The browser's picked tags, and whether the director keeps to them.
+    pub look_tags: Vec<String>,
+    pub tags_only: bool,
     pub look_marks: std::collections::BTreeMap<String, crate::looks::Mark>,
     pub glow: f32,
     pub render_scale: f32,
@@ -72,6 +75,8 @@ impl Settings {
             auto_looks: s.director.auto,
             look_interval_s: s.director.interval_s,
             favourites_only: s.director.favourites_only,
+            look_tags: s.browser.tags.clone(),
+            tags_only: s.director.tags_only,
             look_marks: s.looks.marks.clone(),
             glow: s.glow,
             render_scale: s.render_scale,
@@ -104,6 +109,8 @@ impl Settings {
         s.director.auto = self.auto_looks;
         s.director.interval_s = clamp(self.look_interval_s, 30.0, 300.0);
         s.director.favourites_only = self.favourites_only;
+        s.browser.tags = self.look_tags.clone();
+        s.director.tags_only = self.tags_only;
         s.looks.marks = self.look_marks.clone();
         s.glow = clamp(self.glow, 0.0, 1.0);
         s.render_scale = if self.render_scale > 0.0 { clamp(self.render_scale, 0.5, 1.0) } else { 0.0 };
@@ -210,6 +217,8 @@ mod tests {
         state.panel_open = false;
         state.looks.marks.insert("Prism".into(), crate::looks::Mark { rating: 4, favourite: true });
         state.director.favourites_only = true;
+        state.browser.tags = vec!["water".into()];
+        state.director.tags_only = true;
         state.screen = crate::ui::Screen { monitor: Some("DISPLAY2".into()), windowed: true, on_top: true, fps_cap: 60 };
         let json = serde_json::to_string(&Settings::from_state(&state)).unwrap();
         let mut back = UiState::default();

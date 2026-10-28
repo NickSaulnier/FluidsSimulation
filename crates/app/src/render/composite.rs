@@ -2,6 +2,9 @@
 //! kaleidoscope), colour grading (hue, saturation, contrast, exposure), mapping the
 //! picture's brightness onto the look's palette, inversion, and lens effects (chromatic
 //! aberration, vignette, film grain). Everything off by default: the picture as it is.
+//!
+//! It also draws blends between looks (`Blend`): the new look taking over from a still
+//! of the old picture through a pattern.
 
 use super::Palette;
 use serde::{Deserialize, Serialize};
@@ -116,6 +119,43 @@ impl CompositeClock {
     }
 }
 
+/// How the new look takes over from the old picture in a blend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlendPattern {
+    /// Everywhere at once.
+    #[default]
+    Dissolve,
+    /// From the middle out.
+    Radial,
+    /// In patches.
+    Noise,
+    /// Everywhere at once, the old picture rushing toward the viewer, blurred.
+    ZoomBlur,
+}
+
+impl BlendPattern {
+    pub const ALL: [BlendPattern; 4] = [BlendPattern::Dissolve, BlendPattern::Radial, BlendPattern::Noise, BlendPattern::ZoomBlur];
+
+    /// The pattern's number in post.wgsl.
+    pub fn index(self) -> u32 {
+        Self::ALL.iter().position(|&p| p == self).expect("listed") as u32
+    }
+}
+
+/// A blend under way: how far the new look has come (0 the old picture, 1 the new look
+/// alone, no blend), the pattern and its seed (the noise's).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blend {
+    pub amount: f32,
+    pub pattern: BlendPattern,
+    pub seed: f32,
+}
+
+impl Blend {
+    #[cfg(test)]
+    pub const NONE: Self = Self { amount: 1.0, pattern: BlendPattern::Dissolve, seed: 0.0 };
+}
+
 /// What the composite draws this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Composite {
@@ -123,11 +163,13 @@ pub struct Composite {
     pub clock: CompositeClock,
     /// For mapping onto: the look's palette as drawn this frame.
     pub palette: Palette,
+    pub blend: Blend,
 }
 
 impl Composite {
     #[cfg(test)]
-    pub const NONE: Self = Self { settings: CompositeSettings::OFF, clock: CompositeClock { turn: 0.0, hue_drift: 0.0, seed: 0.0 }, palette: super::palette::PALETTES[0].1 };
+    pub const NONE: Self =
+        Self { settings: CompositeSettings::OFF, clock: CompositeClock { turn: 0.0, hue_drift: 0.0, seed: 0.0 }, palette: super::palette::PALETTES[0].1, blend: Blend::NONE };
 }
 
 /// An sRGB colour as linear light, for the shader.

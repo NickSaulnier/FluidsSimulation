@@ -3,7 +3,8 @@
 // Bloom: the scene, soft-thresholded, is downsampled through a chain of half-size
 // textures (13-tap filter), then blurred back up level by level (3×3 tent), each level
 // added onto the one above. The composite folds the picture into its symmetry, adds the
-// echo and the bloom, tone-maps, then grades the colours (see composite.rs).
+// echo and the bloom, tone-maps, then grades the colours (see composite.rs). During a
+// blend between looks it mixes in a still of the old picture.
 
 struct Post {
     // Brightness (linear) where glow starts, and the width of the soft start.
@@ -33,9 +34,11 @@ struct Post {
     vignette: f32,
     grain: f32,
     seed: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    // A blend: how far the new look has come (1: no blend), its pattern
+    // (`BlendPattern::index`) and seed.
+    blend: f32,
+    blend_pattern: u32,
+    blend_seed: f32,
     deep: vec4f,
     base: vec4f,
     highlight: vec4f,
@@ -46,6 +49,8 @@ struct Post {
 @group(0) @binding(2) var linear_clamp: sampler;
 // The composite's bloom; a stand-in elsewhere.
 @group(0) @binding(3) var bloom: texture_2d<f32>;
+// The old picture, for a blend; a stand-in elsewhere.
+@group(0) @binding(4) var still: texture_2d<f32>;
 
 /// Brightness up to here passes the tone curve unchanged, so ordinary colours look as
 /// they did before HDR; above it, highlights roll off smoothly toward 1.
@@ -194,6 +199,54 @@ fn hash(p: vec2f, seed: f32) -> f32 {
     return fract((r.x + r.y) * r.z);
 }
 
+/// Smooth noise in 0..1: hashes at the corners of a unit grid, blended.
+fn value_noise(p: vec2f, seed: f32) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash(i, seed);
+    let b = hash(i + vec2f(1.0, 0.0), seed);
+    let c = hash(i + vec2f(0.0, 1.0), seed);
+    let d = hash(i + vec2f(1.0, 1.0), seed);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+/// How much of the new look shows at `uv` this far (`amount`) through a blend.
+fn blend_mask(uv: vec2f, amount: f32) -> f32 {
+    let soft = 0.25;
+    switch post.blend_pattern {
+        case 1u: {
+            // From the middle out: 0 at the centre, 1 in the corners.
+            let d = length((uv - 0.5) * vec2f(post.aspect, 1.0)) / length(vec2f(post.aspect, 1.0) * 0.5);
+            return smoothstep(d, d + soft, amount * (1.0 + soft));
+        }
+        case 2u: {
+            // In patches, two octaves of noise.
+            let p = uv * vec2f(post.aspect, 1.0) * 5.0;
+            let n = 0.65 * value_noise(p, post.blend_seed) + 0.35 * value_noise(p * 2.7, post.blend_seed + 7.0);
+            return smoothstep(n, n + soft, amount * (1.0 + soft));
+        }
+        default: {
+            return amount;
+        }
+    }
+}
+
+/// The old picture at `uv`, drifting toward the viewer as the blend goes on (with the
+/// zoom blur, rushing and smeared along its rays).
+fn old_picture(uv: vec2f, amount: f32) -> vec3f {
+    if post.blend_pattern == 3u {
+        var sum = vec3f(0.0);
+        for (var k = 0; k < 8; k++) {
+            let zoom = 1.0 + amount * (0.3 + 0.05 * f32(k));
+            sum += textureSampleLevel(still, linear_clamp, 0.5 + (uv - 0.5) / zoom, 0.0).rgb;
+        }
+        return sum / 8.0;
+    }
+    let zoom = 1.0 + 0.12 * amount;
+    return textureSampleLevel(still, linear_clamp, 0.5 + (uv - 0.5) / zoom, 0.0).rgb;
+}
+
 /// The picture folded into its symmetry, with chromatic aberration and its echo, plus
 /// bloom, tone-mapped per channel (bright fire goes white, as it should), then graded.
 @fragment
@@ -243,5 +296,9 @@ fn fs_composite(in: VOut) -> @location(0) vec4f {
     if post.grain > 0.0 {
         c = c + post.grain * (hash(in.pos.xy, post.seed) - 0.5);
     }
-    return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);
+    c = clamp(c, vec3f(0.0), vec3f(1.0));
+    if post.blend < 1.0 {
+        c = mix(old_picture(in.uv, post.blend), c, blend_mask(in.uv, post.blend));
+    }
+    return vec4f(c, 1.0);
 }
