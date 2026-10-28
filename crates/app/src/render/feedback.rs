@@ -178,8 +178,15 @@ const _: () = assert!(SHARED <= 64, "the shared values don't fit the feedback un
 /// The feedback shader with `pixel` (a look's per-pixel code, from `expr::wgsl::pixel`;
 /// empty for none) in it.
 pub fn shader_source(pixel: &str) -> String {
+    fill_template(include_str!("feedback.wgsl"), pixel)
+}
+
+/// `template` with its markers replaced. Only the markers: a Git checkout may have
+/// turned the file's line endings into `\r\n`, and a marker matched with its `\n` would
+/// then be left in, leaving the motion undeclared.
+fn fill_template(template: &str, pixel: &str) -> String {
     let motion: String = MOTION.iter().map(|m| format!("    var {} = v({}u);\n", expr::wgsl::motion_var(m), expr::slot(m))).collect();
-    let template = include_str!("feedback.wgsl").replace("//{MOTION}\n", &motion).replace("//{PIXEL}\n", pixel);
+    let template = template.replace("//{MOTION}", &motion).replace("//{PIXEL}", pixel);
     format!("{}\n{template}", expr::wgsl::MATH)
 }
 
@@ -524,6 +531,23 @@ pub fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The template makes a valid shader whatever its line endings (a Windows checkout
+    /// can turn them into `\r\n`), with per-pixel code or without.
+    #[test]
+    fn the_template_works_with_windows_line_endings() {
+        let crlf = include_str!("feedback.wgsl").replace("\r\n", "\n").replace('\n', "\r\n");
+        let program = expr::compile("zoom = zoom + 0.1 * rad", expr::Stage::Pixel).unwrap();
+        let pixel = expr::wgsl::pixel(&program).replace('\n', "\r\n");
+        for code in ["", pixel.as_str()] {
+            let source = fill_template(&crlf, code);
+            assert!(!source.contains("//{"), "a marker was left in");
+            let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            wgpu::naga::valid::Validator::new(wgpu::naga::valid::ValidationFlags::all(), wgpu::naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+        }
+    }
 
     /// The fade is per second: two half-frames fade as much as one whole one, and a
     /// paused frame holds the picture. (The motion is scaled in the shader.)

@@ -511,6 +511,18 @@ mod tests {
         assert!(error("[code]\npixel = \"trail = 0.5\"\n").message.contains("per frame"));
     }
 
+    /// Every built-in loads from a Windows checkout's `\r\n` line endings too, with the
+    /// same settings and equations that run the same.
+    #[test]
+    fn looks_load_with_windows_line_endings() {
+        for (name, text) in super::super::BUILTIN {
+            let lf = parse(&text.replace("\r\n", "\n"), name, Source::Builtin(name)).unwrap();
+            let crlf = parse(&text.replace("\r\n", "\n").replace('\n', "\r\n"), name, Source::Builtin(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!((crlf.feedback, crlf.waves, crlf.composite, &crlf.reactions), (lf.feedback, lf.waves, lf.composite, &lf.reactions), "{name}");
+            assert_eq!((&crlf.code.init, &crlf.code.frame, &crlf.code.pixel), (&lf.code.init, &lf.code.frame, &lf.code.pixel), "{name}: the equations differ");
+        }
+    }
+
     /// Every built-in written out and read back is the same look; so is a custom palette,
     /// a toggle parameter, a disabled reaction and feedback kept off.
     #[test]
