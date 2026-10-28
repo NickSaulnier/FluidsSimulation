@@ -118,11 +118,13 @@ pub struct WaveSettings {
     /// How hard a line or circle pushes the fluid with the sound, 0 to 1.
     pub push: f32,
     pub shapes: [ShapeSettings; 2],
+    /// The song's cover art (drawn by `render::art`, not here).
+    pub art: super::art::ArtSettings,
 }
 
 impl WaveSettings {
     pub const OFF: Self =
-        Self { mode: WaveMode::Off, scale: 1.0, size: 0.5, y: 0.0, thickness: 3.0, brightness: 1.5, push: 0.0, shapes: [ShapeSettings::OFF; 2] };
+        Self { mode: WaveMode::Off, scale: 1.0, size: 0.5, y: 0.0, thickness: 3.0, brightness: 1.5, push: 0.0, shapes: [ShapeSettings::OFF; 2], art: super::art::ArtSettings::OFF };
 
     /// Whether anything is drawn.
     pub fn any(&self) -> bool {

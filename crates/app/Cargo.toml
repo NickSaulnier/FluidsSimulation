@@ -36,3 +36,6 @@ serde_json.workspace = true
 env_logger.workspace = true
 toml.workspace = true
 png.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true

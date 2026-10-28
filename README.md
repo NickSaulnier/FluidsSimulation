@@ -82,6 +82,11 @@ resolution in full screen if the simulation falls behind real time.
   look (a dissolve, from the middle out, in patches, or a zoom blur) and land on the
   downbeat; drops cut on the beat. Better-rated looks come round more often, and it can
   keep to favourites or to picked tags.
+- **Songs:** listening live, the app reads what the player reports (Windows' media
+  session: Spotify, browsers, media players). Each song gets a title card with its
+  cover, a new look from the director at once, and the looks' colours from its cover;
+  looks can draw the cover itself into the picture, for the feedback and the fluid to
+  carry.
 - **The browser** (B): every look with a thumbnail (taken the first time a look plays),
   search, tags, stars and favourites.
 - **Screen:** the monitor for full screen, the visualizer in a window kept on top, a
@@ -102,7 +107,7 @@ F1 shows them all in the app. The main ones:
 | Backspace | back to the look before |
 | `+` `-` | rate the look |
 | B, E | the look browser, the equation editor |
-| T | the song's title |
+| T | the song's title card |
 | M | play / pause the music |
 | R, P, N | reset, next scene, next solver |
 | 1 to 4 | push, wall, erase, faucet |
@@ -148,4 +153,5 @@ The design notes and progress, phase by phase, are in `docs/`:
 [PLAN.md](docs/PLAN.md) (the fluid toy), [3D_PLAN.md](docs/3D_PLAN.md),
 [UI_REDESIGN.md](docs/UI_REDESIGN.md), [VISUALIZER_PLAN.md](docs/VISUALIZER_PLAN.md),
 [ANALYZER_PLAN.md](docs/ANALYZER_PLAN.md) and [MILKDROP_PLAN.md](docs/MILKDROP_PLAN.md).
-Still to come there: song metadata and album art, and classic `.milk` preset import.
+Still to come there: the optional extras (classic `.milk` preset import, recording,
+Spout, MIDI and OSC).

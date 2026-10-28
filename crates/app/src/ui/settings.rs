@@ -35,6 +35,8 @@ pub struct Settings {
     pub auto_looks: bool,
     pub look_interval_s: f32,
     pub favourites_only: bool,
+    pub title_cards: bool,
+    pub album_colours: bool,
     /// The browser's picked tags, and whether the director keeps to them.
     pub look_tags: Vec<String>,
     pub tags_only: bool,
@@ -75,6 +77,8 @@ impl Settings {
             auto_looks: s.director.auto,
             look_interval_s: s.director.interval_s,
             favourites_only: s.director.favourites_only,
+            title_cards: s.title_cards,
+            album_colours: s.album_colours,
             look_tags: s.browser.tags.clone(),
             tags_only: s.director.tags_only,
             look_marks: s.looks.marks.clone(),
@@ -109,6 +113,8 @@ impl Settings {
         s.director.auto = self.auto_looks;
         s.director.interval_s = clamp(self.look_interval_s, 30.0, 300.0);
         s.director.favourites_only = self.favourites_only;
+        s.title_cards = self.title_cards;
+        s.album_colours = self.album_colours;
         s.browser.tags = self.look_tags.clone();
         s.director.tags_only = self.tags_only;
         s.looks.marks = self.look_marks.clone();
@@ -147,6 +153,15 @@ impl Settings {
                 fill: clamp(sh.fill, 0.0, 1.0),
                 ..sh
             }),
+            art: crate::render::art::ArtSettings {
+                size: clamp(w.art.size, 0.05, 1.0),
+                opacity: clamp(w.art.opacity, 0.0, 1.0),
+                centre: w.art.centre.map(|c| clamp(c, -1.5, 1.5)),
+                spin: clamp(w.art.spin, -3.0, 3.0),
+                bass_pulse: clamp(w.art.bass_pulse, 0.0, 1.0),
+                brightness: clamp(w.art.brightness, 0.0, 4.0),
+                ..w.art
+            },
             ..*w
         };
         let c = &self.composite;

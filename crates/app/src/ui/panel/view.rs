@@ -174,6 +174,17 @@ fn waves(ui: &mut egui::Ui, s: &mut WaveSettings) {
     if s.any() {
         slider(ui, "Brightness", "Light added: above 1 glows.", &mut s.brightness, 0.0..=4.0);
     }
+    let art = &mut s.art;
+    widgets::toggle(ui, &mut art.enabled, "Album art", "The cover of the song playing (listening live, from what the computer reports), drawn into the picture so the feedback carries it.");
+    if art.enabled {
+        slider(ui, "Size", "", &mut art.size, 0.05..=1.0);
+        slider(ui, "Opacity", "", &mut art.opacity, 0.0..=1.0);
+        slider(ui, "Across", "", &mut art.centre[0], -1.5..=1.5);
+        slider(ui, "Up", "", &mut art.centre[1], -1.0..=1.0);
+        slider(ui, "Spin", "Radians per second.", &mut art.spin, -3.0..=3.0);
+        slider(ui, "Bass pulse", "", &mut art.bass_pulse, 0.0..=1.0);
+        slider(ui, "Light", "Above 1 glows.", &mut art.brightness, 0.0..=4.0);
+    }
 }
 
 fn mode_label(mode: FeedbackMode) -> &'static str {

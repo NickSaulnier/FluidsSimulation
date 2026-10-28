@@ -8,6 +8,7 @@ use crate::audio::reactions::{Effect, Reaction, Trigger};
 use crate::expr::{self, Program, Stage};
 use crate::render::feedback::{self, FeedbackSettings};
 use crate::render::palette::{PALETTES, Palette};
+use crate::render::art::ArtSettings;
 use crate::render::composite::CompositeSettings;
 use crate::render::waves::{ShapeSettings, WaveSettings};
 use serde::Deserialize;
@@ -41,6 +42,7 @@ struct Doc {
     #[serde(default)]
     shape: Vec<ShapeSettings>,
     composite: Option<CompositeSettings>,
+    art: Option<ArtSettings>,
     #[serde(default)]
     code: CodeDoc,
 }
@@ -144,6 +146,8 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
     };
     let mut waves_known = keys(WaveSettings::OFF);
     waves_known.remove("shapes");
+    waves_known.remove("art");
+    unknown("art", raw.get("art"), keys(ArtSettings::OFF))?;
     unknown("feedback", raw.get("feedback"), keys(FeedbackSettings::OFF))?;
     unknown("waves", raw.get("waves"), waves_known)?;
     unknown("composite", raw.get("composite"), keys(CompositeSettings::OFF))?;
@@ -243,6 +247,10 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         }
         waves.shapes[i] = shape;
     }
+    if let Some(mut art) = doc.art {
+        art.enabled = section("art").is_none_or(|t| !t.contains_key("enabled")) || art.enabled;
+        waves.art = art;
+    }
 
     let code = compile_doc_code(text, &doc.code).map_err(|(offset, message)| fail(offset, message))?;
     let meta = doc.meta;
@@ -336,9 +344,12 @@ pub fn write(look: &Look) -> String {
         feedback.insert(0, ("enabled".into(), toml::Value::Boolean(false)));
     }
     section("[feedback]", feedback, fb.enabled);
-    section("[waves]", changed(look.waves, WaveSettings::OFF, &["shapes"]), false);
+    section("[waves]", changed(look.waves, WaveSettings::OFF, &["shapes", "art"]), false);
     for shape in look.waves.shapes.iter().filter(|s| s.enabled) {
         section("[[shape]]", changed(*shape, ShapeSettings::OFF, &["enabled"]), true);
+    }
+    if look.waves.art.enabled {
+        section("[art]", changed(look.waves.art, ArtSettings::OFF, &["enabled"]), true);
     }
     section("[composite]", changed(look.composite, CompositeSettings::OFF, &[]), false);
     let code = &look.code.source;
@@ -478,6 +489,10 @@ mod tests {
 
     #[test]
     fn sections_turn_things_on() {
+        let art = load("[art]\nsize = 0.5\nspin = 0.2\n").unwrap().waves.art;
+        assert!(art.enabled && art.size == 0.5 && art.spin == 0.2, "{art:?}");
+        assert!(!load("").unwrap().waves.art.enabled);
+        assert!(error("[art]\nzise = 0.5\n").message.contains("size"));
         let look = load("[feedback]\ntrail = 0.3\n[[shape]]\nsides = 5\n").unwrap();
         assert!(look.feedback.enabled && look.feedback.trail == 0.3);
         assert!(look.waves.shapes[0].enabled && look.waves.shapes[0].sides == 5 && !look.waves.shapes[1].enabled);

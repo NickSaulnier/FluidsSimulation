@@ -3,7 +3,9 @@
 //! blend has gone; the app does the applying and the drawing.
 //!
 //! When it's active (full screen, auto on) it changes look on:
-//! - **A new song:** at least `SONG_GAP_S` of silence, then `LISTEN_S` of sound.
+//! - **A new song:** when the app says so (`new_song`: the media session reported one,
+//!   or a track was loaded), or else guessed from at least `SONG_GAP_S` of silence; then
+//!   after `LISTEN_S` of sound.
 //! - **The song's sections** (see `audio::sections`): a drop cuts to an energetic look;
 //!   a breakdown blends slowly into a calm one; any other change of section makes a
 //!   change due, once half the interval has passed.
@@ -120,6 +122,8 @@ pub struct Director {
     /// under way is a step back through them (which isn't recorded).
     history: Vec<usize>,
     going_back: bool,
+    /// The app reported a new song since the last update.
+    told_new_song: bool,
 }
 
 impl Default for Director {
@@ -142,6 +146,7 @@ impl Default for Director {
             applied: 0,
             history: Vec::new(),
             going_back: false,
+            told_new_song: false,
         }
     }
 }
@@ -150,6 +155,12 @@ impl Director {
     /// Blend to look `target` (a manual choice, or the director's own), now.
     pub fn request(&mut self, target: usize) {
         self.change(target, 0.0, Transition::Blend(BLEND_S));
+    }
+
+    /// A new song has begun (known, not guessed from silence): change look for it after
+    /// hearing its opening, however long the current look has been on.
+    pub fn new_song(&mut self) {
+        self.told_new_song = true;
     }
 
     /// Change to look `target` at once, without a blend.
@@ -271,6 +282,7 @@ impl Director {
         let section = (sections.changes > self.sections_seen).then_some(sections.last).flatten().map(|s| s.kind);
         self.sections_seen = sections.changes;
         let silent = features.is_none_or(|f| f.silent);
+        let told = std::mem::take(&mut self.told_new_song);
         let song_change = !silent && self.silence >= SONG_GAP_S;
         self.silence = if silent { self.silence + dt } else { 0.0 };
 
@@ -319,7 +331,7 @@ impl Director {
         if !self.auto {
             // Locked: refresh the same look, so it doesn't go stale.
             if let Some(current) = self.current
-                && ((settled && song_change) || self.due)
+                && ((settled && song_change) || told || self.due)
                 && self.waiting.is_none()
             {
                 self.waiting = Some(Pending { target: current, waited: 0.0, transition: blend });
@@ -327,7 +339,7 @@ impl Director {
             self.land(features, kicked, dt);
             return None;
         }
-        if settled && song_change {
+        if (settled && song_change) || told {
             self.listening = Some((0.0, 0.0));
         }
         if let Some((heard, sum)) = self.listening {
@@ -512,6 +524,18 @@ mod tests {
         let applied = run(&mut d, &music(0.9), None, 3.0);
         assert_eq!(applied.len(), 1, "{applied:?}");
         assert!(looks()[applied[0]].suits(true) && !looks()[applied[0]].suits(false), "{} isn't an energetic look", looks()[applied[0]].name);
+    }
+
+    /// A song the app reports changes look after its opening, even a few seconds into
+    /// the last look, and with no silence before it.
+    #[test]
+    fn a_reported_new_song_changes_look() {
+        let mut d = Director { current: Some(0), ..Director::default() };
+        run(&mut d, &music(0.3), None, 5.0);
+        d.new_song();
+        let applied = run(&mut d, &music(0.3), None, 3.0);
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert!(run(&mut d, &music(0.3), None, 10.0).is_empty(), "changed again");
     }
 
     #[test]

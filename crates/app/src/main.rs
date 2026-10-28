@@ -127,6 +127,17 @@ struct State {
     thumbnail_key: Option<String>,
     ui: UiState,
     music: Music,
+    /// What the computer reports playing (see `audio::media`); its cover, drawn into the
+    /// scene, as a texture for the interface and as a palette; the song last announced
+    /// (title, artist, album) and the track last seen.
+    media: audio::media::Media,
+    art: render::art::ArtLayer,
+    cover: Option<(std::sync::Arc<Vec<u8>>, egui::TextureHandle, render::Palette)>,
+    announced: Option<(String, String, String)>,
+    last_track: Option<String>,
+    /// The colours drawn from: the look's, or the cover's, eased between.
+    palette_ease: render::palette::PaletteEase,
+    palette_base: render::Palette,
     /// Reused buffer for the overlay field, and the range it was last drawn with.
     field_values: Vec<f32>,
     field_range: Option<(f32, f32)>,
@@ -236,6 +247,7 @@ impl State {
         let timer = render::timer::GpuTimer::new(&gpu.device, &gpu.queue);
         let feedback = render::feedback::FeedbackLayer::new(&gpu.device);
         let waves = render::waves::WavesLayer::new(&gpu.device);
+        let art = render::art::ArtLayer::new(&gpu.device);
 
         let egui_ctx = egui::Context::default();
         ui::theme::apply(&egui_ctx);
@@ -307,6 +319,13 @@ impl State {
                 ui
             },
             music,
+            media: audio::media::Media::start(),
+            art,
+            cover: None,
+            announced: None,
+            last_track: None,
+            palette_ease: render::palette::PaletteEase::default(),
+            palette_base: render::Palette::default(),
             field_values: Vec::new(),
             field_range: None,
             input: Input::default(),
@@ -466,6 +485,70 @@ impl State {
         }
         self.look_runtime.replace(&code, rerun_init);
         self.look_pixel = code.pixel;
+    }
+
+    /// Keep up with the song: listening live, what the computer reports (its cover, and
+    /// a new song announced once it plays); playing a track, the track. A new song gets
+    /// a title card (if wanted) and a new look from the director.
+    fn follow_song(&mut self) {
+        let events = self.media.poll();
+        if self.music.is_live() {
+            let song = self.media.song.clone();
+            let art = song.as_ref().and_then(|s| s.art.clone());
+            if self.cover.as_ref().map(|c| &c.0) != art.as_ref().map(|a| &a.rgba) {
+                self.set_cover(art.as_ref());
+            }
+            if events.is_empty() && self.ui.song.as_ref().map(|s| s.title.as_str()) == song.as_ref().map(|s| s.title.as_str()) {
+                return;
+            }
+            self.ui.song = song.as_ref().map(|s| ui::title_card::Song {
+                title: s.title.clone(),
+                artist: s.artist.clone(),
+                album: s.album.clone(),
+                playing: s.playing,
+                cover: self.cover.as_ref().map(|c| c.1.clone()),
+            });
+            if let Some(s) = song.filter(|s| s.playing) {
+                let id = (s.title, s.artist, s.album);
+                if self.announced.as_ref() != Some(&id) {
+                    self.announced = Some(id);
+                    self.announce();
+                }
+            }
+        } else {
+            if self.cover.is_some() {
+                self.set_cover(None);
+            }
+            let track = self.music.track.as_ref().map(|t| t.name.clone());
+            if self.ui.song.as_ref().map(|s| &s.title) != track.as_ref() || self.ui.song.as_ref().is_some_and(|s| !s.artist.is_empty()) {
+                self.ui.song = track.clone().map(|title| ui::title_card::Song { title, artist: String::new(), album: String::new(), playing: true, cover: None });
+            }
+            if track.is_some() && track != self.last_track {
+                self.last_track = track;
+                self.announce();
+            }
+        }
+    }
+
+    /// Show `art` as the song's cover (none: no cover).
+    fn set_cover(&mut self, art: Option<&audio::media::Art>) {
+        self.art.set(&self.gpu.device, &self.gpu.queue, art);
+        self.cover = art.map(|a| {
+            let image = egui::ColorImage::from_rgba_unmultiplied([a.size[0] as usize, a.size[1] as usize], &a.rgba);
+            let texture = self.egui_ctx.load_texture("cover", image, egui::TextureOptions::LINEAR);
+            (a.rgba.clone(), texture, render::Palette::from_picture(&a.rgba))
+        });
+        if let Some(song) = &mut self.ui.song {
+            song.cover = self.cover.as_ref().map(|c| c.1.clone());
+        }
+    }
+
+    /// A new song: its title card, and a look for it.
+    fn announce(&mut self) {
+        self.ui.director.new_song();
+        if self.ui.title_cards {
+            self.ui.title_card = Some(Instant::now());
+        }
     }
 
     /// Start `look`'s equations, and its composite's clock afresh (the last look's hue
@@ -631,15 +714,11 @@ impl State {
                     ui.show_notice(format!("{name}: {shown}{note}"));
                 }
             }
-            Action::ShowTitle => {
-                let title = if self.music.is_live() {
-                    let device = self.music.live.as_ref().map_or("the system", |l| l.device_name.as_str());
-                    format!("Live: {device}")
-                } else {
-                    self.music.track.as_ref().map_or_else(|| "No track".to_string(), |t| t.name.clone())
-                };
-                ui.show_notice(title);
-            }
+            Action::ShowTitle => match &ui.song {
+                Some(_) => ui.title_card = Some(Instant::now()),
+                None if self.music.is_live() => ui.show_notice("nothing reports what's playing".into()),
+                None => ui.show_notice("no track loaded".into()),
+            },
             Action::ToggleBrowser => ui.browser_open = !ui.browser_open,
             Action::ToggleEditor => ui.editor_open = !ui.editor_open,
         }
@@ -676,6 +755,9 @@ impl State {
         self.music.latency_ms = self.ui.audio_latency_ms;
         self.music.update();
         self.music.waveform(&mut self.waveform);
+        self.follow_song();
+        let cover = self.cover.as_ref().map(|c| c.2).filter(|_| self.ui.album_colours && self.music.is_live());
+        self.palette_base = self.palette_ease.follow(cover.as_ref().unwrap_or(&self.ui.palette), real_dt);
         let mut frame = ui::Frame {
             world: &mut self.world,
             world3d: self.world3d.as_mut(),
@@ -720,6 +802,7 @@ impl State {
         self.look_frame = self.look_runtime.step(&self.ui.feedback, &self.ui.waves, &self.ui.composite, sound, self.frame_dt, aspect);
         self.composite_clock.advance(&self.look_frame.composite, self.frame_dt);
         self.waves.update(&self.waveform, &self.look_frame.waves, self.frame_dt);
+        self.art.update(&self.look_frame.waves.art, self.frame_dt);
         let (drag, wheel) = self.input.take_orbit();
         if self.world3d.is_some() {
             self.step_3d(drag, wheel, real_dt);
@@ -759,7 +842,7 @@ impl State {
         if self.no_fluid.is_some() {
             // No fluid: the reactions only colour the picture.
             let reaction = self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), self.ui.presenting, real_dt, self.look_frame.intensity);
-            self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
+            self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
             self.look_frame.params.clear();
             self.perf.record(now, None, 0.0);
             return;
@@ -784,7 +867,7 @@ impl State {
         step_input.emitters.extend(reaction.emitters);
         let values = std::mem::take(&mut self.look_frame.params);
         self.modulate_params(&reaction.params, &values);
-        self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
+        self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
         let wanted = real_dt * self.ui.speed;
         let sim_dt = self.sim_dt(real_dt);
         let report = sim_dt.map(|dt| self.world.advance(dt, &step_input));
@@ -824,7 +907,7 @@ impl State {
         input.burners.extend(music.burners);
         let values = std::mem::take(&mut self.look_frame.params);
         self.modulate_params(&reaction.params, &values);
-        self.palette_now = self.ui.palette.modulated(reaction.hue_shift, reaction.flash);
+        self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
         let Some(world) = &mut self.world3d else { return };
         world.scene.gravity = gravity;
         if let Some(dt) = sim_dt {
@@ -928,6 +1011,11 @@ impl State {
             if feedback.enabled {
                 self.draw_flow_2d(&mut encoder, view, scene_size);
             }
+        }
+        if waves.art.enabled && self.art.has_cover() {
+            let viewport = self.viewport_3d().map(|v| v * scale);
+            let bass = self.music.features().map_or(1.0, |f| f.milk.bass_att);
+            self.art.draw(&self.gpu.queue, &mut encoder, &scene, viewport, &waves.art, bass);
         }
         if waves.any() {
             let viewport = self.viewport_3d().map(|v| v * scale);

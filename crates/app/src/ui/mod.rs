@@ -19,6 +19,7 @@ pub mod shortcuts;
 mod status_bar;
 pub mod theme;
 pub mod thumbnails;
+pub mod title_card;
 mod tool_strip;
 mod top_bar;
 mod widgets;
@@ -113,6 +114,13 @@ pub struct UiState {
     pub tab: Tab,
     pub panel_open: bool,
     pub cheat_sheet: bool,
+    /// The song playing, as shown (see `audio::media`), when its title card was last
+    /// shown, and whether one shows for each new song.
+    pub song: Option<title_card::Song>,
+    pub title_card: Option<Instant>,
+    pub title_cards: bool,
+    /// Colour the looks by the song's cover art (listening live).
+    pub album_colours: bool,
     /// The look browser and the equation editor windows.
     pub browser_open: bool,
     pub editor_open: bool,
@@ -181,6 +189,10 @@ impl Default for UiState {
             tab: Tab::Simulate,
             panel_open: true,
             cheat_sheet: false,
+            song: None,
+            title_card: None,
+            title_cards: true,
+            album_colours: true,
             browser_open: false,
             editor_open: false,
             browser: browser::Filter::default(),
@@ -339,8 +351,17 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
     canvas.with_min_x((canvas.min.x + tool_strip::RESERVED_WIDTH).min(canvas.max.x))
 }
 
-/// The windows over the canvas: the browser, the editor and the cheat sheet.
+/// The windows over the canvas: the title card, the browser, the editor and the cheat
+/// sheet.
 fn windows(ctx: &egui::Context, canvas: egui::Rect, f: &mut Frame<'_>) {
+    if let (Some(since), Some(song)) = (f.state.title_card, &f.state.song) {
+        let alpha = title_card::opacity(since, Instant::now());
+        if alpha > 0.0 {
+            title_card::show(ctx, canvas, song, alpha);
+        } else if Instant::now() > since {
+            f.state.title_card = None;
+        }
+    }
     if f.state.browser_open {
         browser::show(ctx, f);
     }

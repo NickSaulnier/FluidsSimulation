@@ -30,6 +30,7 @@ const DIM: Color32 = Color32::from_gray(90);
 
 pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
     source(ui, f.music);
+    song(ui, f);
     looks(ui, f);
     analysis(ui, f.music);
     beat(ui, f);
@@ -164,6 +165,46 @@ fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
     if edit {
         f.state.editor_open = !f.state.editor_open;
     }
+}
+
+/// The song playing: what the computer reports (listening live) or the track's name,
+/// with its cover; title cards and album colours.
+fn song(ui: &mut Ui, f: &mut Frame<'_>) {
+    let s = &mut *f.state;
+    let live = f.music.is_live();
+    widgets::group(ui, "Song", |ui| {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+            match s.song.as_ref().and_then(|song| song.cover.as_ref()) {
+                Some(cover) => {
+                    egui::Image::new(cover).corner_radius(4).paint_at(ui, rect);
+                }
+                None => {
+                    ui.painter().rect_filled(rect, 4, theme::GROUP_FILL.gamma_multiply(1.6));
+                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon::MUSIC_NOTES, egui::FontId::proportional(18.0), DIM);
+                }
+            }
+            ui.vertical(|ui| {
+                match &s.song {
+                    Some(song) => {
+                        ui.add(egui::Label::new(RichText::new(&song.title).strong()).truncate());
+                        let by = [song.artist.as_str(), song.album.as_str()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" · ");
+                        let state = if song.playing { "" } else { " (paused)" };
+                        ui.add(egui::Label::new(RichText::new(format!("{by}{state}")).small().weak()).truncate());
+                    }
+                    None => {
+                        let hint = if live { "Nothing reports playing." } else { "No track loaded." };
+                        ui.add(egui::Label::new(RichText::new(hint).weak()).truncate());
+                        if live {
+                            ui.add(egui::Label::new(RichText::new("Titles and covers come from the player (Spotify, a browser...).").small().weak()).wrap());
+                        }
+                    }
+                }
+            });
+        });
+        widgets::toggle(ui, &mut s.title_cards, &tip("Title card for each song", Action::ShowTitle), "Show the song's title, artist and cover when it starts");
+        widgets::toggle(ui, &mut s.album_colours, "Colours from the cover", "Listening live, colour the looks with the song's cover art instead of their own palettes");
+    });
 }
 
 /// Show `folder` in the system's file browser (making it if it isn't there yet).

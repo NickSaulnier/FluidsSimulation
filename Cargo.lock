@@ -201,6 +201,7 @@ dependencies = [
  "toml",
  "utils",
  "wgpu",
+ "windows",
  "winit",
 ]
 

@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phases A to G and I done** (E with the analyzer plan, which did most of its audio work; part of F came with I). Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A to I done** (E with the analyzer plan, which did most of its audio work; part of F came with I); J, the optional extras, not started. Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -750,4 +750,44 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
     into Firestorm, with the purple carried into Firestorm's warp; Firestorm into Wind
     tunnel and Wind tunnel into Lava lamp, through noise patches) and a hard cut, clean
     150 ms after the key.
+- **Phase H (done):** song awareness (`app/src/audio/media.rs`, `render/art.rs`,
+  `ui/title_card.rs`).
+  - The media session (Windows: `GlobalSystemMediaTransportControlsSessionManager`,
+    the `windows` crate already in the lockfile, now with the media, imaging and
+    stream features) is read on its own thread every second: title, artist, album,
+    playing or paused, and the cover. Windows decodes the cover (JPEG or PNG) and scales
+    it to 256 pixels, so no image crate was needed. Spotify can report a new title a
+    moment before its cover, so the cover is read again for a few seconds until it
+    differs from the last song's. Elsewhere than Windows nothing is reported.
+  - It's used while listening live (with a track file playing, the session is about
+    some other player). Playing a track, the song is the track: its name, no cover.
+  - Exact song changes: a song is announced when it first plays (a paused one waits).
+    The director then chooses its look after hearing its opening, as after a silence,
+    but at once, without the 15 s a look normally gets first. Loading a track is a new
+    song too. The silence rule stays as a fallback.
+  - Title cards: the cover, title, artist and album along the bottom left, fading in,
+    staying 5 s and fading out, when a song starts (a setting, on by default) and on T.
+  - Colours from the cover (a setting, on by default): its pixels reduced to six colours
+    (k-means), the base the commonest colourful one, the highlight the brightest
+    (lifted toward white), the deep the base darkened toward the darkest, ordered by
+    brightness whatever the cover. The looks' palettes give way to it, easing over
+    about a second between songs and back. Fire in 3D still takes its colours from heat.
+  - The cover as an image: a look's `[art]` (with its waves) draws it into the scene
+    before the feedback, turned, sized and pulsing with the bass, its edges feathered;
+    equations set `art_size`, `art_opacity`, `art_x`, `art_y` and `art_spin`, and the
+    View tab has it. Two looks use it: Cover story (no fluid: the cover at the heart of
+    a tunnel, jumping round on each beat) and Cover drift (the dye's flow pulls the cover
+    into its swirls). A smear with a long trail barely shows a still image under a
+    moving flow (each frame adds under 1% of the scene), so Cover drift's trail is short.
+  - A Song group in the Music tab: the cover and what's playing, and the two settings.
+  - Tests: the palette from pictures (orange with navy and pale yellow, grey, red on
+    black) and its ease; the title card's fading; the director changing look for a
+    reported song a few seconds into a look, once; `[art]` in look files. The session
+    itself only by hand (`print_the_session`, ignored), which read Spotify's paused
+    song and its 256-pixel cover here.
+  - Checked in the app, listening live with Spotify paused: the Song group (cover,
+    title, artist, album, "paused"), the title card on T, Cover story and Cover drift
+    with the cover, and both looks coloured from the cover. Not checked in the app: a
+    song starting while listening (the title card and the change of look come on its
+    first playing report), since nothing was playing.
 

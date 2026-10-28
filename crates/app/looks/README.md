@@ -49,6 +49,9 @@ size = 0.45
 sides = 6
 radius = 0.3
 
+[art]                      # the song's cover
+size = 0.25
+
 [composite]
 symmetry = "kaleidoscope"
 segments = 6
@@ -117,6 +120,15 @@ Rates are per second.
 - `[[shape]]`: `sides`, `radius`, `centre` (`[x, y]`), `spin` (radians per second),
   `thickness`, `bass_pulse` (how much the radius follows the bass), `fill` (0 to 1).
   Sizes are in half the picture's height; `[0, 0]` is the middle.
+
+## `[art]`
+
+The song's cover art, drawn into the picture before the feedback, so the warp carries it
+(present: on). There's a cover while listening live to a player that reports one
+(Spotify, a browser, a media player); otherwise nothing is drawn. `size` (half the
+cover's longer side, in half the picture's height), `opacity` (0 to 1), `centre`
+(`[x, y]`), `spin` (radians per second), `bass_pulse` (how much the size follows the
+bass), `brightness` (above 1 glows).
 
 ## `[composite]`
 
@@ -190,6 +202,7 @@ Per frame only:
 - `trail`, `warp_speed`, `flow`, `echo`, `echo_zoom` (as in `[feedback]`);
 - `wave_scale`, `wave_size`, `wave_y`, `wave_thickness`, `wave_brightness`, `wave_push`;
 - `shape1_radius`, `shape1_x`, `shape1_y`, `shape1_spin`, `shape1_fill` (and `shape2_`);
+- `art_size`, `art_opacity`, `art_x`, `art_y`, `art_spin` (the cover);
 - `gravity` (a tilt, degrees anticlockwise), `intensity` (the reactions' strength, a
   multiple: 1 as set);
 - the composite, by its settings' names: `segments`, `symmetry_spin`, `hue`,

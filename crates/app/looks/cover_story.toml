@@ -1,0 +1,38 @@
+[meta]
+name = "Cover story"
+tags = ["no fluid", "album art", "tunnel"]
+energy = "any"
+
+[sim]
+palette = "Ocean"
+reactions = [
+    { trigger = "kick", effect = "flash", gain = 0.5 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.6
+zoom = 1.25
+rotation = 0.15
+bass_zoom = 0.4
+
+[waves]
+mode = "circle"
+size = 0.5
+scale = 0.6
+brightness = 0.45
+
+[art]
+size = 0.3
+bass_pulse = 0.3
+
+[composite]
+vignette = 0.45
+
+[code]
+# The cover (listening live, when the player reports one) turns at the heart of the
+# tunnel, jumping round on each beat.
+frame = """
+art_spin = 0.1 + 1.2 * beat
+"""

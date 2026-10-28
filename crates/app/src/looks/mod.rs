@@ -57,6 +57,8 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("twin_flames.toml", include_str!("../../looks/twin_flames.toml")),
     ("aurora.toml", include_str!("../../looks/aurora.toml")),
     ("blue_torch.toml", include_str!("../../looks/blue_torch.toml")),
+    ("cover_story.toml", include_str!("../../looks/cover_story.toml")),
+    ("cover_drift.toml", include_str!("../../looks/cover_drift.toml")),
     ("strobe_lattice.toml", include_str!("../../looks/strobe_lattice.toml")),
 ];
 

@@ -2,6 +2,7 @@
 //! The 2D scene draws into the post-processing's HDR scene texture (`post`), not the
 //! screen.
 
+pub mod art;
 pub mod colormap;
 pub mod composite;
 mod liquid;

@@ -1,0 +1,28 @@
+[meta]
+name = "Cover drift"
+tags = ["fluid", "dye", "album art"]
+energy = "calm"
+
+[sim]
+solver = "Stable fluids (dye)"
+scene = "Double dam break"
+palette = "Ink"
+params = { vorticity = 0.4 }
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 1.0 },
+    { trigger = "kick", effect = "vortex", gain = 0.6 },
+    { trigger = "mid", effect = "gust", gain = 0.4 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.2
+flow = 1.0
+
+[art]
+size = 0.28
+opacity = 1.0
+bass_pulse = 0.4
+
+[composite]
+vignette = 0.35

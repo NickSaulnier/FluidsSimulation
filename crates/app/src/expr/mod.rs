@@ -53,13 +53,13 @@ pub const QS: usize = 8;
 /// The block of values both stages see, in this order: inputs, motion, the q's. It's
 /// what the per-pixel shader reads.
 pub const SHARED: usize = INPUTS.len() + MOTION.len() + QS;
-/// What only a per-frame program sets: the feedback's other controls, the waves and
-/// shapes, gravity's tilt (degrees), the reactions' intensity (a multiple) and the
+/// What only a per-frame program sets: the feedback's other controls, the waves,
+/// shapes and cover art, gravity's tilt (degrees), the reactions' intensity (a multiple) and the
 /// composite (as its settings are named).
 pub const FRAME_OUTPUTS: &[&str] = &[
     "trail", "warp_speed", "flow", "echo", "echo_zoom", "wave_scale", "wave_size", "wave_y", "wave_thickness", "wave_brightness",
     "wave_push", "shape1_radius", "shape1_x", "shape1_y", "shape1_spin", "shape1_fill", "shape2_radius", "shape2_x", "shape2_y",
-    "shape2_spin", "shape2_fill", "gravity", "intensity", "segments", "symmetry_spin", "hue", "hue_speed", "saturation", "contrast",
+    "shape2_spin", "shape2_fill", "art_size", "art_opacity", "art_x", "art_y", "art_spin", "gravity", "intensity", "segments", "symmetry_spin", "hue", "hue_speed", "saturation", "contrast",
     "exposure", "palette_map", "invert", "aberration", "vignette", "grain",
 ];
 /// Only per pixel: the position (0..1, y up), the distance from the centre (1 at the

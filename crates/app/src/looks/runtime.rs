@@ -228,6 +228,10 @@ impl Runtime {
             shape.spin = s("spin").clamp(-100.0, 100.0);
             shape.fill = s("fill").clamp(0.0, 1.0);
         }
+        w.art.size = get("art_size").clamp(0.0, 4.0);
+        w.art.opacity = get("art_opacity").clamp(0.0, 1.0);
+        w.art.centre = [get("art_x").clamp(-4.0, 4.0), get("art_y").clamp(-4.0, 4.0)];
+        w.art.spin = get("art_spin").clamp(-100.0, 100.0);
         let mut c = *composite;
         c.segments = get("segments").round().clamp(2.0, 16.0) as u32;
         c.symmetry_spin = get("symmetry_spin").clamp(-10.0, 10.0);
@@ -264,6 +268,11 @@ fn outputs(feedback: &FeedbackSettings, waves: &WaveSettings, composite: &Compos
             "wave_thickness" => waves.thickness,
             "wave_brightness" => waves.brightness,
             "wave_push" => waves.push,
+            "art_size" => waves.art.size,
+            "art_opacity" => waves.art.opacity,
+            "art_x" => waves.art.centre[0],
+            "art_y" => waves.art.centre[1],
+            "art_spin" => waves.art.spin,
             "gravity" => 0.0,
             "intensity" => 1.0,
             "segments" => composite.segments as f32,
