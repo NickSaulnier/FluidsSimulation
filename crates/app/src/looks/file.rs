@@ -174,8 +174,10 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         (Some(solver_at), Some(scene_at)) => {
             let solver = solver_at.get_ref().clone();
             let three_d = sim3d::SOLVERS.iter().any(|s| s.name == solver);
-            if !three_d && !sim::SOLVERS.iter().any(|s| s.name == solver) {
-                let names: Vec<&str> = sim::SOLVERS.iter().map(|s| s.name).chain(sim3d::SOLVERS.iter().map(|s| s.name)).collect();
+            // The 2D solvers are the CPU ones and the GPU ones, as the app runs them.
+            let solvers_2d = || sim::SOLVERS.iter().chain(sim_gpu::SOLVERS);
+            if !three_d && !solvers_2d().any(|s| s.name == solver) {
+                let names: Vec<&str> = solvers_2d().map(|s| s.name).chain(sim3d::SOLVERS.iter().map(|s| s.name)).collect();
                 return Err(fail(Some(solver_at.span().start), format!("no solver \"{solver}\" (there are: {})", names.join(", "))));
             }
             let scene = scene_at.get_ref().clone();
@@ -556,6 +558,15 @@ mod tests {
         let written = write(&look);
         let back = parse(&written, "t", Source::Builtin("t")).unwrap();
         assert_eq!(back, Look { source: Source::Builtin("t"), ..look }, "{written}");
+    }
+
+    /// A look on a GPU solver (as Save as writes one, running it) loads and round-trips.
+    #[test]
+    fn gpu_solvers_load() {
+        let text = "[meta]\nname = \"T\"\n[sim]\nsolver = \"PBF (GPU)\"\nscene = \"Dam break\"\npalette = \"Lava\"\n";
+        let look = parse(text, "t", Source::Builtin("t")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(look.solver, "PBF (GPU)");
+        assert_eq!(parse(&write(&look), "t", Source::Builtin("t")).unwrap(), look);
     }
 
     /// Leaving out the solver and scene makes a look without fluid; it needs both or
