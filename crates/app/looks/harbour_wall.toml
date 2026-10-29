@@ -1,0 +1,19 @@
+[meta]
+name = "Harbour wall"
+tags = ["fluid", "water", "waves"]
+energy = "any"
+
+[sim]
+solver = "Shallow water"
+scene = "Breakwater"
+palette = "Deep sea"
+reactions = [
+    { trigger = "kick", effect = "splash", gain = 0.5 },
+    { trigger = "snare", effect = "drop", gain = 0.8 },
+    { trigger = "bass", effect = "slosh", gain = 0.3 },
+    { trigger = "hat", effect = "flash", gain = 0.3 },
+]
+
+[composite]
+saturation = 1.15
+vignette = 0.3

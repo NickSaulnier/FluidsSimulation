@@ -26,7 +26,8 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, field: &FieldInfo, (lo, hi)
                     if field.kind == FieldKind::Categorical {
                         swatches(ui, (lo, hi));
                     } else {
-                        bar(ui, field.kind, (lo, hi), &palette.dye_ramp());
+                        let colours = if field.kind == FieldKind::Water { [palette.deep, palette.base, palette.highlight] } else { palette.dye_ramp() };
+                        bar(ui, field.kind, (lo, hi), &colours);
                     }
                 });
         });
@@ -37,6 +38,10 @@ fn bar(ui: &mut egui::Ui, kind: FieldKind, (lo, hi): (f32, f32), dye: &[[u8; 3];
     if kind == FieldKind::Fire {
         // The flame ramp alone: (flame, no smoke, no fuel) triples.
         values = values.iter().flat_map(|&v| [v, 0.0, 0.0]).collect();
+    }
+    if kind == FieldKind::Water {
+        // Flat water from trough to crest: (height, no slope) triples.
+        values = values.iter().flat_map(|&v| [v - 0.5, 0.0, 0.0]).collect();
     }
     let mut rgba = Vec::new();
     colormap::colourise(&values, kind, (lo, hi), dye, &mut rgba);

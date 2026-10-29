@@ -17,6 +17,8 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Martin & Moyce column", build: martin_moyce_in },
     Preset { name: "Wind tunnel", build: wind_tunnel_in },
     Preset { name: "Campfire", build: campfire_in },
+    Preset { name: "Pond", build: pond_in },
+    Preset { name: "Breakwater", build: breakwater_in },
 ];
 
 /// Column width for the Martin & Moyce validation case (height is twice this).
@@ -149,6 +151,41 @@ pub fn double_dam_break_in(d: Vec2) -> Scene {
     let mut s = tank(d);
     s.fluid_blocks.push(Rect::new(Vec2::new(0.0, 0.0), Vec2::new(0.45, 0.7)));
     s.fluid_blocks.push(Rect::new(Vec2::new(d.x - 0.45, 0.0), Vec2::new(d.x, 0.7)));
+    s
+}
+
+/// Rocks in still water, and a stone dropped among them: made for shallow water (seen
+/// from above, the stone's splash rings out and wraps round the rocks). Other solvers
+/// get a small blob falling into an empty tank: pour with the faucet.
+pub fn pond_in(d: Vec2) -> Scene {
+    let mut s = tank(d);
+    let c = Vec2::new(0.5 * d.x, 0.5 * d.y);
+    for (offset, radius) in [(Vec2::new(-0.45, 0.12), 0.07), (Vec2::new(0.3, -0.2), 0.1), (Vec2::new(0.55, 0.22), 0.05), (Vec2::new(-0.2, -0.28), 0.04)] {
+        s.solid.paint_disc(c + offset, radius, true);
+    }
+    s.solid.update_derived();
+    s.fluid_blocks.push(Rect::new(c - 0.05, c + 0.05));
+    s
+}
+
+/// A wall across the water with two gaps, and a band of raised water below it: made for
+/// shallow water (seen from above, the band rolls up as one wave, and each gap spreads
+/// it out again in rings that cross beyond the wall). Other solvers get a shallow pool
+/// under a shelf with two holes.
+pub fn breakwater_in(d: Vec2) -> Scene {
+    let mut s = tank(d);
+    let y = 0.42 * d.y;
+    let gaps = [0.36 * d.x, 0.64 * d.x];
+    let (half_gap, thick) = (0.05, 0.02);
+    let mut x = 0.0;
+    while x <= d.x {
+        if gaps.iter().all(|g| (x - g).abs() > half_gap + thick) {
+            s.solid.paint_disc(Vec2::new(x, y), thick, true);
+        }
+        x += 0.5 * thick;
+    }
+    s.solid.update_derived();
+    s.fluid_blocks.push(Rect::new(Vec2::ZERO, Vec2::new(d.x, 0.15 * d.y)));
     s
 }
 

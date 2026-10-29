@@ -18,7 +18,7 @@
 use super::analyzer::{AudioFeatures, Onset, OnsetKind};
 use serde::{Deserialize, Serialize};
 use utils::rng::SplitMix64;
-use sim::{Emitter, ForceBrush, Vec2};
+use sim::{Droplet, Emitter, ForceBrush, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Trigger {
@@ -110,10 +110,12 @@ pub enum Effect {
     Hue,
     /// Modulate a solver parameter (`Reaction::param`).
     Param,
+    /// A drop landing at a random spot (ripples on shallow water).
+    Drop,
 }
 
 impl Effect {
-    pub const ALL: [Effect; 9] = [
+    pub const ALL: [Effect; 10] = [
         Effect::Splash,
         Effect::Jet,
         Effect::Vortex,
@@ -123,6 +125,7 @@ impl Effect {
         Effect::Breathe,
         Effect::Hue,
         Effect::Param,
+        Effect::Drop,
     ];
 
     pub fn label(self) -> &'static str {
@@ -136,6 +139,7 @@ impl Effect {
             Effect::Breathe => "Breathe",
             Effect::Hue => "Hue",
             Effect::Param => "Parameter",
+            Effect::Drop => "Drop",
         }
     }
 
@@ -150,12 +154,13 @@ impl Effect {
             Effect::Breathe => "Gravity gets stronger and weaker with the trigger.",
             Effect::Hue => "Shift the hue of the fluid's colours.",
             Effect::Param => "Modulate a solver setting around its value.",
+            Effect::Drop => "A drop lands at a random spot: ripples on shallow water (other fluids don't feel it).",
         }
     }
 
     /// Fired once per hit (or surge), rather than following the trigger continuously.
     fn one_shot(self) -> bool {
-        matches!(self, Effect::Splash | Effect::Jet | Effect::Vortex | Effect::Flash)
+        matches!(self, Effect::Splash | Effect::Jet | Effect::Vortex | Effect::Flash | Effect::Drop)
     }
 }
 
@@ -194,6 +199,7 @@ pub fn default_reactions() -> Vec<Reaction> {
 pub struct ReactionOutput {
     pub brushes: Vec<ForceBrush>,
     pub emitters: Vec<Emitter>,
+    pub drops: Vec<Droplet>,
     pub gravity: Vec2,
     /// Palette hue rotation, degrees.
     pub hue_shift: f32,
@@ -205,6 +211,8 @@ pub struct ReactionOutput {
 
 /// How long one-shot effects last, seconds.
 const SPLASH_S: f32 = 0.09;
+/// A drop's size, a fraction of the domain's height.
+const DROP_RADIUS: f32 = 0.03;
 const VORTEX_S: f32 = 0.3;
 /// Hit pulses (driving continuous effects) and flashes decay with these time constants.
 const HIT_DECAY_S: f32 = 0.2;
@@ -332,7 +340,7 @@ impl ReactionEngine {
                         out.params.push((key.clone(), (1.0 + gain * (2.0 * value - 1.0)).max(0.0)));
                     }
                 }
-                Effect::Splash | Effect::Jet | Effect::Vortex | Effect::Flash => unreachable!("one-shot"),
+                Effect::Splash | Effect::Jet | Effect::Vortex | Effect::Flash | Effect::Drop => unreachable!("one-shot"),
             }
         }
         out.gravity = Vec2::from_angle(tilt_deg.to_radians()).rotate(base_gravity) * gravity_scale;
@@ -365,6 +373,7 @@ impl ReactionEngine {
                     strength: 25.0,
                     spin: imp.spin,
                 }),
+                Effect::Drop => out.drops.push(Droplet { pos: imp.pos, radius: DROP_RADIUS * domain.y, strength: (0.5 + imp.strength).min(2.0) }),
                 _ => {}
             }
         }
@@ -399,6 +408,10 @@ impl ReactionEngine {
                 self.impulses.push(Impulse { effect, age: 0.0, strength, pos, spin });
             }
             Effect::Flash => self.flash = self.flash.max(strength),
+            Effect::Drop => {
+                let pos = Vec2::new((0.08 + 0.84 * self.rng.next_f32()) * domain.x, (0.08 + 0.84 * self.rng.next_f32()) * domain.y);
+                self.impulses.push(Impulse { effect, age: 0.0, strength, pos, spin: 0.0 });
+            }
             _ => {}
         }
     }

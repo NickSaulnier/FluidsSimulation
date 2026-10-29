@@ -284,12 +284,25 @@ pub struct Emitter {
     pub width: f32,
 }
 
+/// A drop landing on the fluid's surface, for as long as it's in the input: a rate, so
+/// a drop held for a tenth of a second lands the same at any frame rate. Shallow water
+/// dents its surface there (the dent rings out); other solvers have no surface to land
+/// on, and ignore it.
+#[derive(Clone, Copy, Debug)]
+pub struct Droplet {
+    pub pos: Vec2,
+    pub radius: f32,
+    /// How hard it lands: 1 a good drop.
+    pub strength: f32,
+}
+
 /// Per-frame user interaction. Each solver interprets it in its own way.
 #[derive(Default, Clone, Debug)]
 pub struct StepInput {
     pub brushes: Vec<ForceBrush>,
     /// Temporary emitters (the faucet tool), in addition to the scene's.
     pub emitters: Vec<Emitter>,
+    pub drops: Vec<Droplet>,
 }
 
 #[cfg(test)]

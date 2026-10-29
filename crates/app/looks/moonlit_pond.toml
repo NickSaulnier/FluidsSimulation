@@ -1,0 +1,20 @@
+[meta]
+name = "Moonlit pond"
+tags = ["fluid", "water", "ripples"]
+energy = "calm"
+
+[sim]
+solver = "Shallow water"
+scene = "Pond"
+palette = { deep = [8, 22, 60], base = [44, 96, 170], highlight = [230, 236, 255] }
+params = { damping = 0.7 }
+reactions = [
+    { trigger = "kick", effect = "drop", gain = 0.8 },
+    { trigger = "snare", effect = "drop", gain = 1.2 },
+    { trigger = "bass", effect = "slosh", gain = 0.15 },
+    { trigger = "brightness", effect = "hue", gain = 0.2 },
+]
+
+[composite]
+contrast = 1.1
+vignette = 0.45

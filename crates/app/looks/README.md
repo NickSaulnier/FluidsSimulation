@@ -102,7 +102,7 @@ at the top of the file, as are equations that don't compile.
   - Triggers: `kick`, `snare`, `hat`, `beat` (every beat of a steady beat, even a quiet
     one), `sub`, `bass`, `lowmid`, `mid`, `high`, `level`, `brightness`.
   - Effects: `splash`, `jet`, `vortex`, `flash`, `gust`, `slosh`, `breathe`, `hue`,
-    `param`.
+    `param`, `drop` (a drop at a random spot: ripples on shallow water).
 
 ## `[feedback]`
 

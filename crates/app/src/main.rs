@@ -1181,6 +1181,7 @@ impl State {
         step_input.brushes.extend(reaction.brushes);
         render::waves::wave_brushes(&self.look_frame.waves, &self.waveform, self.waves.peak(), self.world.scene.size, &mut step_input.brushes);
         step_input.emitters.extend(reaction.emitters);
+        step_input.drops.extend(reaction.drops);
         let values = std::mem::take(&mut self.look_frame.params);
         self.modulate_params(&reaction.params, &values);
         self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);

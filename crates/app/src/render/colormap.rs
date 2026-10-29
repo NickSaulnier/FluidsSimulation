@@ -26,15 +26,24 @@ pub fn range(values: &[f32], kind: FieldKind) -> (f32, f32) {
         }
         FieldKind::NonNegative => (0.0, finite.fold(0.0, f32::max).max(1e-6)),
         FieldKind::Categorical => (0.0, (CATEGORIES.len() - 1) as f32),
-        FieldKind::Concentration | FieldKind::Fire => (0.0, 1.0),
+        FieldKind::Concentration | FieldKind::Fire | FieldKind::Water => (0.0, 1.0),
     }
 }
 
 /// Map `values` to RGBA bytes (one pixel each) in `out`. Concentration (dye) uses the
-/// fluid palette's `dye` ramp, with alpha rising alongside; the other kinds use fixed
-/// analysis colour maps.
+/// fluid palette's `dye` ramp, with alpha rising alongside; water takes the palette's
+/// own colours (deep, base, highlight) in `dye`; the other kinds use fixed analysis
+/// colour maps.
 pub fn colourise(values: &[f32], kind: FieldKind, (lo, hi): (f32, f32), dye: &[[u8; 3]; 3], out: &mut Vec<u8>) {
     out.clear();
+    if kind == FieldKind::Water {
+        // (height, slope x, slope y) triples, one pixel each.
+        out.reserve(values.len() / 3 * 4);
+        for &[height, sx, sy] in values.as_chunks::<3>().0 {
+            out.extend_from_slice(&water_pixel(height, sx, sy, dye));
+        }
+        return;
+    }
     if kind == FieldKind::Fire {
         // (flame, smoke, fuel) triples, one pixel each.
         out.reserve(values.len() / 3 * 4);
@@ -50,7 +59,7 @@ pub fn colourise(values: &[f32], kind: FieldKind, (lo, hi): (f32, f32), dye: &[[
         } else {
             match kind {
                 FieldKind::Categorical => CATEGORIES[(v.round().max(0.0) as usize).min(CATEGORIES.len() - 1)],
-                FieldKind::Fire => unreachable!("handled above"),
+                FieldKind::Fire | FieldKind::Water => unreachable!("handled above"),
                 FieldKind::Concentration => {
                     let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
                     let [r, g, b] = ramp(dye, t);
@@ -66,6 +75,37 @@ pub fn colourise(values: &[f32], kind: FieldKind, (lo, hi): (f32, f32), dye: &[[
         };
         out.extend_from_slice(&rgba);
     }
+}
+
+/// Slopes are drawn this many times steeper, so ripples a millimetre high still catch
+/// the light.
+const WATER_RELIEF: f32 = 4.0;
+
+/// Lit water: the palette's deep colour in the troughs to its base on the crests,
+/// shaded by a light from the upper left, with a highlight glinting off the slopes
+/// that face it and foam on the steepest. `height` in rest depths above rest; the
+/// slopes in metres per metre. NaN (a wall) is transparent.
+fn water_pixel(height: f32, sx: f32, sy: f32, [deep, base, highlight]: &[[u8; 3]; 3]) -> [u8; 4] {
+    if !(height.is_finite() && sx.is_finite() && sy.is_finite()) {
+        return [0, 0, 0, 0];
+    }
+    let n = glam::Vec3::new(-WATER_RELIEF * sx, -WATER_RELIEF * sy, 1.0).normalize();
+    let light = glam::Vec3::new(-0.45, 0.55, 0.7).normalize();
+    // Lit as flat water is 1; slopes toward the light brighter, away darker.
+    let shade = (1.0 + 1.6 * (n.dot(light) - light.z)).clamp(0.35, 1.6);
+    let glint = n.dot((light + glam::Vec3::Z).normalize()).max(0.0).powf(80.0);
+    // Foam only where the water is truly steep (a breaking front, not a drop's ripple).
+    let foam = ((sx.hypot(sy) - 0.6) / 0.6).clamp(0.0, 1.0);
+    let body = (0.45 + 1.2 * height).clamp(0.0, 1.0);
+    let mut c = [0.0f32; 3];
+    for k in 0..3 {
+        let colour = f32::from(deep[k]) + (f32::from(base[k]) - f32::from(deep[k])) * body;
+        let lit = colour * shade;
+        let sparkle = (glint * 1.4 + 0.7 * foam).min(1.0);
+        c[k] = lit + (f32::from(highlight[k]) - lit) * sparkle;
+    }
+    let [r, g, b] = c.map(|v| v.round().clamp(0.0, 255.0) as u8);
+    [r, g, b, 255]
 }
 
 /// Flame over smoke over fuel ("over" compositing), each 0 to 1; NaN is transparent.
@@ -155,4 +195,27 @@ mod tests {
         assert_eq!(&out[0..3], &SEQUENTIAL[0]);
         assert_eq!(&out[4..7], &SEQUENTIAL[4]);
     }
+
+    /// Water: opaque, crests nearer the base colour than troughs, slopes facing the
+    /// light brighter than slopes facing away, a glint toward the highlight, and walls
+    /// (NaN) transparent.
+    #[test]
+    fn water_is_lit() {
+        let palette = [[10, 20, 60], [40, 120, 220], [240, 250, 255]];
+        let pixel = |h: f32, sx: f32, sy: f32| {
+            let mut out = Vec::new();
+            colourise(&[h, sx, sy], FieldKind::Water, (0.0, 1.0), &palette, &mut out);
+            [out[0], out[1], out[2], out[3]]
+        };
+        let sum = |p: [u8; 4]| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+        let flat = pixel(0.0, 0.0, 0.0);
+        assert_eq!(flat[3], 255);
+        assert!(sum(pixel(0.3, 0.0, 0.0)) > sum(flat) && sum(pixel(-0.3, 0.0, 0.0)) < sum(flat), "crests lighter than troughs");
+        // The light is up and to the left: a surface rising toward it faces it.
+        assert!(sum(pixel(0.0, 0.1, -0.1)) > sum(flat) && sum(pixel(0.0, -0.1, 0.1)) < sum(flat), "lit by the slope");
+        let glint = pixel(0.0, 0.07, -0.085);
+        assert!(sum(glint) > sum(pixel(0.0, 0.1, -0.1)), "a glint where the slope mirrors the light");
+        assert_eq!(pixel(f32::NAN, 0.0, 0.0)[3], 0);
+    }
 }
+

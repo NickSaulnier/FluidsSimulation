@@ -30,6 +30,10 @@ pub enum FieldKind {
     /// fuel, each 0 to 1), so `fill_field` returns `3 * nx * ny` values. Drawn as a
     /// blackbody flame over grey smoke over dim fuel.
     Fire,
+    /// A water surface seen from above: *three* values per cell, interleaved (the
+    /// height above rest, in rest depths, and the surface's slope across and up), so
+    /// `fill_field` returns `3 * nx * ny` values. Drawn shaded, as lit water.
+    Water,
 }
 
 #[derive(Clone, Copy, Debug)]

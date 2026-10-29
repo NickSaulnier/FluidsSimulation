@@ -137,7 +137,7 @@ mod tests {
                 out.emitters.clear();
             }
             world.scene.gravity = out.gravity;
-            world.advance(FRAME, &StepInput { brushes: out.brushes, emitters: out.emitters });
+            world.advance(FRAME, &StepInput { brushes: out.brushes, emitters: out.emitters, drops: out.drops });
 
             if frame % 30 == 0 {
                 let violations = invariants::check(&world);

@@ -8,12 +8,14 @@ pub mod lbm;
 mod multigrid;
 pub mod pbf;
 mod pressure;
+pub mod shallow;
 pub mod stable;
 
 pub use ballistic::Ballistic;
 pub use flip::{Flip, FlipParams};
 pub use lbm::{Lbm, LbmParams};
 pub use pbf::{Pbf, PbfParams};
+pub use shallow::{ShallowParams, ShallowWater};
 pub use stable::{StableFluids, StableParams};
 
 use crate::grid::Grid2;

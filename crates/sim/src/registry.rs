@@ -3,7 +3,7 @@
 //! the default.
 
 use crate::solver::Solver;
-use crate::solvers::{Ballistic, Flip, Lbm, Pbf, StableFluids};
+use crate::solvers::{Ballistic, Flip, Lbm, Pbf, ShallowWater, StableFluids};
 
 #[derive(Clone, Copy)]
 pub struct SolverEntry {
@@ -18,5 +18,6 @@ pub static SOLVERS: &[SolverEntry] = &[
     SolverEntry { name: "Stable fluids (dye)", make: || Box::new(StableFluids::default()) },
     SolverEntry { name: "Smoke & fire", make: || Box::new(StableFluids::smoke_and_fire()) },
     SolverEntry { name: "Lattice Boltzmann (dye)", make: || Box::new(Lbm::default()) },
+    SolverEntry { name: "Shallow water", make: || Box::new(ShallowWater::default()) },
     SolverEntry { name: "Ballistic (debug)", make: || Box::new(Ballistic::default()) },
 ];

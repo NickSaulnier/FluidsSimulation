@@ -44,11 +44,12 @@ optimises the dependencies and the `sim` crate).
 | Stable fluids (dye) | Grid fluid carrying dye, with buoyancy and vorticity confinement |
 | Smoke & fire | Stable fluids with fuel, temperature, burning and smoke |
 | Lattice Boltzmann (dye) | D2Q9 LBM with a Smagorinsky model |
+| Shallow water | A water surface seen from above (height field), lit: waves, wakes and ripples; the music's drops ring out on it |
 | Ballistic (debug) | Gravity and bouncing, as a test fixture |
 | Fire (3D GPU), Smoke (3D GPU) | 3D grid fluids on the GPU, raymarched, with an orbiting camera |
 
 2D scenes: dam break, double dam break, tank with obstacle, fountain, Martin & Moyce
-column, wind tunnel, campfire. 3D scenes, in the open air (smoke rises out of the picture): campfire, torch, twin
+column, wind tunnel, campfire, pond, breakwater. 3D scenes, in the open air (smoke rises out of the picture): campfire, torch, twin
 burners, chimney.
 
 The fluid fills the window edge to edge, the scene taking the window's shape, and

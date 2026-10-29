@@ -46,6 +46,7 @@ pub const PHYSICS: &[(&str, &[Range])] = &[
         ],
     ),
     ("Lattice Boltzmann (dye)", &[("tau", 0.51, 0.56, false), ("buoyancy", -0.3, 0.6, false)]),
+    ("Shallow water", &[("depth", 0.015, 0.06, true), ("damping", 0.15, 0.8, false)]),
     (
         "Fire (3D GPU)",
         &[
@@ -84,6 +85,7 @@ const FLUIDS: &[(&str, &[&str], f32)] = &[
     ("Stable fluids (dye)", &["Dam break", "Double dam break", "Tank with obstacle", "Martin & Moyce column"], 2.0),
     ("Smoke & fire", &["Campfire"], 1.5),
     ("Lattice Boltzmann (dye)", &["Wind tunnel"], 1.0),
+    ("Shallow water", &["Pond", "Breakwater", "Dam break", "Tank with obstacle", "Wind tunnel"], 1.5),
     ("Fire (3D GPU)", &["Campfire 3D", "Torch", "Twin burners", "Chimney"], 1.5),
     ("Smoke (3D GPU)", &["Campfire 3D", "Torch", "Twin burners", "Chimney"], 1.0),
 ];
@@ -97,6 +99,7 @@ enum Kind {
     Fire2d,
     Fire3d,
     Smoke3d,
+    Water,
 }
 
 fn kind(solver: &str) -> Kind {
@@ -106,6 +109,7 @@ fn kind(solver: &str) -> Kind {
         "Smoke & fire" => Kind::Fire2d,
         "Fire (3D GPU)" => Kind::Fire3d,
         "Smoke (3D GPU)" => Kind::Smoke3d,
+        "Shallow water" => Kind::Water,
         _ => Kind::Dye,
     }
 }
@@ -144,6 +148,14 @@ fn reaction_set(kind: Kind) -> &'static [Pick] {
             (T::Level, E::Breathe, 0.3, 0.5),
             (T::Mid, E::Gust, 0.3, 0.5),
             (T::Bass, E::Slosh, 0.3, 0.5),
+        ],
+        Kind::Water => &[
+            (T::Kick, E::Drop, 0.5, 1.2),
+            (T::Snare, E::Drop, 0.5, 1.0),
+            (T::Snare, E::Vortex, 0.3, 0.6),
+            (T::Bass, E::Slosh, 0.2, 0.5),
+            (T::Kick, E::Splash, 0.5, 1.0),
+            (T::Brightness, E::Hue, 0.2, 0.4),
         ],
         Kind::Smoke3d => &[(T::Snare, E::Vortex, 0.5, 0.7), (T::Kick, E::Splash, 0.5, 0.7), (T::Hat, E::Flash, 0.3, 0.4), (T::Brightness, E::Hue, 0.4, 0.6)],
     }
@@ -209,7 +221,7 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
     params.sort_by(|a, b| a.0.cmp(&b.0));
 
     let feedback = random_feedback(d, fluid);
-    let waves = random_waves(d, fluid, kind == Kind::Particles || kind == Kind::Dye);
+    let waves = random_waves(d, fluid, matches!(kind, Kind::Particles | Kind::Dye | Kind::Water));
     let composite = random_composite(d, fluid);
     let reactions = random_reactions(d, kind, solver);
     let code = random_code(d, kind, solver, feedback.enabled);
@@ -466,7 +478,7 @@ fn random_code(d: &mut Dice, kind: Kind, solver: &str, feedback: bool) -> Code {
         }
     }
     // The 2D fluids' gravity leans or swings now and then.
-    if matches!(kind, Kind::Particles | Kind::Dye) && d.chance(0.35) {
+    if matches!(kind, Kind::Particles | Kind::Dye | Kind::Water) && d.chance(0.35) {
         frame.push(if d.chance(0.5) { format!("gravity = {}", n(d, -60.0, 60.0)) } else { format!("gravity = {} * sin(time * {})", n(d, 20.0, 70.0), n(d, 0.1, 0.4)) });
         if d.chance(0.5) {
             frame.push(format!("gravity_strength = {}", n(d, 0.6, 1.5)));
@@ -541,6 +553,11 @@ fn hsv(hue: f32, s: f32, v: f32) -> [u8; 3] {
 fn tame(look: &mut Look) {
     let (fluid, bright_palette) = (look.has_fluid(), luma(look.palette.base) > 0.5);
     let fb = &mut look.feedback;
+    // Water's picture is its thin, lit wave fronts: any feedback smears them to mush
+    // (and brightest piles the glints up into white).
+    if kind(&look.solver) == Kind::Water {
+        fb.enabled = false;
+    }
     fb.trail = fb.trail.clamp(0.3, 0.92);
     fb.zoom = fb.zoom.clamp(0.9, 1.7);
     fb.rotation = fb.rotation.clamp(-0.5, 0.5);
@@ -729,6 +746,7 @@ mod tests {
             let (fb, w, c) = (&look.feedback, &look.waves, &look.composite);
             assert!((0.3..=0.92).contains(&fb.trail) && (0.9..=1.7).contains(&fb.zoom), "{}: {fb:?}", look.name);
             assert!((w.mode == WaveMode::Off || (0.4..=1.4).contains(&w.brightness)) && (0.0..=0.6).contains(&c.vignette), "{}", look.name);
+            assert!(look.solver != "Shallow water" || !fb.enabled, "{}: water under feedback", look.name);
             if fb.enabled && fb.mode == FeedbackMode::Brightest {
                 assert!(fb.zoom <= 1.35 || (w.brightness <= 0.8 && fb.trail <= 0.65), "{}: bright zoom", look.name);
                 assert!(fb.trail <= 0.8 || fb.zoom <= 1.15, "{}: long bright trail", look.name);

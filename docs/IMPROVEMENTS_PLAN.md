@@ -553,3 +553,65 @@ independent of the rest and could be done in either order.
     - Not checked in the app: Shift+D (a posted Shift doesn't reach the app; the tests
       cover varying), clicking the dice and the director mixing in random looks (both
       covered by tests).
+
+- **Phase F, shallow water (done):** a water surface seen from above (§3.8),
+  `sim/src/solvers/shallow.rs`.
+  - **The solver:** the shallow water equations on a staggered grid (Müller 2008): the
+    depth at cell centres, the velocity on faces. Per substep: brushes and the tilt;
+    semi-Lagrangian advection of the velocity (one step back along the face's own
+    velocity: first order is plenty when waves carry the motion, and five times
+    cheaper than sampling the field); the depth moved by upwind fluxes, so water is
+    neither made nor lost; acceleration down the surface slope; damping; and a little
+    smoothing of the velocity (4/s toward the neighbours' average) that wipes out
+    grid-scale chop.
+  - **Scenes from above:** water everywhere at the resting depth. Fluid blocks stand
+    half as high again (a dam break is a bore spreading out). Walls are islands.
+    Emitters lift the water at their nozzles and push a current (the faucet too).
+    Drains absorb waves. The surface eases back to the water it started with, so
+    emitters don't flood it. The scene's gravity, turned from straight down, tilts the
+    water (slosh rocks it); waves themselves always run at sqrt(g × depth).
+  - **Parameters:** depth (1 to 50 cm, default 3: waves at 0.54 m/s, slow enough to
+    watch cross the picture), damping (default 0.3/s), resolution (192 cells up), CFL.
+  - **Two new scenes**, at the end of the list: **Pond** (four rocks and a stone
+    dropped among them) and **Breakwater** (a wall with two gaps and a band of raised
+    water below it: one wave rolls up and each gap spreads it in rings). Other solvers
+    get a falling blob and a pool under a holed shelf. Every solver keeps its
+    invariants on both (the all-solvers test).
+  - **Drops:** a new reaction effect, **Drop**: a drop lands at a random spot. It
+    travels in the step input (`sim::Droplet`, a rate held for 0.09 s, so it lands the
+    same at any frame rate); shallow water dents its surface (3 cm), which rings out;
+    other solvers ignore it. Rendered headlessly, a drop makes a crisp ring with fine
+    ripples inside, still clear a second later.
+  - **Drawn as lit water** (`FieldKind::Water`, shaded on the CPU like fire): three
+    values per cell (height and slope). The palette's deep colour in the troughs to its
+    base on the crests, lit from the upper left with slopes drawn four times steeper, a
+    glint in the highlight where the slope mirrors the light, and foam only where the
+    water is steep enough to break.
+  - **Speed:** at first 43 ms a frame (the velocity's RK2 backtrace sampled the field
+    five times per face; brushes and wall faces were walked serially every substep).
+    With a first-order backtrace, brushes touching only the faces under them and the
+    face masks computed once per substep: about 4.6 ms a frame on the dam break and
+    3.8 on the pond (the bench, five substeps a frame). In the app, 90 to 190 fps.
+  - **Brushes** push the water no faster than 1.5 times the wave speed: the music's
+    splashes (made for particles, up to 5 m/s) broke it into shocks with stair-stepped
+    fronts.
+  - **Built-in looks:** *Moonlit pond* (calm: drops on kick and snare, night colours),
+    *Harbour wall* (waves from the kick rolling through the breakwater, drops on the
+    snare, Deep sea) and *Rain dance* (energetic: hard drops, mirrored, Neon).
+  - **The randomizer** knows shallow water: its five scenes, depth and damping, and
+    reactions with drops. Feedback stays off it: water's picture is its thin lit wave
+    fronts, which any feedback smeared to mush (the in-app tuning found this: the
+    first pond looks, with feedback, showed soft blobs where the headless frames had
+    crisp rings).
+  - **Tests:** still water stays still and all there; a raised block spreads at the
+    wave speed and keeps its water; a brush pushes a wave; tilting sloshes; walls stay
+    dry; emitters make currents without flooding; a drop dents and rings out; the water
+    field has height and slope; water is lit (crests lighter, slopes toward the light
+    brighter, a glint, walls transparent); random looks with shallow water keep its
+    ranges and no feedback. The soak runs the three new looks with the rest.
+  - **Checked in the app** (debug build, the long test beat, muted): shallow water on
+    the breakwater, pond, dam break, tank with obstacle and wind tunnel (a wake behind
+    the cylinder), and the three looks in full screen, tuned over five rounds of
+    screenshots (above).
+  - A compiler crash (an access violation inside rustc, not this code) left the sim
+    crate's incremental cache broken once; clearing it fixed the build.

@@ -1,0 +1,21 @@
+[meta]
+name = "Rain dance"
+tags = ["fluid", "water", "ripples", "mirror"]
+energy = "energetic"
+
+[sim]
+solver = "Shallow water"
+scene = "Pond"
+palette = "Neon"
+params = { damping = 0.35 }
+reactions = [
+    { trigger = "kick", effect = "drop", gain = 1.4 },
+    { trigger = "snare", effect = "drop", gain = 1.0 },
+    { trigger = "bass", effect = "slosh", gain = 0.4 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[composite]
+symmetry = "mirror_x"
+aberration = 0.01
+vignette = 0.35

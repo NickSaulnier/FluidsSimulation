@@ -128,10 +128,11 @@ impl OverlayLayer {
             return None;
         };
         let range = colormap::range(f.values, f.kind);
-        colormap::colourise(f.values, f.kind, range, &palette.dye_ramp(), &mut self.rgba);
+        let colours = if f.kind == FieldKind::Water { [palette.deep, palette.base, palette.highlight] } else { palette.dye_ramp() };
+        colormap::colourise(f.values, f.kind, range, &colours, &mut self.rgba);
 
         let size = wgpu::Extent3d { width: f.layout.nx as u32, height: f.layout.ny as u32, depth_or_array_layers: 1 };
-        let smooth = matches!(f.kind, FieldKind::Concentration | FieldKind::Fire);
+        let smooth = matches!(f.kind, FieldKind::Concentration | FieldKind::Fire | FieldKind::Water);
         if self.texture.as_ref().is_none_or(|(t, _, linear)| t.size() != size || *linear != smooth) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("overlay"),
