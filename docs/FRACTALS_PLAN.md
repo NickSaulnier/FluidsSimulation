@@ -1,6 +1,6 @@
 # Fractals Plan
 
-Status: **phases A and B done** (2026-10-29); decisions open (§4). Fractal visualizations as an option
+Status: **phases A, B and the dive done** (2026-10-29); decisions open (§4). Fractal visualizations as an option
 in looks, grouped into phases. Each phase is committed on its own.
 
 ## 1. Goal
@@ -53,6 +53,14 @@ Fractals as a new layer of the picture, alongside the fluid, the waves and the c
   - A drop or a new section jumps to another interesting spot, from a list per kind.
 - **A reaction effect,** `fractal_morph`, so a kick or snare can kick the Julia point.
 
+### 3.2b The dive (asked for after phase B)
+
+- Fractals travel endlessly into themselves (or out), moving with the music but never
+  stopping. f32 holds only about 10⁵× of zoom, so a dive loops instead of zooming for
+  ever: it flies to a point where the picture repeats itself (a Misiurewicz point of the
+  Mandelbrot set, a Julia set's repelling fixed point, the centre of Newton's star) and
+  goes round the loop between two zooms that look the same.
+
 ### 3.3 Tied to the fluid
 
 - **The flow bends the fractal:** the fractal is sampled at each pixel shifted by the
@@ -99,6 +107,7 @@ Fractals as a new layer of the picture, alongside the fluid, the waves and the c
 |---|---|---|
 | **A. Fractal layer** | The shader and its settings, the `[fractal]` section, drawn before the feedback (§3.1). | Fractals in any look, warped by the feedback. |
 | **B. Music** | Frame outputs, the Julia point's path, zoom pulses, jumps on drops, the reaction effect (§3.2). | Fractals that move with the music. |
+| **B2. Dive** | Endless travel in or out: loops at self-repeating points, a flight there, the colours kept still (§3.2b). | Fractals forever travelling into themselves. |
 | **C. Fluid coupling** | The flow bending the fractal; dye from the fractal, if chosen (§3.3). | The fluid pushing the fractal around. |
 | **D. Editor and randomizer** | The editor section, docs, randomizer ranges and tame rule, load (§3.4). | Fractals from the dice and editable by hand. |
 | **E. Looks** | Built-in looks, tests, checks in the app (§3.5). | Fractal looks ready to play. |
@@ -179,3 +188,53 @@ Suggested order: A to E in order (each builds on the one before); F only if chos
   - One full test run sat for over 10 minutes and was stopped; three reruns took the
     usual time (the app's tests about a minute). It looked like the GPU tests waiting
     on a busy GPU rather than a test of this phase.
+- **The dive (done, asked for after phase B):** `dive` in `[fractal]` and `Motion`'s
+  dive (§3.2b).
+  - **Why loops:** zooming for ever runs out of f32 at about 10⁵×. Around certain
+    points the picture repeats itself: zoomed in by |λ| and turned by arg λ it's the
+    same picture again, a whole number of iterations deeper. A dive goes round that
+    loop for ever, jumping back by exactly one turn of it, which can't be seen.
+  - **The points:**
+    - Mandelbrot: nine Misiurewicz points, whose critical orbit falls into a repelling
+      cycle. The set near one repeats itself as the cycle's multiplier says (Tan Lei),
+      `period` iterations deeper each time round. Found among the low-order ones (as
+      polynomial roots, then refined) for being branch points or tips worth seeing.
+    - Julia: the β fixed point (z² + c = z), multiplier 2β, one iteration a turn. It
+      moves as the Julia point wanders, and the loop follows it.
+    - Burning Ship and Tricorn: they match the Mandelbrot set on the real axis, so two
+      of its real Misiurewicz points loop for them too, over two turns of the cycle (λ
+      is negative there and they aren't symmetric about the axis).
+    - Newton: 0. ∞ is a repelling fixed point of Newton's map (multiplier 3/2) and 0
+      maps to it through 1/(3z²), so the six-armed star repeats every √1.5.
+  - **Seamless:** a test checks every point: one turn in shows the picture it started
+    from, its period deeper (median gap under a quarter of an iteration: well under 1 %
+    of the palette at these depths; inside and outside agree on 99 % of points). Each
+    loop's widest view was chosen numerically as the widest that matches.
+  - **Colours stay still:** `FractalSettings::shift` (set by `Motion`, not saved) takes
+    the depth off the counts before colouring: the typical count around the loop (24
+    points on a ring, eased) plus the period times the loop's phase. So the background
+    stays clear at any depth, and the colours don't jump at the wrap.
+  - **Leaning:** at a tip, half the canvas would be dark, so the view leans toward the
+    set's arm (the counts around the point say which way; at a branch point the arms
+    balance and it stays centred), by up to 0.8 of a half-height. The lean is in screen
+    terms, so it scales and turns with the loop and the wrap stays seamless; the loop
+    narrows by as much, so the canvas reaches no further from the point.
+  - **The flight there:** from the look's own `centre` and `zoom` to the loop, along van
+    Wijk and Nuij's optimal zoom-and-pan path (zooming out on the way as far as the
+    distance needs), at the dive's pace, always in. With `tour`, each new section flies
+    on to another of the kind's points (a Julia set's point jumps along the edge).
+  - **With the music:** zoom doublings a second, from 0.4 times `dive` in silence to 1.6
+    times when loud, and up to 4 times on a Morph kick; negative goes round the loop
+    outward. `bass_zoom` and Morph's punch still pulse the zoom on top.
+  - **Editor and docs:** a Dive slider (−3 to 3), and `dive` in `looks/README.md`.
+  - **Tests:** every point loops without a seam; a flight runs from one view to the
+    other (zooming out when far); every kind, in and out, flies in smoothly then keeps
+    going its way for 90 s, wrapping by exactly one turn (zoom, turn and shift) and
+    never leaping between; a tour dives on to another point.
+  - **Checked in the app** (debug build): the Mandelbrot set diving into a branching
+    star over GPU stable fluids ink (124 fps), a wandering Julia set diving into its
+    spirals, Newton's star, and the Burning Ship flying from its ship down to its
+    spiked axis (240 fps without fluid). The Julia set first showed half a dark canvas
+    (its point is a tip), hence the lean. The wraps themselves weren't caught on
+    screen (stills 3 s apart); the seam test covers them. The Burning Ship's and
+    Tricorn's axis loops are the plainest of the dives.

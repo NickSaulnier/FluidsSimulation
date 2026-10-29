@@ -88,6 +88,14 @@ pub struct FractalSettings {
     pub bass_zoom: f32,
     /// Move to another spot at each new section of the song.
     pub tour: bool,
+    /// Travel endlessly into the fractal (negative: out of it), zoom doublings a second
+    /// at middling loudness; 0: stay put. It flies to a point where the picture repeats
+    /// itself and loops there. See `Motion`.
+    pub dive: f32,
+    /// Set by `Motion`, not a setting: iterations taken off the counts before colouring,
+    /// so a dive's colours stay put as it goes deeper.
+    #[serde(skip)]
+    pub shift: f32,
 }
 
 impl FractalSettings {
@@ -107,6 +115,8 @@ impl FractalSettings {
         wander: 0.0,
         bass_zoom: 0.0,
         tour: false,
+        dive: 0.0,
+        shift: 0.0,
     };
 }
 
@@ -138,7 +148,8 @@ struct Uniforms {
     phase: f32,
     /// One pixel, in the canvas's -1 to 1 up the canvas (for the supersamples' spacing).
     pixel: f32,
-    _pad: f32,
+    /// Iterations taken off the counts before colouring (`FractalSettings::shift`).
+    shift: f32,
 }
 
 pub struct FractalLayer {
@@ -243,7 +254,7 @@ impl FractalLayer {
             bands: s.bands.max(0.0),
             phase: self.phase,
             pixel: 2.0 / height_px,
-            _pad: 0.0,
+            shift: if s.shift.is_finite() { s.shift.max(0.0) } else { 0.0 },
         }
     }
 }
@@ -293,6 +304,274 @@ fn nearest_edge(c: [f32; 2]) -> f32 {
         .unwrap_or(0.0)
 }
 
+/// A complex number, in f64 for the CPU's side of the dive.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cx(f64, f64);
+
+impl Cx {
+    fn of(p: [f32; 2]) -> Self {
+        Self(f64::from(p[0]), f64::from(p[1]))
+    }
+    fn add(self, o: Self) -> Self {
+        Self(self.0 + o.0, self.1 + o.1)
+    }
+    fn sub(self, o: Self) -> Self {
+        Self(self.0 - o.0, self.1 - o.1)
+    }
+    fn mul(self, o: Self) -> Self {
+        Self(self.0 * o.0 - self.1 * o.1, self.0 * o.1 + self.1 * o.0)
+    }
+    fn scale(self, k: f64) -> Self {
+        Self(self.0 * k, self.1 * k)
+    }
+    fn div(self, o: Self) -> Self {
+        let d = (o.0 * o.0 + o.1 * o.1).max(1e-300);
+        Self((self.0 * o.0 + self.1 * o.1) / d, (self.1 * o.0 - self.0 * o.1) / d)
+    }
+    fn abs(self) -> f64 {
+        self.0.hypot(self.1)
+    }
+    fn arg(self) -> f64 {
+        self.1.atan2(self.0)
+    }
+    fn sqrt(self) -> Self {
+        let (r, a) = (self.abs().sqrt(), 0.5 * self.arg());
+        Self(r * a.cos(), r * a.sin())
+    }
+    fn f32(self) -> [f32; 2] {
+        [self.0 as f32, self.1 as f32]
+    }
+}
+
+/// The smooth iteration count at `p` as fractal.wgsl finds it (in f64), or none inside.
+fn smooth_count(kind: FractalKind, p: Cx, julia: Cx, limit: u32) -> Option<f64> {
+    if kind == FractalKind::Newton {
+        let roots = [Cx(1.0, 0.0), Cx(-0.5, 0.866_025_403_784_438_6), Cx(-0.5, -0.866_025_403_784_438_6)];
+        let mut z = p;
+        for i in 0..limit {
+            let z2 = z.mul(z);
+            z = z.sub(z2.mul(z).sub(Cx(1.0, 0.0)).div(z2.scale(3.0)));
+            for r in roots {
+                let d = z.sub(r).abs().powi(2);
+                if d < 1e-6 {
+                    return Some(f64::from(i) + 1.0 + ((1e-6f64).ln() / d.max(1e-300).ln()).log2().clamp(-1.0, 0.0));
+                }
+            }
+        }
+        return None;
+    }
+    let c = if kind == FractalKind::Julia { julia } else { p };
+    let mut z = p;
+    for i in 0..limit {
+        match kind {
+            FractalKind::BurningShip => z = Cx(z.0.abs(), z.1.abs()),
+            FractalKind::Tricorn => z.1 = -z.1,
+            _ => {}
+        }
+        z = z.mul(z).add(c);
+        let r2 = z.0 * z.0 + z.1 * z.1;
+        if r2 > 256.0 {
+            return Some((f64::from(i) + 1.0 - (0.5 * r2.ln()).log2()).max(0.0));
+        }
+    }
+    None
+}
+
+/// A point where the picture repeats itself: around it, zooming in by |λ| and turning
+/// by arg λ shows the same picture again, `period` iterations deeper. A dive loops
+/// between `half` (the canvas's half-height) and `half / |λ|`.
+#[derive(Clone, Copy, Debug)]
+struct DivePoint {
+    at: Cx,
+    lambda: Cx,
+    period: f64,
+    half: f64,
+}
+
+/// Where the Mandelbrot set, the Burning Ship and the Tricorn loop: Misiurewicz points,
+/// whose critical orbit falls into a repelling cycle (`pre` steps to it, `period` long);
+/// the set near one repeats itself as the cycle's multiplier says (Tan Lei). With the
+/// widest half-height that still loops seamlessly (found numerically; a test checks).
+/// Found among the low-order ones for being branch points or tips worth seeing.
+/// A Misiurewicz point: where, steps to its cycle, the cycle's length, widest half-height.
+type Misiurewicz = ([f64; 2], u32, u32, f64);
+
+const DIVES: [&[Misiurewicz]; 5] = [
+    &[
+        ([-0.564_097_854_9, 0.679_273_348_3], 2, 4, 0.01),
+        ([0.470_426_028_3, 0.346_588_331_3], 4, 2, 0.02),
+        ([0.445_783_624_4, 0.208_380_672_9], 5, 2, 0.01),
+        ([0.419_643_377_607, 0.606_290_729_207], 3, 2, 0.02),
+        ([0.0, 1.0], 2, 2, 0.02),
+        ([-0.506_294_458_196, 0.683_991_968_089], 4, 2, 0.005),
+        ([0.037_133_672_33, 0.806_378_316_492], 5, 2, 0.005),
+        ([0.027_016_564_508, 0.846_915_826_863], 3, 4, 0.005),
+        ([-0.670_524_811_969, 0.482_038_738_408], 4, 4, 0.005),
+    ],
+    // Julia: its β fixed point (`dive_point`).
+    &[],
+    // The Burning Ship and the Tricorn match the Mandelbrot set on the real axis, so its
+    // real Misiurewicz points loop for them too (over two turns of the cycle, as λ is
+    // negative and they aren't symmetric about the axis).
+    &[([-1.543_689_012_692_076_4, 0.0], 3, 1, 0.005), ([-1.839_286_755_214_161, 0.0], 3, 2, 0.0025)],
+    &[([-1.543_689_012_692_076_4, 0.0], 3, 1, 0.005), ([-1.839_286_755_214_161, 0.0], 3, 2, 0.005)],
+    // Newton: 0, where the three basins meet in a six-armed star (`dive_point`).
+    &[],
+];
+
+/// The dive's `index`th point for `kind` (a Julia set's from its constant `julia`).
+fn dive_point(kind: FractalKind, index: usize, julia: Cx) -> DivePoint {
+    match kind {
+        FractalKind::Julia => {
+            // β, the repelling fixed point: z² + c = z, multiplier 2β.
+            let beta = Cx(1.0, 0.0).add(Cx(1.0, 0.0).sub(julia.scale(4.0)).sqrt()).scale(0.5);
+            DivePoint { at: beta, lambda: beta.scale(2.0), period: 1.0, half: 0.02 }
+        }
+        // Newton's map is 2z/3 + 1/(3z²): ∞ is a repelling fixed point (multiplier 3/2),
+        // and 0 maps to it through 1/(3z²), so near 0 the picture repeats every √1.5.
+        FractalKind::Newton => DivePoint { at: Cx(0.0, 0.0), lambda: Cx(1.5f64.sqrt(), 0.0), period: 1.0, half: 0.04 },
+        _ => {
+            let points = DIVES[kind.code() as usize];
+            let (at, pre, period, half) = points[index % points.len()];
+            let c = Cx(at[0], at[1]);
+            let mut z = Cx(0.0, 0.0);
+            let mut lambda = Cx(1.0, 0.0);
+            for i in 0..pre + period {
+                if i >= pre {
+                    lambda = lambda.mul(z.scale(2.0));
+                }
+                z = z.mul(z).add(c);
+            }
+            if kind == FractalKind::Mandelbrot {
+                DivePoint { at: c, lambda, period: f64::from(period), half }
+            } else {
+                DivePoint { at: c, lambda: lambda.mul(lambda), period: f64::from(2 * period), half }
+            }
+        }
+    }
+}
+
+/// The number of dive points for `kind`.
+fn dive_points(kind: FractalKind) -> usize {
+    DIVES[kind.code() as usize].len().max(1)
+}
+
+/// The dive point nearest `centre`.
+fn nearest_dive(kind: FractalKind, centre: [f32; 2]) -> usize {
+    let c = Cx::of(centre);
+    (0..dive_points(kind)).min_by(|&a, &b| dive_point(kind, a, Cx(0.0, 0.0)).at.sub(c).abs().total_cmp(&dive_point(kind, b, Cx(0.0, 0.0)).at.sub(c).abs())).unwrap_or(0)
+}
+
+/// Around a dive's loop at its widest: the typical count (what its colours count from),
+/// and which way the set lies, as a share of a half-height (none around a branch point,
+/// whose arms balance; toward its one arm, from a tip).
+fn surroundings(kind: FractalKind, point: &DivePoint, julia: Cx, limit: u32) -> Option<(f64, Cx)> {
+    let ring: Vec<(Cx, f64)> = (0..24)
+        .map(|k| {
+            let a = f64::from(k) * std::f64::consts::TAU / 24.0;
+            let way = Cx(a.cos(), a.sin());
+            (way, smooth_count(kind, point.at.add(way.scale(0.7 * point.half)), julia, limit).unwrap_or(f64::from(limit)))
+        })
+        .collect();
+    let mut counts: Vec<f64> = ring.iter().map(|r| r.1).filter(|&n| n < f64::from(limit)).collect();
+    counts.sort_by(f64::total_cmp);
+    let median = *counts.get(counts.len() / 2)?;
+    let (mut way, mut total) = (Cx(0.0, 0.0), 0.0);
+    for (w, n) in ring {
+        let weight = (n - median).max(0.0);
+        way = way.add(w.scale(weight));
+        total += weight;
+    }
+    Some((median, if total > 0.0 { way.scale(1.0 / total) } else { Cx(0.0, 0.0) }))
+}
+
+/// How far a dive's view sits from its point toward the set, in half-heights at full
+/// lean (a tip's one arm then crosses the canvas, rather than half of it staying dark).
+/// The offset scales and turns with the loop, so the loop stays seamless.
+const LEAN: f64 = 0.8;
+
+/// The widest half-height of a dive's loop when its view leans by `lean` (half-heights):
+/// narrower, so the canvas reaches no further from the point than it would centred.
+fn loop_half(point: &DivePoint, lean: Cx) -> f64 {
+    point.half / (1.0 + lean.abs())
+}
+
+/// How a view flies from one place to another: zooming out and back in on the way, as
+/// far as the distance asks, at a steady pace (van Wijk and Nuij's optimal path, with
+/// their ρ).
+struct Flight {
+    from: Cx,
+    to: Cx,
+    w0: f64,
+    w1: f64,
+    /// The distance, and the path's parameters (none when it only zooms).
+    u1: f64,
+    r0: f64,
+    length: f64,
+}
+
+const RHO: f64 = 1.42;
+
+impl Flight {
+    /// From `from` showing `w0` (half-height) to `to` showing `w1`.
+    fn new(from: Cx, w0: f64, to: Cx, w1: f64) -> Self {
+        let u1 = to.sub(from).abs();
+        let rho2 = RHO * RHO;
+        if u1 < 1e-9 * w0.min(w1) {
+            return Self { from, to, w0, w1, u1: 0.0, r0: 0.0, length: (w1 / w0).ln().abs() / RHO };
+        }
+        let b = |w: f64, sign: f64| (w1 * w1 - w0 * w0 + sign * rho2 * rho2 * u1 * u1) / (2.0 * w * rho2 * u1);
+        let r = |b: f64| (-b + (b * b + 1.0).sqrt()).ln();
+        let (r0, r1) = (r(b(w0, 1.0)), r(b(w1, -1.0)));
+        Self { from, to, w0, w1, u1, r0, length: (r1 - r0) / RHO }
+    }
+
+    /// Where it is `s` along (0 to `length`): the centre and the half-height.
+    fn at(&self, s: f64) -> (Cx, f64) {
+        if self.u1 == 0.0 {
+            let k = if self.w1 < self.w0 { -1.0 } else { 1.0 };
+            return (self.to, self.w0 * (k * RHO * s).exp());
+        }
+        let (r0, rho2) = (self.r0, RHO * RHO);
+        let u = self.w0 / rho2 * (r0.cosh() * (RHO * s + r0).tanh() - r0.sinh());
+        let w = self.w0 * r0.cosh() / (RHO * s + r0).cosh();
+        (self.from.add(self.to.sub(self.from).scale(u / self.u1)), w)
+    }
+}
+
+/// What's on the canvas: the centre, the half-height, the turn added (radians) and the
+/// colours' shift (`FractalSettings::shift`).
+#[derive(Clone, Copy, Debug)]
+struct View {
+    centre: Cx,
+    half: f64,
+    turn: f64,
+    shift: f64,
+}
+
+/// A dive under way.
+struct Dive {
+    /// Which of the kind's dive points.
+    point: usize,
+    /// Flying to it: from where, and how far along.
+    flight: Option<(View, f64)>,
+    /// Around the loop, 0 to 1.
+    phase: f64,
+    /// The count its colours count from, and the way the view leans from the point
+    /// (`surroundings`), eased.
+    base: Option<(f64, Cx)>,
+}
+
+/// The dive's pace, zoom doublings a second: from a little under half the setting in
+/// silence to a little over one and a half times it when loud, and up to four times it
+/// on a Morph kick.
+fn dive_rate(dive: f32, level: f32, morph: f32) -> f64 {
+    f64::from(dive.abs()) * std::f64::consts::LN_2 * f64::from(0.4 + 1.2 * level) * f64::from(1.0 + 3.0 * morph)
+}
+
+/// The base count follows changes (a Julia set's point moving) with this time constant.
+const BASE_S: f64 = 1.0;
+
 /// What the music is doing, for `Motion`.
 #[derive(Clone, Copy, Debug)]
 pub struct Music {
@@ -335,12 +614,15 @@ pub struct Motion {
     spot: usize,
     /// The section changes seen, once the tour starts counting.
     sections: Option<u32>,
+    /// Diving, and what it last showed (where the next flight starts).
+    dive: Option<Dive>,
+    view: Option<View>,
     rng: utils::rng::SplitMix64,
 }
 
 impl Default for Motion {
     fn default() -> Self {
-        Self { kind: None, angle: None, target: None, at: None, spot: 0, sections: None, rng: utils::rng::SplitMix64::new(0x00f4_ac7a) }
+        Self { kind: None, angle: None, target: None, at: None, spot: 0, sections: None, dive: None, view: None, rng: utils::rng::SplitMix64::new(0x00f4_ac7a) }
     }
 }
 
@@ -357,13 +639,41 @@ impl Motion {
         }
         let morph = if music.morph.is_finite() { music.morph.clamp(0.0, 1.0) } else { 0.0 };
         let bass = if music.bass.is_finite() { music.bass.clamp(0.0, 3.0) } else { 1.0 };
-
-        // The tour: a new spot at each new section.
-        if s.tour {
+        let level = if music.level.is_finite() { music.level.clamp(0.0, 1.0) } else { 0.0 };
+        let new_section = s.tour && {
             let seen = *self.sections.get_or_insert(music.sections);
-            if music.sections > seen {
-                self.sections = Some(music.sections);
-                self.next_spot(&s);
+            self.sections = Some(music.sections);
+            music.sections > seen
+        };
+        if !s.tour {
+            self.sections = None;
+        }
+
+        if s.dive != 0.0 && s.dive.is_finite() {
+            // A dive moves the view itself (a tour moves it on to another point).
+            (self.target, self.at) = (None, None);
+            if new_section && s.kind == FractalKind::Julia {
+                self.angle = Some(self.rng.next_f32() * TAU);
+            }
+            self.julia_point(&mut s, settings, bass, level, morph, dt);
+            let rate = dive_rate(s.dive, level, morph);
+            self.dive_step(&mut s, new_section, rate, dt);
+        } else {
+            (self.dive, self.view) = (None, None);
+            self.tour_step(&mut s, new_section, dt);
+            self.julia_point(&mut s, settings, bass, level, morph, dt);
+        }
+
+        let pulse = (1.0 + s.bass_zoom.clamp(0.0, 1.0) * (bass - 1.0)).clamp(0.5, 2.0);
+        s.zoom = view_zoom(s.zoom * pulse * (1.0 + MORPH_PUNCH * morph));
+        s
+    }
+
+    /// The tour without a dive: gliding to a new spot at each new section.
+    fn tour_step(&mut self, s: &mut FractalSettings, new_section: bool, dt: f32) {
+        if s.tour {
+            if new_section {
+                self.next_spot(s);
             }
             let target = *self.target.get_or_insert((s.centre, view_zoom(s.zoom).ln()));
             let at = self.at.get_or_insert(target);
@@ -373,20 +683,66 @@ impl Motion {
             s.centre = at.0;
             s.zoom = at.1.exp();
         } else {
-            (self.target, self.at, self.sections) = (None, None, None);
+            (self.target, self.at) = (None, None);
         }
+    }
 
-        // A Julia set's point along the edge, faster with the music and kicked by Morph.
+    /// A Julia set's point along the edge, faster with the music and kicked by Morph.
+    fn julia_point(&mut self, s: &mut FractalSettings, settings: &FractalSettings, bass: f32, level: f32, morph: f32, dt: f32) {
         if s.kind == FractalKind::Julia && (s.wander != 0.0 || morph > 0.0 || self.angle.is_some()) {
-            let level = if music.level.is_finite() { music.level.clamp(0.0, 1.0) } else { 0.0 };
             let angle = self.angle.get_or_insert_with(|| nearest_edge(settings.julia));
             *angle = (*angle + (s.wander * LAP * (0.3 + 0.7 * level) + MORPH_LEAP * morph) * dt.max(0.0)).rem_euclid(TAU);
             s.julia = cardioid_edge(*angle, EDGE_OUT + EDGE_BASS * (bass - 1.0).clamp(-0.5, 1.0));
         }
+    }
 
-        let pulse = (1.0 + s.bass_zoom.clamp(0.0, 1.0) * (bass - 1.0)).clamp(0.5, 2.0);
-        s.zoom = view_zoom(s.zoom * pulse * (1.0 + MORPH_PUNCH * morph));
-        s
+    /// The dive: fly to a point where the picture repeats itself, then go round its loop
+    /// forever (in, or backward for out), `rate` the zoom's pace (ln a second).
+    fn dive_step(&mut self, s: &mut FractalSettings, new_section: bool, rate: f64, dt: f32) {
+        let (kind, julia, dt) = (s.kind, Cx::of(s.julia), f64::from(dt.max(0.0)));
+        let start = View { centre: Cx::of(s.centre), half: 1.5 / f64::from(view_zoom(s.zoom)), turn: 0.0, shift: 0.0 };
+        let dive = self.dive.get_or_insert_with(|| Dive { point: nearest_dive(kind, s.centre), flight: Some((start, 0.0)), phase: 0.0, base: None });
+        if new_section {
+            // On to another point, from wherever it is now.
+            let n = dive_points(kind);
+            if n > 1 {
+                dive.point = (dive.point + 1 + (self.rng.next_u64() % (n as u64 - 1)) as usize) % n;
+            }
+            dive.flight = Some((self.view.unwrap_or(start), 0.0));
+        }
+        let point = dive_point(kind, dive.point, julia);
+        if let Some((count, way)) = surroundings(kind, &point, julia, s.iterations.clamp(1, MAX_ITERATIONS)) {
+            let k = 1.0 - (-dt / BASE_S).exp();
+            dive.base = Some(dive.base.map_or((count, way), |(b, w)| (b + k * (count - b), w.add(way.sub(w).scale(k)))));
+        }
+        let (base, lean) = dive.base.unwrap_or((0.0, Cx(0.0, 0.0)));
+        let lean = lean.scale(LEAN);
+        let widest = loop_half(&point, lean);
+        let (scale, turn) = (point.lambda.abs().max(1.01), point.lambda.arg());
+        let mut view = None;
+        if let Some((from, along)) = &mut dive.flight {
+            let flight = Flight::new(from.centre, from.half, point.at.add(lean.scale(widest)), widest);
+            *along += rate / RHO * dt;
+            if *along < flight.length {
+                let q = *along / flight.length;
+                let (centre, half) = flight.at(*along);
+                view = Some(View { centre, half, turn: from.turn * (1.0 - q), shift: from.shift + (base - from.shift) * q });
+            } else {
+                dive.phase = 0.0;
+            }
+        }
+        let view = view.unwrap_or_else(|| {
+            dive.flight = None;
+            let sign = if s.dive < 0.0 { -1.0 } else { 1.0 };
+            dive.phase = (dive.phase + sign * rate * dt / scale.ln()).rem_euclid(1.0);
+            let (half, turn) = (widest * scale.powf(-dive.phase), -turn * dive.phase);
+            View { centre: point.at.add(lean.mul(Cx(turn.cos(), turn.sin())).scale(half)), half, turn, shift: base + point.period * dive.phase }
+        });
+        self.view = Some(view);
+        s.centre = view.centre.f32();
+        s.zoom = (1.5 / view.half) as f32;
+        s.rotation += view.turn as f32;
+        s.shift = view.shift as f32;
     }
 
     fn next_spot(&mut self, s: &FractalSettings) {
@@ -556,6 +912,131 @@ mod tests {
         let mut motion = Motion::default();
         let before = motion.apply(&s, &music(0), 0.1).julia;
         assert_ne!(motion.apply(&s, &music(1), 0.1).julia, before);
+    }
+
+    /// Every dive point loops: one turn of the loop in (zoomed by |λ|, turned by arg λ)
+    /// shows the picture it started from, `period` iterations deeper.
+    #[test]
+    fn every_dive_loops_without_a_seam() {
+        let mut points: Vec<(FractalKind, DivePoint, Cx)> = Vec::new();
+        for kind in FractalKind::ALL {
+            let juliae = [Cx(-0.8, 0.156), Cx(-0.4, 0.6), Cx(0.285, 0.01)];
+            for k in 0..dive_points(kind) {
+                for &j in if kind == FractalKind::Julia { &juliae[..] } else { &juliae[..1] } {
+                    points.push((kind, dive_point(kind, k, j), j));
+                }
+            }
+        }
+        for (kind, point, julia) in points {
+            let (mut gaps, mut mismatched, mut total) = (Vec::new(), 0, 0);
+            let turn = Cx(point.lambda.abs(), 0.0).div(point.lambda);
+            // The canvas as a dive shows it, leaning toward the set.
+            let lean = surroundings(kind, &point, julia, 1000).map_or(Cx(0.0, 0.0), |(_, way)| way.scale(LEAN));
+            for j in 0..27 {
+                for i in 0..48 {
+                    let local = Cx(((i as f64 + 0.5) / 24.0 - 1.0) * 16.0 / 9.0, (j as f64 + 0.5) / 13.5 - 1.0).add(lean).scale(loop_half(&point, lean));
+                    let start = smooth_count(kind, point.at.add(local), julia, 1000);
+                    let end = smooth_count(kind, point.at.add(local.mul(turn).scale(1.0 / point.lambda.abs())), julia, 1000);
+                    total += 1;
+                    match (start, end) {
+                        (Some(a), Some(b)) => gaps.push((b - point.period - a).abs()),
+                        (None, None) => {}
+                        _ => mismatched += 1,
+                    }
+                }
+            }
+            gaps.sort_by(f64::total_cmp);
+            let median = gaps.get(gaps.len() / 2).copied().unwrap_or(f64::INFINITY);
+            let at = format!("{kind:?} at {:?} (λ {:?}, c {julia:?})", point.at, point.lambda);
+            // A quarter of an iteration moves the colours by well under 1 % of the palette
+            // at a dive's depths: what would show is shapes that don't line up.
+            assert!(median < 0.25 && mismatched * 100 < total, "{at}: median gap {median}, {mismatched} of {total} differ inside/out");
+        }
+    }
+
+    #[test]
+    fn a_flight_runs_from_one_view_to_the_other() {
+        for (from, w0, to, w1) in [(Cx(-0.6, 0.0), 1.5, Cx(0.47, 0.35), 0.02), (Cx(0.0, 0.0), 0.04, Cx(0.0, 0.0), 1.0), (Cx(0.45, 0.2), 0.001, Cx(-0.56, 0.68), 0.01)] {
+            let f = Flight::new(from, w0, to, w1);
+            let (c0, h0) = f.at(0.0);
+            let (c1, h1) = f.at(f.length);
+            assert!(c0.sub(from).abs() < 1e-9 && (h0 / w0 - 1.0).abs() < 1e-9, "{c0:?} {h0}");
+            assert!(c1.sub(to).abs() < 1e-6 * w1.max(1e-3) + 1e-9 && (h1 / w1 - 1.0).abs() < 1e-6, "{c1:?} {h1} vs {to:?} {w1}");
+            // Far apart, it zooms out on the way.
+            if to.sub(from).abs() > 10.0 * w0.max(w1) {
+                assert!(f.at(0.5 * f.length).1 > w0.max(w1), "{}", f.at(0.5 * f.length).1);
+            }
+        }
+    }
+
+    /// A dive's views, a frame at a time: (log zoom, centre, half-height, turn, shift).
+    fn dive_frames(s: &FractalSettings, seconds: f32) -> Vec<(f64, Cx, f64, f64, f64)> {
+        let mut motion = Motion::default();
+        (0..(seconds * 60.0) as usize)
+            .map(|_| {
+                let v = motion.apply(s, &Music::QUIET, 1.0 / 60.0);
+                let half = 1.5 / f64::from(v.zoom);
+                (half.recip().ln(), Cx::of(v.centre), half, f64::from(v.rotation), f64::from(v.shift))
+            })
+            .collect()
+    }
+
+    /// Diving in: the view flies in smoothly and then keeps zooming in, jumping back
+    /// only where the picture repeats itself (by exactly its loop), forever.
+    #[test]
+    fn a_dive_travels_in_forever() {
+        for kind in FractalKind::ALL {
+            for dive in [1.0f32, -1.0] {
+                let s = FractalSettings { dive, ..on(kind) };
+                let frames = dive_frames(&s, 90.0);
+                let point = dive_point(kind, nearest_dive(kind, s.centre), Cx::of(s.julia));
+                let (loop_ln, sign) = (point.lambda.abs().ln(), f64::from(dive.signum()));
+                let mut wraps = 0;
+                for w in frames.windows(2) {
+                    let ((z0, c0, h0, t0, s0), (z1, c1, _, t1, s1)) = (w[0], w[1]);
+                    let step = z1 - z0;
+                    if (step + sign * loop_ln).abs() < 0.05 {
+                        // Round the loop: turned and shifted by exactly one turn of it.
+                        wraps += 1;
+                        let turned = (t1 - t0 - sign * point.lambda.arg()).rem_euclid(TAU as f64);
+                        assert!(turned.min(TAU as f64 - turned) < 0.02, "{kind:?}: turned {turned}");
+                        assert!((s1 - s0 + sign * point.period).abs() < 0.1, "{kind:?}: shift {s0} to {s1}");
+                    } else {
+                        // Between, the zoom and the centre move on smoothly.
+                        assert!(step.abs() < 0.05, "{kind:?}: zoom leapt {step}");
+                        assert!(c1.sub(c0).abs() / h0 < 0.2, "{kind:?}: the centre leapt");
+                    }
+                }
+                // After the flight in (always in), it goes the dive's way, round and round.
+                let late: Vec<f64> = frames[frames.len() - 600..].iter().map(|f| f.0).collect();
+                let moving = late.windows(2).filter(|w| (w[1] - w[0]) * sign > 0.0).count();
+                assert!(moving > 550 && wraps >= 3, "{kind:?} dive {dive}: {moving} frames the right way, {wraps} wraps");
+                let (_, centre, half, ..) = *frames.last().unwrap();
+                assert!(centre.sub(point.at).abs() <= LEAN * half + 1e-9, "{kind:?}: its point is off the canvas");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tour_dives_to_another_point() {
+        let s = FractalSettings { dive: 2.0, tour: true, ..on(FractalKind::Mandelbrot) };
+        let mut motion = Motion::default();
+        let at = |motion: &mut Motion, sections: u32| {
+            let mut v = s;
+            for _ in 0..60 * 40 {
+                v = motion.apply(&s, &Music { sections, ..Music::QUIET }, 1.0 / 60.0);
+            }
+            Cx::of(v.centre)
+        };
+        let first = at(&mut motion, 0);
+        let second = at(&mut motion, 1);
+        // Its point on the canvas (the canvas's half-height there is at most `half`).
+        let point = |c: Cx| (0..dive_points(FractalKind::Mandelbrot)).find(|&k| {
+            let p = dive_point(FractalKind::Mandelbrot, k, Cx(0.0, 0.0));
+            p.at.sub(c).abs() <= LEAN * p.half + 1e-9
+        });
+        let (a, b) = (point(first), point(second));
+        assert!(a.is_some() && b.is_some() && a != b, "{first:?} ({a:?}) then {second:?} ({b:?})");
     }
 
     #[test]

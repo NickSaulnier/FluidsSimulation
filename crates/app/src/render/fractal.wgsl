@@ -21,7 +21,8 @@ struct Fractal {
     phase: f32,
     // One pixel, in the canvas's -1 to 1 (up the canvas).
     pixel: f32,
-    _pad: f32,
+    // Iterations taken off the counts before colouring (a dive's depth).
+    shift: f32,
 };
 
 @group(0) @binding(0) var<uniform> F: Fractal;
@@ -83,7 +84,7 @@ fn depth(n: f32) -> f32 {
 
 // Premultiplied colour, alpha.
 fn shade(s: f32, n: f32) -> vec4f {
-    let d = depth(n);
+    let d = depth(max(n - F.shift, 0.0));
     let a = pow(clamp(d * 1.6, 0.0, 1.0), 1.5) * F.opacity;
     return vec4f(ramp(s + F.bands * d + F.phase) * F.brightness * a, a);
 }

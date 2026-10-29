@@ -55,6 +55,7 @@ size = 0.25
 [fractal]                  # an escape-time fractal
 kind = "julia"
 wander = 1.0
+dive = 0.5
 
 [composite]
 symmetry = "kaleidoscope"
@@ -165,6 +166,13 @@ far outside and inside, so the fluid shows through.
   about laps a minute at full loudness, starting from the edge nearest `julia`),
   `bass_zoom` (0 to 1: the zoom follows the bass), `tour = true` (at each new section,
   move to another place worth seeing; a Julia set changes shape).
+- `dive`: travel endlessly into the fractal (negative: out of it), in zoom doublings a
+  second (from 0.4 times that in silence to 1.6 times when loud, and up to 4 times on a
+  `morph` kick). It flies from `centre` and `zoom` to the nearest point where the
+  picture repeats itself (a Julia set's tip, Newton's star at 0, one of nine for the
+  Mandelbrot set and two each for the Burning Ship and Tricorn), then loops there
+  forever, the colours keeping their place. With `tour`, each new section flies on to
+  another point.
 
 ## `[composite]`
 

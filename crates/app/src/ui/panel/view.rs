@@ -211,6 +211,7 @@ fn waves(ui: &mut egui::Ui, s: &mut WaveSettings) {
         if fractal.kind == FractalKind::Julia {
             slider(ui, "Wander", "The Julia point travels along the Mandelbrot set's edge: about laps a minute at full loudness.", &mut fractal.wander, -4.0..=4.0);
         }
+        slider(ui, "Dive", "Travel endlessly into the fractal (negative: out of it): zoom doublings a second, faster when the music is loud. It flies to a place where the picture repeats itself and loops there.", &mut fractal.dive, -3.0..=3.0);
         slider(ui, "Bass zoom", "How much the zoom follows the bass.", &mut fractal.bass_zoom, 0.0..=1.0);
         widgets::toggle(ui, &mut fractal.tour, "Tour", "Move to another spot at each new section of the song (a Julia set changes shape).");
         row(ui, "Detail", "Iterations: more shows finer filaments when zoomed in, and costs more.", |ui| {
