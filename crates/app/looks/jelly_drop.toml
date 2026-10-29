@@ -1,0 +1,20 @@
+[meta]
+name = "Jelly drop"
+tags = ["fluid", "jelly", "bounce"]
+energy = "energetic"
+
+[sim]
+solver = "MPM jelly"
+scene = "Falling blocks"
+palette = "Candy"
+liquid = true
+reactions = [
+    { trigger = "kick", effect = "splash", gain = 0.5 },
+    { trigger = "snare", effect = "vortex", gain = 0.6 },
+    { trigger = "bass", effect = "slosh", gain = 0.5 },
+    { trigger = "hat", effect = "flash", gain = 0.4 },
+]
+
+[composite]
+saturation = 1.15
+vignette = 0.35

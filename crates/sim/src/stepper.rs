@@ -33,7 +33,8 @@ impl Stepper {
         // Even split: n equal substeps, n chosen by CFL, then capped. When capped, each
         // substep is still at most max_dt and the remainder is dropped: slow motion, not blow-up.
         let wanted = (target / max_dt).ceil() as u32;
-        let n = wanted.clamp(self.min_substeps.max(1), self.max_substeps);
+        let cap = self.max_substeps.max(solver.max_substeps());
+        let n = wanted.clamp(self.min_substeps.max(1), cap);
         let dt = (target / n as f32).min(max_dt);
         let mut phases: Vec<(&'static str, Duration)> = Vec::new();
         for _ in 0..n {

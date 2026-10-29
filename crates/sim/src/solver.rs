@@ -88,6 +88,13 @@ pub trait Solver: Send {
     /// Largest substep the solver considers stable right now (CFL and the like).
     fn max_dt(&self, scene: &Scene) -> f32;
 
+    /// The most substeps a frame may take before the stepper drops time (slow motion)
+    /// rather than take more. Most solvers take a few large substeps; an explicit
+    /// elastic solver (MPM) takes many small, cheap ones.
+    fn max_substeps(&self) -> u32 {
+        8
+    }
+
     fn step(&mut self, dt: f32, scene: &Scene, input: &StepInput);
 
     /// Walk the tunable parameters (see `params`). A parameter whose spec has

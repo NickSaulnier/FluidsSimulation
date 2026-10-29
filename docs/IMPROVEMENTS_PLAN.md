@@ -615,3 +615,44 @@ independent of the rest and could be done in either order.
     screenshots (above).
   - A compiler crash (an access violation inside rustc, not this code) left the sim
     crate's incremental cache broken once; clearing it fixed the build.
+
+- **Phase F, MLS-MPM (done):** new materials (§3.8), `sim/src/solvers/mpm.rs`.
+  - **Three solvers, one implementation:** *MPM jelly* (elastic, fixed corotated),
+    *MPM snow* (Stomakhin et al. 2013: it packs, hardens as it does, and breaks into
+    clumps past its critical compression and stretch) and *MPM sand* (Drucker-Prager on
+    the log strain, Klár et al. 2016: it flows and piles at its friction angle, and
+    lets go when pulled apart). MLS-MPM (Hu et al. 2018) with APIC: each particle
+    carries a velocity, an affine velocity C, a deformation gradient F and (snow) its
+    plastic volume ratio; quadratic B-spline weights over 3 × 3 nodes.
+  - Per substep: drains and emitters (draining every per-particle array, since the
+    shared drain only knows positions and velocities) -> particles to grid (in
+    parallel, each thread into its own grid, summed) -> the grid: gravity, brushes, and
+    walls (slip; sand with Coulomb friction) -> grid to particles, plasticity, moved and
+    kept out of walls.
+  - **Explicit and elastic:** the substep follows the material's sound speed, so MPM
+    takes many small, cheap substeps. The stepper's cap of 8 a frame would have run it
+    in slow motion: solvers can now raise it (`Solver::max_substeps`, 40 here).
+  - **Parameters:** stiffness (as a sound speed squared, m²/s²: jelly 30, snow 25, sand
+    60), Poisson ratio; snow's hardening, critical compression and stretch; sand's
+    friction angle; resolution (64 cells up, 4 particles a cell: about 8,000 on the dam
+    break); CFL. Packed snow gets at most 4 times stiffer: at first it went up to 20
+    times, which took the substeps to the cap and dropped time.
+  - **Speed** (the bench, dam break): jelly 6.9 ms a frame (16 substeps), sand 12.6
+    (22), snow 12.1 (25). In the app, 200 to 240 fps.
+  - **A new scene, Falling blocks:** three blocks in mid-air over a shallow layer. Jelly
+    lands, bounces and wobbles; liquids splash; shallow water rings.
+  - **Built-in looks:** *Jelly drop* (blocks flung by the kick, tumbling and wobbling,
+    the floor layer breaking into jelly strips; Candy), *Snow globe* (snow columns
+    thrown up into powder; Ice) and *Shifting dunes* (sand sliding and heaping as
+    gravity rocks; Sand). Tuned from the first in-app round: jelly under feedback and a
+    strong splash smeared into mush, and snow dropped from 75 cm packed flat into the
+    floor layer.
+  - **The randomizer** knows all three: their scenes, physics ranges and the particle
+    reactions.
+  - **Tests:** the SVD rebuilds its matrix; jelly stands (settling a little, not
+    spreading); sand slumps into a pile (lower, wider, not flat); snow packs and doesn't
+    bounce; every material stays finite, in the domain and calm on two scenes; and the
+    all-solvers tests run all three on every scene and switching between every pair.
+  - **Checked in the app** (debug build): each material on the dam break, tank with
+    obstacle and fountain (jelly slides as a block, snow holds as a slab, sand slopes),
+    and the three looks in full screen with the test beat.

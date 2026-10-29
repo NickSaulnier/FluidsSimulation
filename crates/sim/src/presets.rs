@@ -19,6 +19,7 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Campfire", build: campfire_in },
     Preset { name: "Pond", build: pond_in },
     Preset { name: "Breakwater", build: breakwater_in },
+    Preset { name: "Falling blocks", build: falling_blocks_in },
 ];
 
 /// Column width for the Martin & Moyce validation case (height is twice this).
@@ -186,6 +187,21 @@ pub fn breakwater_in(d: Vec2) -> Scene {
     }
     s.solid.update_derived();
     s.fluid_blocks.push(Rect::new(Vec2::ZERO, Vec2::new(d.x, 0.15 * d.y)));
+    s
+}
+
+/// Three blocks in mid-air, at different heights, over a shallow layer: made for the
+/// MPM materials (jelly lands and wobbles, snow packs or bursts, sand pours), but every
+/// solver drops them somehow (liquids splash; shallow water, seen from above, rings).
+pub fn falling_blocks_in(d: Vec2) -> Scene {
+    let mut s = tank(d);
+    let inner = s.solid.interior();
+    s.fluid_blocks.push(Rect::new(inner.min, Vec2::new(inner.max.x, inner.min.y + 0.06)));
+    let side = 0.18;
+    for (x, y) in [(0.25, 0.45), (0.5, 0.75), (0.75, 0.55)] {
+        let c = Vec2::new(x * d.x, y * d.y);
+        s.fluid_blocks.push(Rect::new(c - 0.5 * side, c + 0.5 * side));
+    }
     s
 }
 

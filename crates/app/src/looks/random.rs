@@ -47,6 +47,9 @@ pub const PHYSICS: &[(&str, &[Range])] = &[
     ),
     ("Lattice Boltzmann (dye)", &[("tau", 0.51, 0.56, false), ("buoyancy", -0.3, 0.6, false)]),
     ("Shallow water", &[("depth", 0.015, 0.06, true), ("damping", 0.15, 0.8, false)]),
+    ("MPM jelly", &[("stiffness", 15.0, 60.0, true), ("poisson", 0.15, 0.4, false)]),
+    ("MPM snow", &[("stiffness", 15.0, 40.0, true), ("hardening", 5.0, 15.0, false), ("compression", 0.015, 0.05, true), ("stretch", 0.002, 0.008, true)]),
+    ("MPM sand", &[("stiffness", 30.0, 90.0, true), ("friction_angle", 25.0, 45.0, false)]),
     (
         "Fire (3D GPU)",
         &[
@@ -85,7 +88,10 @@ const FLUIDS: &[(&str, &[&str], f32)] = &[
     ("Stable fluids (dye)", &["Dam break", "Double dam break", "Tank with obstacle", "Martin & Moyce column"], 2.0),
     ("Smoke & fire", &["Campfire"], 1.5),
     ("Lattice Boltzmann (dye)", &["Wind tunnel"], 1.0),
-    ("Shallow water", &["Pond", "Breakwater", "Dam break", "Tank with obstacle", "Wind tunnel"], 1.5),
+    ("Shallow water", &["Pond", "Breakwater", "Dam break", "Tank with obstacle", "Wind tunnel", "Falling blocks"], 1.5),
+    ("MPM jelly", &["Falling blocks", "Double dam break", "Tank with obstacle"], 0.8),
+    ("MPM snow", &["Falling blocks", "Dam break", "Double dam break"], 0.8),
+    ("MPM sand", &["Dam break", "Double dam break", "Falling blocks", "Tank with obstacle"], 0.8),
     ("Fire (3D GPU)", &["Campfire 3D", "Torch", "Twin burners", "Chimney"], 1.5),
     ("Smoke (3D GPU)", &["Campfire 3D", "Torch", "Twin burners", "Chimney"], 1.0),
 ];
@@ -105,7 +111,7 @@ enum Kind {
 fn kind(solver: &str) -> Kind {
     match solver {
         "" => Kind::None,
-        "FLIP" | "PBF" | "PBF (GPU)" => Kind::Particles,
+        "FLIP" | "PBF" | "PBF (GPU)" | "MPM jelly" | "MPM snow" | "MPM sand" => Kind::Particles,
         "Smoke & fire" => Kind::Fire2d,
         "Fire (3D GPU)" => Kind::Fire3d,
         "Smoke (3D GPU)" => Kind::Smoke3d,

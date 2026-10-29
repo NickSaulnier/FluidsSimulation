@@ -45,11 +45,12 @@ optimises the dependencies and the `sim` crate).
 | Smoke & fire | Stable fluids with fuel, temperature, burning and smoke |
 | Lattice Boltzmann (dye) | D2Q9 LBM with a Smagorinsky model |
 | Shallow water | A water surface seen from above (height field), lit: waves, wakes and ripples; the music's drops ring out on it |
+| MPM jelly, MPM snow, MPM sand | MLS-MPM particles carrying a material: jelly wobbles and bounces, snow packs and breaks into clumps, sand flows and piles |
 | Ballistic (debug) | Gravity and bouncing, as a test fixture |
 | Fire (3D GPU), Smoke (3D GPU) | 3D grid fluids on the GPU, raymarched, with an orbiting camera |
 
 2D scenes: dam break, double dam break, tank with obstacle, fountain, Martin & Moyce
-column, wind tunnel, campfire, pond, breakwater. 3D scenes, in the open air (smoke rises out of the picture): campfire, torch, twin
+column, wind tunnel, campfire, pond, breakwater, falling blocks. 3D scenes, in the open air (smoke rises out of the picture): campfire, torch, twin
 burners, chimney.
 
 The fluid fills the window edge to edge, the scene taking the window's shape, and
