@@ -1,4 +1,6 @@
-//! World (metres, y up) to clip space, fitting the domain into the window with letterboxing.
+//! World (metres, y up) to clip space: a part of the domain (the inside of the scene's
+//! walls) covering the canvas edge to edge, whatever sticks out cropped (`cover`).
+//! (`fit_in`, letterboxing the whole domain, is kept for comparison in the tests.)
 
 use glam::Vec2;
 use winit::dpi::PhysicalSize;
@@ -23,6 +25,7 @@ impl View {
     /// Fit the domain, centred, into the area of the window (physical pixels, y down)
     /// at `area_min` of size `area_size`: the canvas left over by the UI's bars and
     /// panel.
+    #[cfg(test)]
     pub fn fit_in(domain: Vec2, area_min: Vec2, area_size: Vec2, margin_px: f32, window: PhysicalSize<u32>) -> Self {
         let win = Vec2::new(window.width as f32, window.height as f32).max(Vec2::ONE);
         let avail = (area_size - 2.0 * margin_px).max(Vec2::ONE);
@@ -34,6 +37,19 @@ impl View {
             2.0 * (c.x - 0.5 * domain.x * k) / win.x - 1.0,
             1.0 - 2.0 * (c.y + 0.5 * domain.y * k) / win.y,
         );
+        Self { scale: 2.0 * k / win, offset, px_per_metre: k, window: win }
+    }
+
+    /// Show the world rectangle at `visible_min`, `visible_size` big, centred, covering
+    /// the area of the window at `area_min` of size `area_size` (physical pixels, y
+    /// down): it fills the area, and whatever sticks out on one axis is cropped.
+    pub fn cover(visible_min: Vec2, visible_size: Vec2, area_min: Vec2, area_size: Vec2, window: PhysicalSize<u32>) -> Self {
+        let win = Vec2::new(window.width as f32, window.height as f32).max(Vec2::ONE);
+        let k = (area_size.max(Vec2::ONE) / visible_size.max(Vec2::splat(1e-6))).max_element();
+        // The visible centre v sits at the area centre c: pixel = c + (world - v) * k
+        // with y flipped, then clip = 2 * pixel / win - 1 (y up).
+        let (c, v) = (area_min + 0.5 * area_size, visible_min + 0.5 * visible_size);
+        let offset = Vec2::new(2.0 * (c.x - v.x * k) / win.x - 1.0, 1.0 - 2.0 * (c.y + v.y * k) / win.y);
         Self { scale: 2.0 * k / win, offset, px_per_metre: k, window: win }
     }
 
@@ -52,6 +68,23 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Covering: the visible rectangle's centre at the area's, and it fills the area,
+    /// cropped on the axis where it's too long.
+    #[test]
+    fn cover_fills_the_area() {
+        let window = PhysicalSize::new(1600, 900);
+        let (min, size) = (Vec2::new(0.03, 0.03), Vec2::new(1.94, 0.94));
+        let v = View::cover(min, size, Vec2::ZERO, Vec2::new(1600.0, 900.0), window);
+        let centre = v.to_clip(min + 0.5 * size);
+        assert!(centre.length() < 1e-5, "{centre}");
+        // Wider than the window: the height fills it, the sides are cropped.
+        assert!((v.to_clip(min).y + 1.0).abs() < 1e-5 && (v.to_clip(min + size).y - 1.0).abs() < 1e-5);
+        assert!(v.to_clip(min).x < -1.0 && v.to_clip(min + size).x > 1.0);
+        // The same shape as the area: it fits exactly.
+        let exact = View::cover(Vec2::ZERO, Vec2::new(16.0, 9.0), Vec2::ZERO, Vec2::new(1600.0, 900.0), window);
+        assert!((exact.to_clip(Vec2::ZERO) + Vec2::ONE).length() < 1e-5 && (exact.to_clip(Vec2::new(16.0, 9.0)) - Vec2::ONE).length() < 1e-5);
+    }
 
     #[test]
     fn domain_is_centred_and_fits() {

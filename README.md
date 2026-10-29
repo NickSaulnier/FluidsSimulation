@@ -50,7 +50,11 @@ optimises the dependencies and the `sim` crate).
 2D scenes: dam break, double dam break, tank with obstacle, fountain, Martin & Moyce
 column, wind tunnel, campfire. 3D scenes: campfire, torch, twin burners, chimney.
 
-Tools: push, paint and erase walls, a faucet; gravity can be tilted. Fields (pressure,
+The fluid fills the window edge to edge, the scene taking the window's shape, and
+bounces off its invisible edges. Gravity points any way, at any strength (in 3D, with a
+heading too).
+
+Tools: push, paint and erase walls, a faucet. Fields (pressure,
 speed, vorticity, temperature...) can be overlaid with a legend. A governor lowers the
 resolution in full screen if the simulation falls behind real time.
 
@@ -125,6 +129,8 @@ F1 shows them all in the app. The main ones:
 | M | play / pause the music |
 | R, P, N | reset, next scene, next solver |
 | 1 to 4 | push, wall, erase, faucet |
+| ← → | turn gravity |
+| ↑ ↓ | stronger / weaker gravity |
 | `` ` `` | hide / show the side panel |
 
 ## The code

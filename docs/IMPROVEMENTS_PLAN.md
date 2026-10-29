@@ -381,3 +381,41 @@ independent of the rest and could be done in either order.
     send Shift or reliable clicks), and the motion frame by frame (screenshots can't
     catch a 0.2 s slide reliably).
 
+- **Phase B (done):** the free canvas and gravity in any direction (§3.5, §3.6).
+  - **Scenes of any shape** (`sim/src/presets.rs`):
+    - A scene is built for a domain: `domain_for(aspect)` gives one whose short side is
+      1 m, shaped like the window (aspect held to 0.5 to 3.6). Positions are given
+      relative to the domain, so every scene makes sense from a tall window to an
+      ultrawide one (a test builds them all at five shapes).
+    - The world keeps its domain; loading a scene builds it at that shape.
+  - **No tank on screen** (`app/src/view.rs`, `View::cover`): the inside of the
+    scene's walls covers the canvas edge to edge, so the walls fall just outside the
+    window and the fluid reaches the edges, bouncing off them unseen. No letterbox, and
+    the tool strip floats over the fluid instead of taking a column.
+  - **Refitting:** the scene takes the window's shape when the app starts, and again
+    when the window's shape stays more than 8 % off for half a second (a resize, full
+    screen). The side panel crops the sides rather than reshaping the scene, so opening
+    it doesn't restart anything. Gravity as set survives the rebuild.
+  - The faint frame at the canvas edge (§3.5) was left out: with the edges invisible,
+    the window's own edge already shows where the fluid ends.
+  - **Gravity any way** (`ui/mod.rs`, `ui/compass.rs`):
+    - The dial goes all the way round (±180°, with a tick at straight down), and its
+      radius is the strength from 0. ← → turn it 5° at a time with no stop, ↑ ↓ change
+      the strength by 0.5 m/s²; the Fluid tab's World group has the angle, the strength
+      and a Down button.
+    - Equations: `gravity` is no longer held to ±90°, and `gravity_strength` (a
+      multiple, 1 as set, up to 5) scales it.
+  - **3D:** gravity is the same tilt plus a heading (a slider in the World group), so
+    smoke can rise sideways. A 3D scene's own gravity shows on the dial when it loads.
+    The music's reactions see gravity from the camera and give back the part along the
+    view untouched, so sideways gravity survives them (a test).
+  - Tests: domains follow the window, every scene fits any shape, cover fills the area,
+    gravity points any way and round-trips through the panel, sideways gravity through
+    the 3D reactions.
+  - Checked in the app (debug build, scratch settings):
+    - The scene fitted to 1.78 × 1 m at start; the fluid edge to edge with the panel
+      open and closed, and in full screen after the refit, with no tank anywhere.
+    - Gravity turned with the arrow keys to straight up (the water fell to the top) and
+      to 90° (it piled on the right); 3D smoke with gravity to the right drifted left.
+    - A first try looked broken: my script posted the arrows without the extended-key
+      flag, so they arrived as the numpad's 4 and 6. Posted as real arrows, they work.

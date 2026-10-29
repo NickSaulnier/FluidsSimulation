@@ -1,7 +1,8 @@
-//! Gravity compass: drag the needle to set gravity's direction and strength in one
-//! gesture. The needle points along gravity (down = straight down); its length is the
-//! strength, up to `MAX_GRAVITY` at the rim. Gravity can tilt up to 90° either way, so
-//! the usable half of the dial is the lower one. Double-click resets to Earth gravity.
+//! Gravity dial: drag the needle to set gravity's direction and strength in one gesture.
+//! The needle points along gravity (down = straight down), any way round; its length is
+//! the strength, from none at the centre to `MAX_GRAVITY` at the rim. Double-click
+//! resets to Earth gravity, straight down. (In 3D the angle is the lean from straight
+//! down, toward the heading set beside it.)
 
 use super::theme;
 use egui::{Color32, Sense, Stroke, Vec2, vec2};
@@ -13,7 +14,7 @@ const SIZE: f32 = 64.0;
 /// Gravity (tilt in degrees, positive toward +x; magnitude) from a pointer offset from
 /// the dial's centre, in screen coordinates (y down), for a dial of `radius`.
 pub fn gravity_from_offset(offset: Vec2, radius: f32) -> (f32, f32) {
-    let tilt = offset.x.atan2(offset.y).to_degrees().clamp(-90.0, 90.0);
+    let tilt = offset.x.atan2(offset.y).to_degrees();
     let magnitude = (offset.length() / radius).min(1.0) * MAX_GRAVITY;
     (tilt, magnitude)
 }
@@ -41,12 +42,9 @@ pub fn compass(ui: &mut egui::Ui, tilt_deg: &mut f32, magnitude: &mut f32) -> eg
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
     painter.circle_filled(centre, radius, visuals.extreme_bg_color);
-    // The reachable lower half, and a ring at Earth gravity for reference.
-    let half: Vec<_> = (0..=32)
-        .map(|k| centre + offset_from_gravity(-90.0 + 180.0 * k as f32 / 32.0, MAX_GRAVITY, radius))
-        .chain(std::iter::once(centre))
-        .collect();
-    painter.add(egui::Shape::convex_polygon(half, theme::GROUP_FILL.gamma_multiply(1.4), Stroke::NONE));
+    // A ring at Earth gravity for reference, and a tick at straight down.
+    painter.circle_filled(centre, radius, theme::GROUP_FILL.gamma_multiply(1.4));
+    painter.line_segment([centre + vec2(0.0, radius - 4.0), centre + vec2(0.0, radius)], Stroke::new(1.5, theme::TEXT_DIM));
     painter.circle_stroke(centre, radius * EARTH / MAX_GRAVITY, Stroke::new(1.0, theme::BORDER));
     painter.circle_stroke(centre, radius, Stroke::new(1.0, theme::TEXT_DIM.gamma_multiply(0.6)));
 
@@ -62,7 +60,7 @@ pub fn compass(ui: &mut egui::Ui, tilt_deg: &mut f32, magnitude: &mut f32) -> eg
     painter.circle_filled(tip, 3.5, colour);
     painter.circle_filled(centre, 2.0, Color32::from_gray(160));
 
-    response.on_hover_text("Drag to set gravity's direction and strength. The ring marks Earth gravity; double-click to reset.")
+    response.on_hover_text("Drag to point gravity any way, and set its strength (the centre is none). The ring marks Earth gravity; double-click to reset.")
 }
 
 #[cfg(test)]
@@ -77,16 +75,16 @@ mod tests {
     }
 
     #[test]
-    fn right_of_centre_tilts_toward_plus_x_and_up_is_clamped() {
+    fn right_of_centre_tilts_toward_plus_x_and_up_is_up() {
         assert!((gravity_from_offset(vec2(10.0, 10.0), 30.0).0 - 45.0).abs() < 1e-3);
-        assert_eq!(gravity_from_offset(vec2(5.0, -20.0), 30.0).0, 90.0);
-        assert_eq!(gravity_from_offset(vec2(-5.0, -20.0), 30.0).0, -90.0);
+        assert!((gravity_from_offset(vec2(0.0, -20.0), 30.0).0.abs() - 180.0).abs() < 1e-3, "straight up");
+        assert!((gravity_from_offset(vec2(20.0, -20.0), 30.0).0 - 135.0).abs() < 1e-3);
         assert_eq!(gravity_from_offset(vec2(0.0, 500.0), 30.0).1, MAX_GRAVITY);
     }
 
     #[test]
     fn offset_and_gravity_are_inverses() {
-        for (tilt, mag) in [(0.0, 9.81), (30.0, 5.0), (-75.0, 18.0)] {
+        for (tilt, mag) in [(0.0, 9.81), (30.0, 5.0), (-75.0, 18.0), (150.0, 7.0), (-120.0, 3.0)] {
             let (t, m) = gravity_from_offset(offset_from_gravity(tilt, mag, 30.0), 30.0);
             assert!((t - tilt).abs() < 1e-3 && (m - mag).abs() < 1e-3, "{tilt},{mag} -> {t},{m}");
         }

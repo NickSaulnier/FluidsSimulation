@@ -28,7 +28,7 @@ pub fn default_threads() -> usize {
 
 pub use glam::Vec2;
 pub use params::{FloatSpec, IntSpec, ParamVisitor, ToggleSpec};
-pub use presets::{PRESETS, Preset};
+pub use presets::{DEFAULT_DOMAIN, PRESETS, Preset, domain_for};
 pub use registry::{SOLVERS, SolverEntry};
 pub use scene::{Emitter, ForceBrush, Rect, Scene, SolidMask, StepInput};
 pub use solver::{FieldInfo, FieldKind, FieldLayout, Init, Metric, ParticleView, Solver, Stats};

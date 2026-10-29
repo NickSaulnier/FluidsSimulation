@@ -217,8 +217,9 @@ Per frame only:
 - `wave_scale`, `wave_size`, `wave_y`, `wave_thickness`, `wave_brightness`, `wave_push`;
 - `shape1_radius`, `shape1_x`, `shape1_y`, `shape1_spin`, `shape1_fill` (and `shape2_`);
 - `art_size`, `art_opacity`, `art_x`, `art_y`, `art_spin` (the cover);
-- `gravity` (a tilt, degrees anticlockwise), `intensity` (the reactions' strength, a
-  multiple: 1 as set);
+- `gravity` (degrees anticlockwise from straight down, any angle), `gravity_strength`
+  (a multiple: 1 as set, up to 5), `intensity` (the reactions' strength, a multiple: 1
+  as set);
 - the composite, by its settings' names: `segments`, `symmetry_spin`, `hue`,
   `hue_speed`, `saturation`, `contrast`, `exposure`, `palette_map`, `invert`,
   `aberration`, `vignette`, `grain` (`hue = 40 * sin(time * 0.1)`, `vignette = 0.3 + 0.4

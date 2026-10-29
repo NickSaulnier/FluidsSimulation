@@ -1,6 +1,7 @@
 //! `World` = scene + active solver + stepper. The one entry point the app and bench use.
 
-use crate::presets::PRESETS;
+use crate::presets::{DEFAULT_DOMAIN, PRESETS};
+use glam::Vec2;
 use crate::registry::{SOLVERS, SolverEntry};
 use crate::scene::{Scene, StepInput};
 use crate::solver::{Init, Solver};
@@ -22,6 +23,9 @@ pub struct World {
     /// Bumped by every `load_preset`, so the app can pick up the new scene's settings
     /// (e.g. its gravity) without polling the preset index.
     pub scene_generation: u64,
+    /// The domain scenes are built in (see `presets::domain_for`): the app sizes it to
+    /// the window's shape.
+    pub domain: Vec2,
 }
 
 impl World {
@@ -30,7 +34,7 @@ impl World {
     }
 
     pub fn with_solvers(solvers: &'static [SolverEntry], solver_index: usize, preset_index: usize) -> Self {
-        let scene = (PRESETS[preset_index].build)();
+        let scene = (PRESETS[preset_index].build)(DEFAULT_DOMAIN);
         let solver = (solvers[solver_index].make)();
         let mut world = Self {
             scene,
@@ -42,6 +46,7 @@ impl World {
             time: 0.0,
             initial_particles: 0,
             scene_generation: 0,
+            domain: DEFAULT_DOMAIN,
         };
         world.reset();
         world
@@ -57,7 +62,7 @@ impl World {
     /// Rebuild the scene from its preset, then reset the solver.
     pub fn load_preset(&mut self, index: usize) {
         self.preset_index = index;
-        self.scene = (PRESETS[index].build)();
+        self.scene = (PRESETS[index].build)(self.domain);
         self.scene_generation += 1;
         self.reset();
     }

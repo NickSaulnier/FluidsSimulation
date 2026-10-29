@@ -9,7 +9,7 @@ pub mod anim;
 pub mod browser;
 mod cheat_sheet;
 mod editor;
-mod compass;
+pub mod compass;
 mod health;
 mod legend;
 mod panel;
@@ -161,6 +161,9 @@ pub struct UiState {
     /// Gravity tilt: 0 = straight down, positive leans toward +x.
     pub gravity_deg: f32,
     pub gravity_mag: f32,
+    /// In 3D, the way gravity leans (degrees round the vertical from +x; see
+    /// `gravity_3d`).
+    pub gravity_heading: f32,
     pub keep_particles: bool,
     /// Key of the solver field shown as an overlay (by key, so it survives switching
     /// to a solver that lists its fields in a different order, or not at all).
@@ -251,6 +254,7 @@ impl Default for UiState {
             push_strength: 25.0,
             gravity_deg: 0.0,
             gravity_mag: 9.81,
+            gravity_heading: 0.0,
             keep_particles: true,
             overlay: None,
             overlay_opacity: 0.85,
@@ -350,7 +354,33 @@ impl UiState {
     /// The inverse of `gravity`: point the sliders at a scene's own gravity.
     pub fn set_gravity(&mut self, g: Vec2) {
         self.gravity_mag = g.length();
-        self.gravity_deg = if g == Vec2::ZERO { 0.0 } else { g.x.atan2(-g.y).to_degrees().clamp(-90.0, 90.0) };
+        self.gravity_deg = if g == Vec2::ZERO { 0.0 } else { g.x.atan2(-g.y).to_degrees() };
+    }
+
+    /// Turn gravity `degrees` (anticlockwise negative, as the arrow keys do), all the way
+    /// round: the angle stays within ±180°.
+    pub fn turn_gravity(&mut self, degrees: f32) {
+        self.gravity_deg = (self.gravity_deg + degrees + 180.0).rem_euclid(360.0) - 180.0;
+    }
+
+    /// Gravity in 3D: leaning `gravity_deg` from straight down, toward `gravity_heading`
+    /// round the vertical (0 toward +x, 90 toward +z), `gravity_mag` strong.
+    pub fn gravity_3d(&self) -> glam::Vec3 {
+        let (tilt, heading) = (self.gravity_deg.to_radians(), self.gravity_heading.to_radians());
+        glam::Vec3::new(tilt.sin() * heading.cos(), -tilt.cos(), tilt.sin() * heading.sin()) * self.gravity_mag
+    }
+
+    /// The inverse of `gravity_3d`: point the dial at a 3D scene's own gravity.
+    pub fn set_gravity_3d(&mut self, g: glam::Vec3) {
+        self.gravity_mag = g.length();
+        if g.length() < 1e-6 {
+            return;
+        }
+        let across = glam::Vec2::new(g.x, g.z).length();
+        self.gravity_deg = across.atan2(-g.y).to_degrees();
+        if across > 1e-6 {
+            self.gravity_heading = g.z.atan2(g.x).to_degrees();
+        }
     }
 }
 
@@ -386,9 +416,8 @@ pub struct Frame<'a> {
     pub render_times: &'a [(&'static str, std::time::Duration)],
 }
 
-/// Lay out the whole interface and return the rect (points) to fit the scene into: the
-/// canvas the bars and panel leave over, minus the tool strip's column, so the strip
-/// never hides any of the fluid.
+/// Lay out the whole interface and return the rect (points) the scene covers: the canvas
+/// the bars and panel leave over (the tool strip floats over it).
 pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> egui::Rect {
     let ctx = ui.ctx().clone();
     anim::set_reduced(&ctx, f.state.reduce_motion || system_reduces_motion());
@@ -482,7 +511,7 @@ fn lay_out(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> egui
             egui::Stroke::new(1.5, colour),
         );
     }
-    canvas.with_min_x((canvas.min.x + tool_strip::RESERVED_WIDTH).min(canvas.max.x))
+    canvas
 }
 
 /// The windows over the canvas: the title card, the browser, the editor and the cheat
@@ -595,10 +624,25 @@ mod tests {
         assert_eq!(s.brush_radius, *BRUSH_RADIUS.start());
     }
 
+    /// Gravity points any way: up, sideways, round past 180°; and in 3D, along a heading.
+    #[test]
+    fn gravity_points_any_way() {
+        let mut s = UiState::default();
+        s.set_gravity(Vec2::new(0.0, 9.81));
+        assert!((s.gravity_deg.abs() - 180.0).abs() < 1e-4 && (s.gravity() - Vec2::new(0.0, 9.81)).length() < 1e-4, "up");
+        s.gravity_deg = 170.0;
+        s.turn_gravity(20.0);
+        assert!((s.gravity_deg + 170.0).abs() < 1e-4, "turning past 180 wraps: {}", s.gravity_deg);
+        for g in [glam::Vec3::new(0.0, -9.81, 0.0), glam::Vec3::new(3.0, -4.0, 2.0), glam::Vec3::new(-2.0, 5.0, -1.0)] {
+            s.set_gravity_3d(g);
+            assert!((s.gravity_3d() - g).length() < 1e-4, "{g} -> {}", s.gravity_3d());
+        }
+    }
+
     #[test]
     fn gravity_round_trips_through_the_sliders() {
         let mut s = UiState::default();
-        for g in [Vec2::new(0.0, -9.81), Vec2::new(3.0, -4.0), Vec2::ZERO] {
+        for g in [Vec2::new(0.0, -9.81), Vec2::new(3.0, -4.0), Vec2::new(5.0, 2.0), Vec2::new(-1.0, 7.0), Vec2::ZERO] {
             s.set_gravity(g);
             assert!((s.gravity() - g).length() < 1e-4, "{g} -> {}", s.gravity());
         }

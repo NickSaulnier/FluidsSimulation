@@ -16,8 +16,6 @@ const WIDTH: f32 = 72.0;
 /// A tool's button, points.
 const TOOL: egui::Vec2 = vec2(44.0, 40.0);
 const MARGIN: i8 = 6;
-/// Canvas width the strip occupies, which the scene is fitted to leave free.
-pub const RESERVED_WIDTH: f32 = WIDTH + 2.0 * MARGIN as f32 + 2.0 * INSET;
 
 pub const TOOLS: [(Tool, &str, &str); 4] = [
     (Tool::Push, icon::HAND, "Push: drag to push the fluid (right drag always pushes)"),

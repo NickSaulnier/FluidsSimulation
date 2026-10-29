@@ -58,10 +58,15 @@ static SOLVERS: LazyLock<Vec<SolverEntry>> =
 /// makes the frame slower still. Also keeps a stall (window drag, breakpoint) harmless.
 const MAX_FRAME_DT: f32 = 1.0 / 60.0;
 const SINGLE_STEP_DT: f32 = 1.0 / 60.0;
-const VIEW_MARGIN_PX: f32 = 16.0;
+/// A window shape this far from the scene's (as a ratio) rebuilds the scene, once it has
+/// held for `REFIT_AFTER`; nearer, the canvas just crops a little more.
+const REFIT_TOLERANCE: f32 = 0.08;
+const REFIT_AFTER: Duration = Duration::from_millis(500);
 /// In the full-screen visualizer a 3D look is framed this much closer.
 const PRESENTING_ZOOM: f32 = 0.8;
 const TILT_STEP_DEG: f32 = 5.0;
+/// How much the up and down keys change gravity's strength, m/s².
+const STRENGTH_STEP: f32 = 0.5;
 /// A look's thumbnail is taken this long after it starts.
 const THUMBNAIL_AFTER_S: f32 = 8.0;
 
@@ -173,6 +178,10 @@ struct State {
     monitors_listed: Option<Instant>,
     /// Whether Shift is held (for Shift+ shortcuts).
     shift: bool,
+    /// A new window shape waiting to rebuild the scene (the domain, since when), and
+    /// whether the scene has been fitted to the window yet.
+    refit: Option<(glam::Vec2, Instant)>,
+    fitted: bool,
     /// A window just moved to another display: centre it again, at the size it settled
     /// at (a display with other scaling resizes it), after this many frames.
     recentre: Option<(winit::monitor::MonitorHandle, u32)>,
@@ -181,8 +190,10 @@ struct State {
     /// The (solver, scene) the governor is judging (3D solvers count down from the
     /// top, so they never match a 2D one).
     governed: (usize, u64),
-    /// The `World::scene_generation` whose gravity the UI last took on.
+    /// The `World::scene_generation` whose gravity the UI last took on, and the 3D scene's
+    /// (none: a new 3D world, whose gravity is still to take on).
     gravity_synced: u64,
+    gravity_synced_3d: Option<usize>,
     last_frame: Instant,
     perf: PerfCounter,
 }
@@ -380,11 +391,14 @@ impl State {
             presented: (false, ui::Screen::default()),
             monitors_listed: None,
             shift: false,
+            refit: None,
+            fitted: false,
             recentre: None,
             cursor_visible: true,
             governor: governor::Governor::default(),
             governed: (usize::MAX, u64::MAX),
             gravity_synced: u64::MAX, // take the first scene's gravity too
+            gravity_synced_3d: None,
             last_frame: Instant::now(),
             perf: PerfCounter::new(),
         })
@@ -872,8 +886,10 @@ impl State {
             Action::SelectTool(tool) => ui.tool = tool,
             Action::BrushSmaller => ui.scale_brush(1.0 / ui::BRUSH_STEP),
             Action::BrushBigger => ui.scale_brush(ui::BRUSH_STEP),
-            Action::TiltLeft => ui.gravity_deg = (ui.gravity_deg - TILT_STEP_DEG).max(-90.0),
-            Action::TiltRight => ui.gravity_deg = (ui.gravity_deg + TILT_STEP_DEG).min(90.0),
+            Action::TiltLeft => ui.turn_gravity(-TILT_STEP_DEG),
+            Action::TiltRight => ui.turn_gravity(TILT_STEP_DEG),
+            Action::Stronger => ui.gravity_mag = (ui.gravity_mag + STRENGTH_STEP).min(ui::compass::MAX_GRAVITY),
+            Action::Weaker => ui.gravity_mag = (ui.gravity_mag - STRENGTH_STEP).max(0.0),
             Action::NextOverlay => ui.overlay = ui::next_overlay(ui.overlay, self.world.solver.fields()),
             Action::ToggleParticles => ui.show_particles = !ui.show_particles,
             Action::ToggleLiquid => ui.liquid = !ui.liquid,
@@ -917,17 +933,64 @@ impl State {
         }
     }
 
-    /// The domain is fitted into the canvas: what the UI's bars and panel leave over
-    /// (last laid out), or the whole window before the first layout.
-    fn view(&self) -> View {
+    /// The canvas (what the UI's bars and panel leave over, last laid out; the whole
+    /// window before the first layout), in physical pixels: its corner and size.
+    fn canvas_px(&self) -> (glam::Vec2, glam::Vec2) {
         let size = self.window.inner_size();
         let ppp = self.egui_ctx.pixels_per_point();
-        let (min, area) = match self.canvas {
+        match self.canvas {
             Some(r) => (glam::Vec2::new(r.min.x, r.min.y) * ppp, glam::Vec2::new(r.width(), r.height()) * ppp),
             None => (glam::Vec2::ZERO, glam::Vec2::new(size.width as f32, size.height as f32)),
+        }
+    }
+
+    /// The inside of the scene's walls covers the canvas edge to edge: the walls fall
+    /// just outside it, unseen, and the fluid reaches the edges.
+    fn view(&self) -> View {
+        let (min, area) = self.canvas_px();
+        let inside = self.world.scene.solid.interior();
+        View::cover(inside.min, inside.size(), min, area, self.window.inner_size())
+    }
+
+    /// Fit the scene to the window's shape: the domain takes the shape of the canvas with
+    /// the side panel closed (the panel crops the sides rather than reshaping it). A new
+    /// shape that holds for `REFIT_AFTER` rebuilds the scene; the first one does at once.
+    fn refit_domain(&mut self, now: Instant) {
+        if self.world3d.is_some() || self.canvas.is_none() {
+            return;
+        }
+        let (_, area) = self.canvas_px();
+        let width = self.window.inner_size().width as f32;
+        if area.y < 50.0 || width < 50.0 {
+            return;
+        }
+        let target = sim::domain_for(width / area.y);
+        let current = self.world.domain;
+        let off = (target.x / target.y) / (current.x / current.y);
+        if (off - 1.0).abs() < REFIT_TOLERANCE {
+            self.refit = None;
+            self.fitted = true;
+            return;
+        }
+        let due = match self.refit {
+            Some((t, since)) if (t - target).length() < 0.02 => now.duration_since(since) >= REFIT_AFTER,
+            _ => {
+                self.refit = Some((target, now));
+                false
+            }
         };
-        let margin = if self.ui.presenting { 0.0 } else { VIEW_MARGIN_PX };
-        View::fit_in(self.world.scene.size, min, area, margin, size)
+        if due || !self.fitted {
+            self.fitted = true;
+            self.refit = None;
+            self.world.domain = target;
+            self.world.load_preset(self.world.preset_index);
+            // Keep the gravity as set, and a look without fluid without it.
+            self.gravity_synced = self.world.scene_generation;
+            if let Some(at) = &mut self.no_fluid {
+                *at = (self.world.solver_index, self.world.scene_generation);
+            }
+            log::info!("scene fitted to the window: {:.2} x {:.2} m", target.x, target.y);
+        }
     }
 
     fn frame(&mut self) {
@@ -980,6 +1043,7 @@ impl State {
         }
 
         self.sync_presentation(real_dt);
+        self.refit_domain(now);
         self.reload_looks(now);
         // The director: change looks with the music (by itself only in full screen).
         let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
@@ -1049,7 +1113,7 @@ impl State {
         }
         let mut step_input = self.input.apply(view, &self.ui, &mut self.world, real_dt);
         // Music reactions: forces, gravity, parameters, and the colours drawn this frame.
-        let gravity = tilt(self.ui.gravity(), self.look_frame.gravity_tilt);
+        let gravity = tilt(self.ui.gravity(), self.look_frame.gravity_tilt) * self.look_frame.gravity_scale;
         let intensity = self.look_frame.intensity;
         let mut reaction = self.music.react(&self.ui.reactions, self.world.scene.size, gravity, self.ui.presenting, real_dt, intensity);
         if !stability::room_for_fluid(&self.world) {
@@ -1073,7 +1137,13 @@ impl State {
     fn step_3d(&mut self, drag: Option<glam::Vec2>, wheel: f32, real_dt: f32) {
         let sim_dt = self.sim_dt(real_dt);
         let viewport = self.viewport_3d();
-        let Some((size, base_gravity)) = self.world3d.as_ref().map(|w| (w.scene.size, w.base_gravity)) else { return };
+        let Some((size, scene_gravity, preset)) = self.world3d.as_ref().map(|w| (w.scene.size, w.base_gravity, w.preset_index)) else { return };
+        // A new 3D scene brings its own gravity; after that the dial owns it.
+        if self.gravity_synced_3d != Some(preset) {
+            self.gravity_synced_3d = Some(preset);
+            self.ui.set_gravity_3d(scene_gravity);
+        }
+        let base_gravity = self.ui.gravity_3d() * self.look_frame.gravity_scale;
         if let Some(d) = drag {
             self.camera.orbit(d.x, d.y);
         }
@@ -1089,7 +1159,7 @@ impl State {
         let mut reaction = self.music.react(
             &self.ui.reactions,
             react3d::front_view(size),
-            tilt(react3d::front_gravity(base_gravity), self.look_frame.gravity_tilt),
+            tilt(react3d::front_gravity(base_gravity, self.camera.right()), self.look_frame.gravity_tilt),
             self.ui.presenting,
             real_dt,
             self.look_frame.intensity,
@@ -1127,6 +1197,7 @@ impl State {
         match choice {
             ui::SolverChoice::TwoD(k) => {
                 self.world3d = None;
+                self.gravity_synced_3d = None;
                 if k != self.world.solver_index {
                     self.world.switch_solver(k, self.ui.keep_particles);
                 }

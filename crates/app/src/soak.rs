@@ -112,16 +112,16 @@ mod tests {
             }
             if let (true, Some(w)) = (in_3d, &mut world3d) {
                 let size = w.scene.size;
+                let right = Vec3::new((ORBIT * t).cos(), 0.0, -(ORBIT * t).sin());
                 let out = engine.evaluate(
                     &ui.reactions,
                     Some(analyzer.features()),
                     &onsets,
                     react3d::front_view(size),
-                    react3d::front_gravity(w.base_gravity),
+                    react3d::front_gravity(w.base_gravity, right),
                     1.0,
                     FRAME,
                 );
-                let right = Vec3::new((ORBIT * t).cos(), 0.0, -(ORBIT * t).sin());
                 let (input, gravity) = react3d::lift(&out, size, right, w.base_gravity);
                 w.scene.gravity = gravity;
                 w.advance(FRAME, &input);

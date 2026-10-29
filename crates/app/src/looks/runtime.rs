@@ -38,6 +38,8 @@ pub struct Frame {
     pub shared: [f32; SHARED],
     /// Gravity's tilt, degrees (anticlockwise), and the reactions' intensity (a multiple).
     pub gravity_tilt: f32,
+    /// Gravity's strength, a multiple (1 as set).
+    pub gravity_scale: f32,
     pub intensity: f32,
     /// Solver parameters to set: key, value.
     pub params: Vec<(String, f32)>,
@@ -46,7 +48,7 @@ pub struct Frame {
 impl Frame {
     /// A frame of the settings as they are, with no equations.
     pub fn plain(feedback: &FeedbackSettings, waves: &WaveSettings, composite: &CompositeSettings) -> Self {
-        Self { feedback: *feedback, waves: *waves, composite: *composite, shared: feedback.shared(0.0), gravity_tilt: 0.0, intensity: 1.0, params: Vec::new() }
+        Self { feedback: *feedback, waves: *waves, composite: *composite, shared: feedback.shared(0.0), gravity_tilt: 0.0, gravity_scale: 1.0, intensity: 1.0, params: Vec::new() }
     }
 }
 
@@ -247,7 +249,7 @@ impl Runtime {
         c.grain = get("grain").clamp(0.0, 1.0);
         // Every parameter a program names, it sets each frame (statements always run).
         let params = self.params.iter().enumerate().filter_map(|(i, key)| Some(key.clone()).zip(Some(self.block[self.layout.params + i]).filter(|v| v.is_finite()))).collect();
-        Frame { feedback: fb, waves: w, composite: c, shared, gravity_tilt: get("gravity").clamp(-360.0, 360.0), intensity: get("intensity").clamp(0.0, 10.0), params }
+        Frame { feedback: fb, waves: w, composite: c, shared, gravity_tilt: get("gravity").clamp(-360.0, 360.0), gravity_scale: get("gravity_strength").clamp(0.0, 5.0), intensity: get("intensity").clamp(0.0, 10.0), params }
     }
 }
 
@@ -274,6 +276,7 @@ fn outputs(feedback: &FeedbackSettings, waves: &WaveSettings, composite: &Compos
             "art_y" => waves.art.centre[1],
             "art_spin" => waves.art.spin,
             "gravity" => 0.0,
+            "gravity_strength" => 1.0,
             "intensity" => 1.0,
             "segments" => composite.segments as f32,
             "symmetry_spin" => composite.symmetry_spin,

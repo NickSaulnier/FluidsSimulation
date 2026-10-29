@@ -23,8 +23,8 @@ pub fn front_view(size: Vec3) -> Vec2 {
 }
 
 /// The 2D gravity the engine should rock and scale, for the scene's own `gravity`.
-pub fn front_gravity(gravity: Vec3) -> Vec2 {
-    Vec2::new(0.0, gravity.y)
+pub fn front_gravity(gravity: Vec3, right: Vec3) -> Vec2 {
+    Vec2::new(gravity.dot(right), gravity.y)
 }
 
 /// Lift the engine's output for the front view into the volume of `size`, seen with
@@ -58,8 +58,10 @@ pub fn lift(out: &ReactionOutput, size: Vec3, right: Vec3, base_gravity: Vec3) -
             speed: e.speed,
         });
     }
-    let horizontal = Vec3::new(base_gravity.x, 0.0, base_gravity.z);
-    let gravity = direction(out.gravity) + horizontal;
+    // The part of the scene's gravity along the view (toward or away from the camera),
+    // which the front view doesn't see, carries over as it is.
+    let along_view = base_gravity - base_gravity.dot(right) * right - base_gravity.y * Vec3::Y;
+    let gravity = direction(out.gravity) + along_view;
     (input, gravity)
 }
 
@@ -72,7 +74,19 @@ mod tests {
     const G: Vec3 = Vec3::new(0.0, -9.81, 0.0);
 
     fn output() -> ReactionOutput {
-        ReactionOutput { gravity: front_gravity(G), ..ReactionOutput::default() }
+        ReactionOutput { gravity: front_gravity(G, Vec3::X), ..ReactionOutput::default() }
+    }
+
+    /// Gravity pointing any way survives the trip through the front view: the part
+    /// across the screen through it, the part along the view as it is.
+    #[test]
+    fn sideways_gravity_comes_back_as_it_was() {
+        let right = Vec3::new(0.6, 0.0, -0.8);
+        for g in [Vec3::new(9.81, 0.0, 0.0), Vec3::new(2.0, 5.0, -3.0), Vec3::new(0.0, -4.0, 7.0)] {
+            let out = ReactionOutput { gravity: front_gravity(g, right), ..ReactionOutput::default() };
+            let (_, back) = lift(&out, SIZE, right, g);
+            assert!((back - g).length() < 1e-4, "{g} came back as {back}");
+        }
     }
 
     #[test]
@@ -122,7 +136,7 @@ mod tests {
     fn slosh_tilts_across_the_screen() {
         let right = Vec3::new(0.0, 0.0, 1.0);
         let mut out = output();
-        out.gravity = Vec2::from_angle(20f32.to_radians()).rotate(front_gravity(G));
+        out.gravity = Vec2::from_angle(20f32.to_radians()).rotate(front_gravity(G, Vec3::X));
         let (_, g) = lift(&out, SIZE, right, G);
         assert!((g.length() - 9.81).abs() < 1e-4);
         assert!(g.x.abs() < 1e-6 && g.z.abs() > 3.0, "{g}");
