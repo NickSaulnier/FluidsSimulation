@@ -152,6 +152,9 @@ struct State {
     media: audio::media::Media,
     art: render::art::ArtLayer,
     fractal: render::fractal::FractalLayer,
+    /// The fractal's own movement with the music, and the Morph reaction's last kick.
+    fractal_motion: render::fractal::Motion,
+    fractal_morph: f32,
     cover: Option<(std::sync::Arc<Vec<u8>>, egui::TextureHandle, render::Palette)>,
     announced: Option<(String, String, String)>,
     last_track: Option<String>,
@@ -383,6 +386,8 @@ impl State {
             media: audio::media::Media::start(),
             art,
             fractal,
+            fractal_motion: render::fractal::Motion::default(),
+            fractal_morph: 0.0,
             cover: None,
             announced: None,
             last_track: None,
@@ -1118,7 +1123,16 @@ impl State {
         // The look's equations, from its settings as they stand and the music.
         let sound = looks::runtime::Sound { features: self.music.features(), onsets: self.music.onsets(), beats: self.music.beat_count() };
         let aspect = self.gpu.config.width as f32 / self.gpu.config.height.max(1) as f32;
-        self.look_frame = self.look_runtime.step(&self.ui.feedback, &self.ui.waves, &self.ui.composite, sound, self.frame_dt, aspect);
+        // The fractal's own movement first, so the equations can still override it.
+        let mut waves = self.ui.waves;
+        let music = self.music.features().map_or(render::fractal::Music::QUIET, |f| render::fractal::Music {
+            bass: f.milk.bass_att,
+            level: f.level,
+            sections: f.sections.changes,
+            morph: self.fractal_morph,
+        });
+        waves.fractal = self.fractal_motion.apply(&waves.fractal, &music, self.frame_dt);
+        self.look_frame = self.look_runtime.step(&self.ui.feedback, &waves, &self.ui.composite, sound, self.frame_dt, aspect);
         self.composite_clock.advance(&self.look_frame.composite, self.frame_dt);
         self.waves.update(&self.waveform, &self.look_frame.waves, self.frame_dt);
         self.art.update(&self.look_frame.waves.art, self.frame_dt);
@@ -1163,6 +1177,7 @@ impl State {
             // No fluid: the reactions only colour the picture.
             let reaction = self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), self.ui.presenting, real_dt, self.look_frame.intensity);
             self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
+            self.fractal_morph = reaction.morph;
             self.look_frame.params.clear();
             self.perf.record(now, None, 0.0);
             return;
@@ -1189,6 +1204,7 @@ impl State {
         let values = std::mem::take(&mut self.look_frame.params);
         self.modulate_params(&reaction.params, &values);
         self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
+        self.fractal_morph = reaction.morph;
         let wanted = real_dt * self.ui.speed;
         let sim_dt = self.sim_dt(real_dt);
         let report = sim_dt.map(|dt| self.world.advance(dt, &step_input));
@@ -1235,6 +1251,7 @@ impl State {
         let values = std::mem::take(&mut self.look_frame.params);
         self.modulate_params(&reaction.params, &values);
         self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
+        self.fractal_morph = reaction.morph;
         let Some(world) = &mut self.world3d else { return };
         world.scene.gravity = gravity;
         if let Some(dt) = sim_dt {

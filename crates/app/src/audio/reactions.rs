@@ -112,10 +112,12 @@ pub enum Effect {
     Param,
     /// A drop landing at a random spot (ripples on shallow water).
     Drop,
+    /// Kick the fractal: the Julia point leaps along its path, and the zoom punches in.
+    Morph,
 }
 
 impl Effect {
-    pub const ALL: [Effect; 10] = [
+    pub const ALL: [Effect; 11] = [
         Effect::Splash,
         Effect::Jet,
         Effect::Vortex,
@@ -126,6 +128,7 @@ impl Effect {
         Effect::Hue,
         Effect::Param,
         Effect::Drop,
+        Effect::Morph,
     ];
 
     pub fn label(self) -> &'static str {
@@ -140,6 +143,7 @@ impl Effect {
             Effect::Hue => "Hue",
             Effect::Param => "Parameter",
             Effect::Drop => "Drop",
+            Effect::Morph => "Morph",
         }
     }
 
@@ -155,12 +159,13 @@ impl Effect {
             Effect::Hue => "Shift the hue of the fluid's colours.",
             Effect::Param => "Modulate a solver setting around its value.",
             Effect::Drop => "A drop lands at a random spot: ripples on shallow water (other fluids don't feel it).",
+            Effect::Morph => "Kick the fractal: a Julia set's shape leaps on, and the zoom punches in.",
         }
     }
 
     /// Fired once per hit (or surge), rather than following the trigger continuously.
     fn one_shot(self) -> bool {
-        matches!(self, Effect::Splash | Effect::Jet | Effect::Vortex | Effect::Flash | Effect::Drop)
+        matches!(self, Effect::Splash | Effect::Jet | Effect::Vortex | Effect::Flash | Effect::Drop | Effect::Morph)
     }
 }
 
@@ -205,6 +210,8 @@ pub struct ReactionOutput {
     pub hue_shift: f32,
     /// Palette brightening, 0..1.
     pub flash: f32,
+    /// The fractal's kick, 0..1 (see `render::fractal::Motion`).
+    pub morph: f32,
     /// Solver parameters to set this frame: (key, value as a multiple of its base).
     pub params: Vec<(String, f32)>,
 }
@@ -217,6 +224,7 @@ const VORTEX_S: f32 = 0.3;
 /// Hit pulses (driving continuous effects) and flashes decay with these time constants.
 const HIT_DECAY_S: f32 = 0.2;
 const FLASH_DECAY_S: f32 = 0.15;
+const MORPH_DECAY_S: f32 = 0.35;
 /// Envelope triggers fire one-shot effects above this, and re-arm below the lower value.
 const SURGE_ON: f32 = 0.75;
 const SURGE_OFF: f32 = 0.5;
@@ -251,6 +259,7 @@ pub struct ReactionEngine {
     impulses: Vec<Impulse>,
     hit_env: [f32; 3],
     flash: f32,
+    morph: f32,
     /// Per reaction: armed for the next surge (envelope triggers).
     armed: Vec<bool>,
     lane: usize,
@@ -340,13 +349,15 @@ impl ReactionEngine {
                         out.params.push((key.clone(), (1.0 + gain * (2.0 * value - 1.0)).max(0.0)));
                     }
                 }
-                Effect::Splash | Effect::Jet | Effect::Vortex | Effect::Flash | Effect::Drop => unreachable!("one-shot"),
+                Effect::Splash | Effect::Jet | Effect::Vortex | Effect::Flash | Effect::Drop | Effect::Morph => unreachable!("one-shot"),
             }
         }
         out.gravity = Vec2::from_angle(tilt_deg.to_radians()).rotate(base_gravity) * gravity_scale;
 
         self.flash *= (-dt / FLASH_DECAY_S).exp();
         out.flash = self.flash.min(1.0);
+        self.morph *= (-dt / MORPH_DECAY_S).exp();
+        out.morph = self.morph.min(1.0);
         for imp in &mut self.impulses {
             imp.age += dt;
         }
@@ -408,6 +419,7 @@ impl ReactionEngine {
                 self.impulses.push(Impulse { effect, age: 0.0, strength, pos, spin });
             }
             Effect::Flash => self.flash = self.flash.max(strength),
+            Effect::Morph => self.morph = self.morph.max(strength),
             Effect::Drop => {
                 let pos = Vec2::new((0.08 + 0.84 * self.rng.next_f32()) * domain.x, (0.08 + 0.84 * self.rng.next_f32()) * domain.y);
                 self.impulses.push(Impulse { effect, age: 0.0, strength, pos, spin: 0.0 });
@@ -509,6 +521,17 @@ mod tests {
         assert!(out.flash > 0.75, "flash {}", out.flash);
         let neutral = e.evaluate(&r, Some(&features(0.0, 0.5)), &[], DOMAIN, G, 1.0, 1.0);
         assert!(neutral.hue_shift.abs() < 1e-4 && neutral.flash < 0.01);
+    }
+
+    #[test]
+    fn kicks_morph_the_fractal_and_it_settles() {
+        let mut e = ReactionEngine::default();
+        let r = [Reaction::new(Trigger::Kick, Effect::Morph, 1.0, true)];
+        let kick = Onset { kind: OnsetKind::Kick, time: 0.0, strength: 0.9 };
+        let out = e.evaluate(&r, Some(&features(0.0, 0.5)), &[kick], DOMAIN, G, 1.0, 0.001);
+        assert!(out.morph > 0.85, "morph {}", out.morph);
+        let later = e.evaluate(&r, Some(&features(0.0, 0.5)), &[], DOMAIN, G, 1.0, 2.0);
+        assert!(later.morph < 0.01, "morph {}", later.morph);
     }
 
     #[test]

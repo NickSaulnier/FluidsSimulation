@@ -185,6 +185,8 @@ impl Settings {
                 colour_speed: clamp(w.fractal.colour_speed, -1.0, 1.0),
                 opacity: clamp(w.fractal.opacity, 0.0, 1.0),
                 brightness: clamp(w.fractal.brightness, 0.0, 4.0),
+                wander: clamp(w.fractal.wander, -4.0, 4.0),
+                bass_zoom: clamp(w.fractal.bass_zoom, 0.0, 1.0),
                 ..w.fractal
             },
             ..*w

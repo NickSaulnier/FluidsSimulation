@@ -81,6 +81,13 @@ pub struct FractalSettings {
     pub bands: f32,
     /// The palette's cycle, turns per second.
     pub colour_speed: f32,
+    /// How fast a Julia set's point travels along the Mandelbrot set's edge (about laps
+    /// a minute at full loudness; 0: it stays put). See `Motion`.
+    pub wander: f32,
+    /// How much the zoom follows the bass, 0 to 1.
+    pub bass_zoom: f32,
+    /// Move to another spot at each new section of the song.
+    pub tour: bool,
 }
 
 impl FractalSettings {
@@ -97,6 +104,9 @@ impl FractalSettings {
         bands: 2.0,
         brightness: 1.0,
         colour_speed: 0.05,
+        wander: 0.0,
+        bass_zoom: 0.0,
+        tour: false,
     };
 }
 
@@ -238,6 +248,163 @@ impl FractalLayer {
     }
 }
 
+/// Places worth going on a tour, per kind: centre and zoom (the first shows it whole).
+/// Each shows the set's edge (a test checks).
+const SPOTS: [&[([f32; 2], f32)]; 5] = [
+    // Mandelbrot: the whole, seahorse and elephant valleys, an antenna, a mini set on the
+    // spike, and two deeper spirals.
+    &[([-0.6, 0.0], 1.0), ([-0.7453, 0.1127], 40.0), ([0.2925, 0.0149], 50.0), ([-0.1592, 1.0317], 40.0), ([-1.7549, 0.0], 40.0), ([-0.7435, 0.1314], 200.0), ([-0.235125, 0.827215], 300.0)],
+    // Julia: the point moves instead (along the edge, to a random place).
+    &[([0.0, 0.0], 1.0)],
+    // Burning Ship: the whole, the ship, two of its masts, and the bow.
+    &[([-0.45, -0.5], 0.9), ([-1.762, -0.028], 25.0), ([-1.6254, -0.0047], 60.0), ([-1.7795, -0.0255], 400.0), ([-0.45, -0.9], 6.0)],
+    // Tricorn: the whole, its left point, an upper lobe, and further left.
+    &[([-0.3, 0.0], 0.9), ([-1.1, 0.0], 6.0), ([0.2, 0.55], 6.0), ([-1.32, 0.0], 20.0)],
+    // Newton: the whole, and three of the places where the basins meet.
+    &[([0.0, 0.0], 0.8), ([-0.5, 0.0], 3.0), ([0.25, 0.433], 3.0), ([-0.25, 0.0], 12.0)],
+];
+
+/// A Julia set's point on the edge of the Mandelbrot set's main cardioid at `angle`,
+/// pushed `out` along the edge's outward normal (outside: lacy, broken sets; inside:
+/// solid ones).
+pub fn cardioid_edge(angle: f32, out: f32) -> [f32; 2] {
+    let (s1, c1) = angle.sin_cos();
+    let (s2, c2) = (2.0 * angle).sin_cos();
+    let point = [0.5 * c1 - 0.25 * c2, 0.5 * s1 - 0.25 * s2];
+    // The tangent, and the outward normal a quarter turn clockwise from it (none at the
+    // cusp, where the edge turns back: straight out along the real axis).
+    let tangent = [0.5 * (s2 - s1), 0.5 * (c1 - c2)];
+    let length = tangent[0].hypot(tangent[1]);
+    let normal = if length > 1e-4 { [tangent[1] / length, -tangent[0] / length] } else { [1.0, 0.0] };
+    [point[0] + out * normal[0], point[1] + out * normal[1]]
+}
+
+/// The angle of the cardioid's edge nearest `c`.
+fn nearest_edge(c: [f32; 2]) -> f32 {
+    (0..360)
+        .map(|k| k as f32 * TAU / 360.0)
+        .min_by(|&a, &b| {
+            let d = |t: f32| {
+                let p = cardioid_edge(t, 0.0);
+                (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2)
+            };
+            d(a).total_cmp(&d(b))
+        })
+        .unwrap_or(0.0)
+}
+
+/// What the music is doing, for `Motion`.
+#[derive(Clone, Copy, Debug)]
+pub struct Music {
+    /// MilkDrop's `bass_att`: about 1 on average.
+    pub bass: f32,
+    /// Loudness, 0 to 1.
+    pub level: f32,
+    /// The song's section changes so far.
+    pub sections: u32,
+    /// The Morph reaction's kick, 0 to 1.
+    pub morph: f32,
+}
+
+impl Music {
+    pub const QUIET: Self = Self { bass: 1.0, level: 0.0, sections: 0, morph: 0.0 };
+}
+
+/// Laps a minute, as radians a second.
+const LAP: f32 = TAU / 60.0;
+/// How far the Morph reaction throws the Julia point along the edge, radians a second at
+/// full kick, and how much it zooms in (a multiple).
+const MORPH_LEAP: f32 = 0.5;
+const MORPH_PUNCH: f32 = 0.25;
+/// How far out from the edge the Julia point sits, and how far the bass moves it.
+const EDGE_OUT: f32 = 0.01;
+const EDGE_BASS: f32 = 0.02;
+/// Moving to the next spot on a tour: the glide's time constant, seconds.
+const GLIDE_S: f32 = 0.6;
+
+/// The fractal's own movement with the music, from its settings (`wander`, `bass_zoom`,
+/// `tour`) and the Morph reaction: applied to a look's settings before its equations
+/// run, so they can still override it.
+pub struct Motion {
+    kind: Option<FractalKind>,
+    /// The Julia point's angle along the cardioid's edge, once it moves.
+    angle: Option<f32>,
+    /// On a tour: where it's going (centre, log zoom) and where it is, and which spot.
+    target: Option<([f32; 2], f32)>,
+    at: Option<([f32; 2], f32)>,
+    spot: usize,
+    /// The section changes seen, once the tour starts counting.
+    sections: Option<u32>,
+    rng: utils::rng::SplitMix64,
+}
+
+impl Default for Motion {
+    fn default() -> Self {
+        Self { kind: None, angle: None, target: None, at: None, spot: 0, sections: None, rng: utils::rng::SplitMix64::new(0x00f4_ac7a) }
+    }
+}
+
+impl Motion {
+    /// `settings` moved by the music over `dt` seconds.
+    pub fn apply(&mut self, settings: &FractalSettings, music: &Music, dt: f32) -> FractalSettings {
+        let mut s = *settings;
+        if !s.enabled || self.kind != Some(s.kind) {
+            *self = Self { rng: self.rng.clone(), ..Self::default() };
+            if !s.enabled {
+                return s;
+            }
+            self.kind = Some(s.kind);
+        }
+        let morph = if music.morph.is_finite() { music.morph.clamp(0.0, 1.0) } else { 0.0 };
+        let bass = if music.bass.is_finite() { music.bass.clamp(0.0, 3.0) } else { 1.0 };
+
+        // The tour: a new spot at each new section.
+        if s.tour {
+            let seen = *self.sections.get_or_insert(music.sections);
+            if music.sections > seen {
+                self.sections = Some(music.sections);
+                self.next_spot(&s);
+            }
+            let target = *self.target.get_or_insert((s.centre, view_zoom(s.zoom).ln()));
+            let at = self.at.get_or_insert(target);
+            let k = 1.0 - (-dt.max(0.0) / GLIDE_S).exp();
+            at.0 = [at.0[0] + k * (target.0[0] - at.0[0]), at.0[1] + k * (target.0[1] - at.0[1])];
+            at.1 += k * (target.1 - at.1);
+            s.centre = at.0;
+            s.zoom = at.1.exp();
+        } else {
+            (self.target, self.at, self.sections) = (None, None, None);
+        }
+
+        // A Julia set's point along the edge, faster with the music and kicked by Morph.
+        if s.kind == FractalKind::Julia && (s.wander != 0.0 || morph > 0.0 || self.angle.is_some()) {
+            let level = if music.level.is_finite() { music.level.clamp(0.0, 1.0) } else { 0.0 };
+            let angle = self.angle.get_or_insert_with(|| nearest_edge(settings.julia));
+            *angle = (*angle + (s.wander * LAP * (0.3 + 0.7 * level) + MORPH_LEAP * morph) * dt.max(0.0)).rem_euclid(TAU);
+            s.julia = cardioid_edge(*angle, EDGE_OUT + EDGE_BASS * (bass - 1.0).clamp(-0.5, 1.0));
+        }
+
+        let pulse = (1.0 + s.bass_zoom.clamp(0.0, 1.0) * (bass - 1.0)).clamp(0.5, 2.0);
+        s.zoom = view_zoom(s.zoom * pulse * (1.0 + MORPH_PUNCH * morph));
+        s
+    }
+
+    fn next_spot(&mut self, s: &FractalSettings) {
+        if s.kind == FractalKind::Julia {
+            self.angle = Some(self.rng.next_f32() * TAU);
+            return;
+        }
+        let spots = SPOTS[s.kind.code() as usize];
+        if spots.len() > 1 {
+            // Any spot but this one.
+            let step = 1 + (self.rng.next_u64() % (spots.len() - 1) as u64) as usize;
+            self.spot = (self.spot + step) % spots.len();
+        }
+        let (centre, zoom) = spots[self.spot];
+        self.target = Some((centre, zoom.ln()));
+    }
+}
+
 /// `zoom` as drawn: positive, finite, and no deeper than f32 holds.
 pub fn view_zoom(zoom: f32) -> f32 {
     if zoom.is_finite() { zoom.clamp(1e-3, MAX_ZOOM) } else { 1.0 }
@@ -258,6 +425,137 @@ mod tests {
     #[test]
     fn the_uniforms_match_the_shader() {
         assert_eq!(size_of::<Uniforms>(), 112);
+    }
+
+    /// What fractal.wgsl's `escape` and `newton` find at `p`: (escaped, or the root
+    /// found; iterations taken). Inside (or no root): (None, `limit`).
+    fn iterate(kind: FractalKind, p: [f32; 2], limit: u32) -> (Option<usize>, u32) {
+        let mul = |a: [f32; 2], b: [f32; 2]| [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]];
+        let mut z = p;
+        if kind == FractalKind::Newton {
+            let roots = [[1.0, 0.0], [-0.5, 0.866_025_4], [-0.5, -0.866_025_4]];
+            for i in 0..limit {
+                let z2 = mul(z, z);
+                let (num, den) = (mul(z2, z), [3.0 * z2[0], 3.0 * z2[1]]);
+                let d = (den[0] * den[0] + den[1] * den[1]).max(1e-20);
+                let q = [((num[0] - 1.0) * den[0] + num[1] * den[1]) / d, (num[1] * den[0] - (num[0] - 1.0) * den[1]) / d];
+                z = [z[0] - q[0], z[1] - q[1]];
+                if let Some(k) = roots.iter().position(|r: &[f32; 2]| (z[0] - r[0]).powi(2) + (z[1] - r[1]).powi(2) < 1e-6) {
+                    return (Some(k), i);
+                }
+            }
+            return (None, limit);
+        }
+        for i in 0..limit {
+            match kind {
+                FractalKind::BurningShip => z = [z[0].abs(), z[1].abs()],
+                FractalKind::Tricorn => z[1] = -z[1],
+                _ => {}
+            }
+            z = mul(z, z);
+            z = [z[0] + p[0], z[1] + p[1]];
+            if z[0] * z[0] + z[1] * z[1] > 256.0 {
+                return (Some(0), i);
+            }
+        }
+        (None, limit)
+    }
+
+    /// Every spot on a tour shows the set's edge: some of the set or its basins'
+    /// meetings, and not only the set.
+    #[test]
+    fn the_tour_goes_where_there_is_something_to_see() {
+        for kind in FractalKind::ALL.into_iter().filter(|&k| k != FractalKind::Julia) {
+            for &(centre, zoom) in SPOTS[kind.code() as usize] {
+                let half = 1.5 / zoom;
+                let mut found = Vec::new();
+                for j in 0..36 {
+                    for i in 0..64 {
+                        let (x, y) = ((i as f32 + 0.5) / 32.0 - 1.0, (j as f32 + 0.5) / 18.0 - 1.0);
+                        found.push(iterate(kind, [centre[0] + x * 16.0 / 9.0 * half, centre[1] + y * half], 300));
+                    }
+                }
+                let share = |f: fn(&(Option<usize>, u32)) -> bool| found.iter().filter(|r| f(r)).count() as f32 / found.len() as f32;
+                let at = format!("{kind:?} at {centre:?} ×{zoom}");
+                if kind == FractalKind::Newton {
+                    let roots: std::collections::HashSet<_> = found.iter().filter_map(|r| r.0).collect();
+                    assert!(roots.len() == 3 && share(|r| r.1 >= 8) > 0.1, "{at}");
+                } else {
+                    let inside = share(|r| r.0.is_none());
+                    let slow = share(|r| r.0.is_some() && r.1 >= 15);
+                    assert!(inside < 0.9 && (inside > 0.02 || slow > 0.1), "{at}: inside {inside}, slow {slow}");
+                }
+            }
+        }
+    }
+
+    fn on(kind: FractalKind) -> FractalSettings {
+        FractalSettings { enabled: true, kind, ..FractalSettings::OFF }
+    }
+
+    #[test]
+    fn with_nothing_asked_the_settings_stand() {
+        let mut motion = Motion::default();
+        let loud = Music { bass: 2.0, level: 1.0, sections: 3, morph: 0.0 };
+        for kind in FractalKind::ALL {
+            assert_eq!(motion.apply(&on(kind), &loud, 0.1), on(kind));
+        }
+        assert_eq!(motion.apply(&FractalSettings::OFF, &loud, 0.1), FractalSettings::OFF);
+    }
+
+    #[test]
+    fn the_julia_point_wanders_the_edge_faster_when_loud() {
+        let s = FractalSettings { wander: 1.0, ..on(FractalKind::Julia) };
+        let travelled = |level: f32| {
+            let mut motion = Motion::default();
+            let music = Music { level, ..Music::QUIET };
+            let start = motion.apply(&s, &music, 0.0).julia;
+            let end = motion.apply(&s, &music, 1.0).julia;
+            // Near the edge throughout.
+            let gap = (0..360).map(|k| {
+                let p = cardioid_edge(k as f32 * TAU / 360.0, 0.0);
+                (p[0] - end[0]).hypot(p[1] - end[1])
+            });
+            assert!(gap.fold(f32::INFINITY, f32::min) < 0.02, "{end:?}");
+            (end[0] - start[0]).hypot(end[1] - start[1])
+        };
+        let (quiet, loud) = (travelled(0.0), travelled(1.0));
+        assert!(quiet > 0.0 && loud > 2.0 * quiet, "quiet {quiet}, loud {loud}");
+        // It starts from the look's own point (the edge nearest it).
+        let mut motion = Motion::default();
+        let first = motion.apply(&s, &Music::QUIET, 0.0).julia;
+        assert!((first[0] - s.julia[0]).hypot(first[1] - s.julia[1]) < 0.1, "{first:?}");
+    }
+
+    #[test]
+    fn the_bass_and_morph_zoom_in() {
+        let s = FractalSettings { bass_zoom: 0.5, zoom: 2.0, ..on(FractalKind::Mandelbrot) };
+        let mut motion = Motion::default();
+        let zoom = |motion: &mut Motion, music: Music| motion.apply(&s, &music, 0.01).zoom;
+        assert_eq!(zoom(&mut motion, Music::QUIET), 2.0);
+        assert!(zoom(&mut motion, Music { bass: 1.6, ..Music::QUIET }) > 2.5);
+        assert!(zoom(&mut motion, Music { morph: 1.0, ..Music::QUIET }) > 2.4);
+    }
+
+    #[test]
+    fn a_tour_moves_on_at_each_section() {
+        let s = FractalSettings { tour: true, ..on(FractalKind::Mandelbrot) };
+        let mut motion = Motion::default();
+        let music = |sections| Music { sections, ..Music::QUIET };
+        // Sections already past when it starts don't count.
+        assert_eq!(motion.apply(&s, &music(4), 0.1).centre, s.centre);
+        let mut now = motion.apply(&s, &music(5), 0.1);
+        for _ in 0..100 {
+            now = motion.apply(&s, &music(5), 0.1);
+        }
+        let spot = SPOTS[0].iter().find(|(c, _)| (c[0] - now.centre[0]).hypot(c[1] - now.centre[1]) < 1e-3);
+        let (_, zoom) = spot.unwrap_or_else(|| panic!("not at a spot: {now:?}"));
+        assert!((now.zoom / zoom - 1.0).abs() < 1e-3 && now.centre != s.centre);
+        // A Julia set's tour moves its point.
+        let s = FractalSettings { tour: true, ..on(FractalKind::Julia) };
+        let mut motion = Motion::default();
+        let before = motion.apply(&s, &music(0), 0.1).julia;
+        assert_ne!(motion.apply(&s, &music(1), 0.1).julia, before);
     }
 
     #[test]

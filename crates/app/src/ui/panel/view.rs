@@ -208,6 +208,11 @@ fn waves(ui: &mut egui::Ui, s: &mut WaveSettings) {
         }
         slider(ui, "Turn", "Radians.", &mut fractal.rotation, -3.15..=3.15);
         slider(ui, "Spin", "Radians per second.", &mut fractal.spin, -1.0..=1.0);
+        if fractal.kind == FractalKind::Julia {
+            slider(ui, "Wander", "The Julia point travels along the Mandelbrot set's edge: about laps a minute at full loudness.", &mut fractal.wander, -4.0..=4.0);
+        }
+        slider(ui, "Bass zoom", "How much the zoom follows the bass.", &mut fractal.bass_zoom, 0.0..=1.0);
+        widgets::toggle(ui, &mut fractal.tour, "Tour", "Move to another spot at each new section of the song (a Julia set changes shape).");
         row(ui, "Detail", "Iterations: more shows finer filaments when zoomed in, and costs more.", |ui| {
             ui.add(egui::Slider::new(&mut fractal.iterations, 16..=MAX_ITERATIONS).logarithmic(true));
         });

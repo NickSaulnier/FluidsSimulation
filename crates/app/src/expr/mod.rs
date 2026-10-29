@@ -59,7 +59,8 @@ pub const SHARED: usize = INPUTS.len() + MOTION.len() + QS;
 pub const FRAME_OUTPUTS: &[&str] = &[
     "trail", "warp_speed", "flow", "echo", "echo_zoom", "wave_scale", "wave_size", "wave_y", "wave_thickness", "wave_brightness",
     "wave_push", "shape1_radius", "shape1_x", "shape1_y", "shape1_spin", "shape1_fill", "shape2_radius", "shape2_x", "shape2_y",
-    "shape2_spin", "shape2_fill", "art_size", "art_opacity", "art_x", "art_y", "art_spin", "gravity", "gravity_strength", "intensity", "segments", "symmetry_spin", "hue", "hue_speed", "saturation", "contrast",
+    "shape2_spin", "shape2_fill", "art_size", "art_opacity", "art_x", "art_y", "art_spin", "fractal_x", "fractal_y", "fractal_zoom",
+    "fractal_rot", "fractal_iter", "fractal_opacity", "julia_re", "julia_im", "gravity", "gravity_strength", "intensity", "segments", "symmetry_spin", "hue", "hue_speed", "saturation", "contrast",
     "exposure", "palette_map", "invert", "aberration", "vignette", "grain",
 ];
 /// Only per pixel: the position (0..1, y up), the distance from the centre (1 at the

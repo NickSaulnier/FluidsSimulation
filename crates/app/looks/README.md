@@ -52,6 +52,10 @@ radius = 0.3
 [art]                      # the song's cover
 size = 0.25
 
+[fractal]                  # an escape-time fractal
+kind = "julia"
+wander = 1.0
+
 [composite]
 symmetry = "kaleidoscope"
 segments = 6
@@ -102,7 +106,8 @@ at the top of the file, as are equations that don't compile.
   - Triggers: `kick`, `snare`, `hat`, `beat` (every beat of a steady beat, even a quiet
     one), `sub`, `bass`, `lowmid`, `mid`, `high`, `level`, `brightness`.
   - Effects: `splash`, `jet`, `vortex`, `flash`, `gust`, `slosh`, `breathe`, `hue`,
-    `param`, `drop` (a drop at a random spot: ripples on shallow water).
+    `param`, `drop` (a drop at a random spot: ripples on shallow water), `morph`
+    (kicks the fractal: a Julia set's shape leaps on, and the zoom punches in).
 
 ## `[feedback]`
 
@@ -140,6 +145,26 @@ The song's cover art, drawn into the picture before the feedback, so the warp ca
 cover's longer side, in half the picture's height), `opacity` (0 to 1), `centre`
 (`[x, y]`), `spin` (radians per second), `bass_pulse` (how much the size follows the
 bass), `brightness` (above 1 glows).
+
+## `[fractal]`
+
+An escape-time fractal in the palette's colours, drawn into the picture before the
+feedback, so the warp carries it (present: on). It's opaque near the set's edge and clear
+far outside and inside, so the fluid shows through.
+
+- `kind`: `mandelbrot`, `julia`, `burning_ship`, `tricorn` or `newton` (Newton's method on
+  z³ − 1, coloured by the root each point finds).
+- Where: `centre` (`[x, y]`, the point of the plane in the middle), `zoom` (1: the
+  picture is 3 units high; up to 100000, as far as the shader's precision goes),
+  `rotation` (radians), `spin` (radians per second).
+- `julia`: the Julia set's point `c` (`[re, im]`).
+- `iterations` (up to 1000: finer detail when zoomed in, and more work), `bands` (how
+  many times the palette repeats toward the edge), `colour_speed` (palette cycles per
+  second), `opacity`, `brightness` (above 1 glows).
+- With the music: `wander` (a Julia set's point travels along the Mandelbrot set's edge,
+  about laps a minute at full loudness, starting from the edge nearest `julia`),
+  `bass_zoom` (0 to 1: the zoom follows the bass), `tour = true` (at each new section,
+  move to another place worth seeing; a Julia set changes shape).
 
 ## `[composite]`
 
@@ -217,6 +242,9 @@ Per frame only:
 - `wave_scale`, `wave_size`, `wave_y`, `wave_thickness`, `wave_brightness`, `wave_push`;
 - `shape1_radius`, `shape1_x`, `shape1_y`, `shape1_spin`, `shape1_fill` (and `shape2_`);
 - `art_size`, `art_opacity`, `art_x`, `art_y`, `art_spin` (the cover);
+- `fractal_x`, `fractal_y`, `fractal_zoom`, `fractal_rot`, `fractal_iter`,
+  `fractal_opacity`, `julia_re`, `julia_im` (the fractal, after its own movement with
+  the music: `fractal_zoom = fractal_zoom * (1 + 0.5 * kick)`);
 - `gravity` (degrees anticlockwise from straight down, any angle), `gravity_strength`
   (a multiple: 1 as set, up to 5), `intensity` (the reactions' strength, a multiple: 1
   as set);

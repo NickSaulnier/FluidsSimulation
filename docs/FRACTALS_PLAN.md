@@ -1,6 +1,6 @@
 # Fractals Plan
 
-Status: **phase A done** (2026-10-29); decisions open (§4). Fractal visualizations as an option
+Status: **phases A and B done** (2026-10-29); decisions open (§4). Fractal visualizations as an option
 in looks, grouped into phases. Each phase is committed on its own.
 
 ## 1. Goal
@@ -137,3 +137,45 @@ Suggested order: A to E in order (each builds on the one before); F only if chos
     clamped the wrong way, so always 0.
   - Not yet: frame outputs and the music (phase B), the format in `looks/README.md`,
     the randomizer and built-in looks (phases D and E).
+- **Phase B, music and equations (done):** `fractal::Motion`, the frame outputs and the
+  Morph reaction.
+  - **The fractal's own movement** (`Motion`), applied to the look's settings before
+    its equations run, so they start from it and can still override it:
+    - `wander`: a Julia set's point travels along the edge of the Mandelbrot set's main
+      cardioid, starting from the edge nearest the look's own point, about laps a
+      minute at full loudness (30 % of that in silence). It sits 0.01 outside the edge
+      (lacy, broken sets), and the bass moves it from 0.02 inside to 0.03 outside.
+    - `bass_zoom`: the zoom follows MilkDrop's `bass_att`, from half to double.
+    - `tour`: at each new section of the song (the analyser's section changes; those
+      before it starts don't count), it glides to another spot from a list per kind
+      (time constant 0.6 s, in log zoom); a Julia set's point jumps to a random place
+      on the edge instead.
+    - Off, or with none of these set, the settings pass through unchanged (a test).
+  - **Tour spots:** 7 for the Mandelbrot set, 5 for the Burning Ship, 4 each for the
+    Tricorn and Newton, each starting with the whole set. Chosen by scoring candidates
+    on a 64 × 36 grid; a test keeps them honest: every spot shows the edge (some of the
+    set but not mostly the set, or slow escapes; for Newton all three roots and slow
+    points), using a CPU copy of the shader's iterations.
+  - **The Morph reaction** (`effect = "morph"`), one-shot: a kick that falls over
+    0.35 s, throwing a Julia set's point along the edge (0.5 rad/s at full kick: about
+    a tenth of a radian a hit) and zooming in by up to a quarter. It reaches the
+    fractal a frame late (the reactions run after the look's frame).
+  - **Frame outputs:** `fractal_x`, `fractal_y`, `fractal_zoom`, `fractal_rot`,
+    `fractal_iter`, `fractal_opacity`, `julia_re`, `julia_im`, clamped like the
+    settings.
+  - **Docs:** `[fractal]`, the outputs and `morph` in `looks/README.md` (planned for
+    phase D, but the outputs needed them).
+  - **Editor:** Wander (Julia only), Bass zoom and Tour in the Fractal group.
+  - **Tests:** the spots; settings passing through; the Julia point staying on the edge
+    and travelling further when loud; bass and Morph zooming in; the tour moving at a
+    section and not before; Morph's kick and decay.
+  - **Checked in the app:** the Mandelbrot set over GPU stable fluids ink, pulsing with
+    the bass and turned by an equation (144 fps); a Julia set wandering at 1 with Morph
+    on the kick, its spirals tightening as it goes. At first Morph threw the point at
+    2.5 rad/s (nearly a radian a kick), and with wander 3 under tunnel feedback the
+    shape changed so fast that the feedback smeared it into a blur: the leap is now
+    0.5. Under feedback, keep wander at about 1 or less. The tour wasn't seen in the app
+    (the test song had no section change in the time watched); its tests cover it.
+  - One full test run sat for over 10 minutes and was stopped; three reruns took the
+    usual time (the app's tests about a minute). It looked like the GPU tests waiting
+    on a busy GPU rather than a test of this phase.
