@@ -29,6 +29,9 @@ pub struct Settings {
     pub overlay_opacity: f32,
     pub panel_open: bool,
     pub tab: Tab,
+    pub ui_size: super::UiSize,
+    pub reduce_motion: bool,
+    pub folds: super::widgets::Folds,
     pub palette: Palette,
     pub reactions: Vec<crate::audio::reactions::Reaction>,
     pub audio_latency_ms: f32,
@@ -71,6 +74,9 @@ impl Settings {
             overlay_opacity: s.overlay_opacity,
             panel_open: s.panel_open,
             tab: s.tab,
+            ui_size: s.ui_size,
+            reduce_motion: s.reduce_motion,
+            folds: s.folds.clone(),
             palette: s.palette,
             reactions: s.reactions.clone(),
             audio_latency_ms: s.audio_latency_ms,
@@ -107,6 +113,9 @@ impl Settings {
         s.overlay_opacity = clamp(self.overlay_opacity, 0.1, 1.0);
         s.panel_open = self.panel_open;
         s.tab = self.tab;
+        s.ui_size = self.ui_size;
+        s.reduce_motion = self.reduce_motion;
+        s.folds = self.folds.clone();
         s.palette = self.palette;
         s.reactions = self.reactions.clone();
         s.audio_latency_ms = clamp(self.audio_latency_ms, *crate::audio::LATENCY_MS.start(), *crate::audio::LATENCY_MS.end());

@@ -2,21 +2,19 @@
 //! every few seconds, so they're always visible. (The tools are in the strip on the
 //! canvas.)
 
-use super::{Frame, SolverChoice};
 use super::shortcuts::{Action, tip};
+use super::widgets::icon_button;
+use super::{Frame, SolverChoice, anim, presentation, widgets};
 use egui::RichText;
 use egui_phosphor::regular as icon;
-
-/// An icon-only button.
-fn icon_button(ui: &mut egui::Ui, glyph: &str) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(glyph).size(16.0)).min_size(egui::vec2(28.0, 22.0)))
-}
 use sim::PRESETS;
 
 pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
         transport(ui, f);
+        ui.separator();
+        look(ui, f);
         ui.separator();
         scene_and_solver(ui, f);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -29,13 +27,42 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
             }
         });
     });
-    ui.add_space(2.0);
+    ui.add_space(4.0);
+}
+
+/// The look on screen, large: previous, its name (sliding when it changes) with the
+/// list of looks under it, next.
+fn look(ui: &mut egui::Ui, f: &mut Frame<'_>) {
+    let (d, looks) = (&mut f.state.director, &f.state.looks.looks);
+    if icon_button(ui, icon::CARET_LEFT).on_hover_text(tip("Previous look", Action::PreviousLook)).clicked() {
+        d.request(d.neighbour(-1, looks.len()));
+    }
+    let name = d.current.and_then(|i| looks.get(i)).map_or("Custom", |l| l.name.as_str()).to_string();
+    let mut pick = None;
+    let menu = egui::ComboBox::from_id_salt("top look").selected_text(RichText::new(" ").size(1.0)).width(200.0).height(420.0).show_ui(ui, |ui| {
+        for (i, look) in looks.iter().enumerate() {
+            if ui.selectable_label(d.current == Some(i), &look.name).clicked() {
+                pick = Some(i);
+            }
+        }
+    });
+    // The name over the menu's button, sliding when the look changes.
+    let button = menu.response.rect;
+    let mut name_ui = ui.new_child(egui::UiBuilder::new().max_rect(button.shrink2(egui::vec2(8.0, 0.0))));
+    presentation::sliding_name(&mut name_ui, "top bar", &name, button.shrink2(egui::vec2(16.0, 0.0)).size());
+    menu.response.on_hover_text("The look on screen: pick another");
+    if let Some(i) = pick {
+        d.request(i);
+    }
+    if icon_button(ui, icon::CARET_RIGHT).on_hover_text(tip("Next look", Action::NextLook)).clicked() {
+        d.request(d.neighbour(1, looks.len()));
+    }
 }
 
 fn transport(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     let s = &mut *f.state;
-    let (glyph, what) = if s.paused { (icon::PLAY, "Play") } else { (icon::PAUSE, "Pause") };
-    if icon_button(ui, glyph).on_hover_text(tip(what, Action::TogglePause)).clicked() {
+    let what = if s.paused { "Play" } else { "Pause" };
+    if morph_button(ui, icon::PAUSE, icon::PLAY, s.paused).on_hover_text(tip(what, Action::TogglePause)).clicked() {
         s.paused = !s.paused;
     }
     let step = ui.add_enabled_ui(s.paused, |ui| icon_button(ui, icon::SKIP_FORWARD)).inner;
@@ -114,4 +141,21 @@ pub(super) fn scene_and_solver(ui: &mut egui::Ui, f: &mut Frame<'_>) {
             _ => f.state.solver_request = Some(choice),
         }
     }
+}
+
+/// An icon button showing `a`, or `b` when `show_b`; switching, one shrinks and fades
+/// as the other grows into its place.
+fn morph_button(ui: &mut egui::Ui, a: &str, b: &str, show_b: bool) -> egui::Response {
+    let glow = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(egui::Button::new("").min_size(widgets::ICON_BUTTON));
+    widgets::paint_glow(ui, glow, &response);
+    let t = anim::toward(ui.ctx(), response.id.with("morph"), show_b, anim::QUICK);
+    let colour = ui.style().interact(&response).fg_stroke.color;
+    for (glyph, amount) in [(a, 1.0 - t), (b, t)] {
+        if amount > 0.01 {
+            let size = 18.0 * (0.6 + 0.4 * amount);
+            ui.painter().text(response.rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(size), colour.gamma_multiply(amount));
+        }
+    }
+    response
 }

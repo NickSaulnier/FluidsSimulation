@@ -33,16 +33,18 @@ pub fn opacity(since: Instant, now: Instant) -> f32 {
     }
 }
 
-/// Draw the card for `song` over `canvas`, `alpha` visible.
+/// Draw the card for `song` over `canvas`, `alpha` visible: it slides in from the left
+/// as it fades in, and drifts back out as it fades away.
 pub fn show(ctx: &egui::Context, canvas: egui::Rect, song: &Song, alpha: f32) {
+    let slide = if super::anim::reduced(ctx) { 0.0 } else { (1.0 - super::anim::ease_out(alpha)) * -40.0 };
     egui::Area::new(egui::Id::new("title_card"))
         .order(egui::Order::Foreground)
         .pivot(Align2::LEFT_BOTTOM)
-        .fixed_pos(canvas.left_bottom() + vec2(INSET, -INSET))
+        .fixed_pos(canvas.left_bottom() + vec2(INSET + slide, -INSET))
         .interactable(false)
         .show(ctx, |ui| {
             ui.multiply_opacity(alpha);
-            egui::Frame::new().fill(Color32::from_rgba_unmultiplied(10, 12, 16, 170)).corner_radius(12).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+            super::presentation::panel_frame().inner_margin(egui::Margin::same(14)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if let Some(cover) = &song.cover {
                         let size = cover.size_vec2();
@@ -52,7 +54,7 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, song: &Song, alpha: f32) {
                     }
                     ui.vertical(|ui| {
                         ui.add_space(4.0);
-                        ui.label(RichText::new(&song.title).size(30.0).strong().color(Color32::WHITE));
+                        ui.label(RichText::new(&song.title).font(super::theme::display(28.0)).color(Color32::WHITE));
                         if !song.artist.is_empty() {
                             ui.label(RichText::new(&song.artist).size(20.0).color(Color32::from_gray(225)));
                         }

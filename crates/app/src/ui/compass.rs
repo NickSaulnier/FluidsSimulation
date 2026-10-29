@@ -47,10 +47,16 @@ pub fn compass(ui: &mut egui::Ui, tilt_deg: &mut f32, magnitude: &mut f32) -> eg
         .chain(std::iter::once(centre))
         .collect();
     painter.add(egui::Shape::convex_polygon(half, theme::GROUP_FILL.gamma_multiply(1.4), Stroke::NONE));
-    painter.circle_stroke(centre, radius * EARTH / MAX_GRAVITY, Stroke::new(1.0, Color32::from_gray(80)));
-    painter.circle_stroke(centre, radius, Stroke::new(1.0, Color32::from_gray(90)));
+    painter.circle_stroke(centre, radius * EARTH / MAX_GRAVITY, Stroke::new(1.0, theme::BORDER));
+    painter.circle_stroke(centre, radius, Stroke::new(1.0, theme::TEXT_DIM.gamma_multiply(0.6)));
 
-    let tip = centre + offset_from_gravity(*tilt_deg, *magnitude, radius);
+    let (tilt, strength) = if response.dragged() {
+        (*tilt_deg, *magnitude)
+    } else {
+        let id = response.id;
+        (super::anim::value(ui.ctx(), id.with("tilt"), *tilt_deg, super::anim::SLOW), super::anim::value(ui.ctx(), id.with("strength"), *magnitude, super::anim::SLOW))
+    };
+    let tip = centre + offset_from_gravity(tilt, strength, radius);
     let colour = if response.hovered() || response.dragged() { Color32::WHITE } else { theme::ACCENT };
     painter.line_segment([centre, tip], Stroke::new(2.0, colour));
     painter.circle_filled(tip, 3.5, colour);

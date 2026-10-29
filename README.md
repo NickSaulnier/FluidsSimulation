@@ -98,8 +98,11 @@ resolution in full screen if the simulation falls behind real time.
   PNG in `Pictures\fluid-toy`. F10 records a video into `Videos\fluid-toy` (1080p,
   30 fps, with the track's sound when one is playing); it needs
   [ffmpeg](https://ffmpeg.org) on the PATH.
-- **Screen:** the monitor for full screen, the visualizer in a window kept on top, a
-  frame-rate cap.
+- **Screen:** the display to show on (the app moves there at once; a map of your
+  displays to pick from), the visualizer in a window kept on top, a frame-rate cap.
+- **Interface:** a dark, high-contrast theme in Inter and Orbitron, three sizes, and
+  motion throughout (sliding panels, switches, popping and filling icons), with a
+  "Reduce motion" setting.
 
 ## Keys
 
@@ -109,6 +112,7 @@ F1 shows them all in the app. The main ones:
 |---|---|
 | Space | pause (in full screen: next look) |
 | F11 | full-screen visualizer; Esc leaves it |
+| Shift+F11 | move to the next display |
 | `,` `.` | previous / next look |
 | H | hide particles (in full screen: next look, cut without a fade) |
 | L | liquid surface (in full screen: keep this look) |

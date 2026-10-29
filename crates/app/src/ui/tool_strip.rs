@@ -3,16 +3,18 @@
 //! have one, the tool's own setting (push force, faucet speed).
 
 use super::shortcuts::{Action, tip};
-use super::{BRUSH_RADIUS, Tool, UiState, theme};
-use egui::{Align2, Color32, Frame, Margin, RichText, vec2};
+use super::{BRUSH_RADIUS, Tool, UiState, anim, presentation, theme};
+use egui::{Align2, RichText, vec2};
 use egui_phosphor::regular as icon;
 
 /// Gap between the canvas edge and the strip, points.
 const INSET: f32 = 10.0;
-const SLIDER_HEIGHT: f32 = 110.0;
+const SLIDER_HEIGHT: f32 = 120.0;
 /// Content width. Fixed: centred layouts inside a free-floating area otherwise claim
 /// the whole window's width.
-const WIDTH: f32 = 52.0;
+const WIDTH: f32 = 72.0;
+/// A tool's button, points.
+const TOOL: egui::Vec2 = vec2(44.0, 40.0);
 const MARGIN: i8 = 6;
 /// Canvas width the strip occupies, which the scene is fitted to leave free.
 pub const RESERVED_WIDTH: f32 = WIDTH + 2.0 * MARGIN as f32 + 2.0 * INSET;
@@ -41,20 +43,34 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, s: &mut UiState, in_3d: boo
         .pivot(Align2::LEFT_TOP)
         .fixed_pos(canvas.min + vec2(INSET, INSET))
         .show(ctx, |ui| {
-            Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(28, 30, 35, 225))
-                .corner_radius(8)
-                .inner_margin(Margin::same(MARGIN))
+            presentation::panel_frame()
+                .inner_margin(egui::Margin::same(MARGIN))
                 .show(ui, |ui| {
                     ui.set_width(WIDTH);
                     ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        // The chosen tool's highlight, slid to it under the buttons.
+                        let highlight = ui.painter().add(egui::Shape::Noop);
+                        let mut chosen = None;
                         for &(tool, glyph, help) in tools {
-                            let button = egui::Button::selectable(s.tool == tool, RichText::new(glyph).size(20.0))
-                                .min_size(vec2(36.0, 34.0));
-                            if ui.add(button).on_hover_text(tip(help, Action::SelectTool(tool))).clicked() {
+                            let selected = s.tool == tool;
+                            let colour = if selected { theme::ON_ACCENT } else { theme::TEXT };
+                            let button = egui::Button::new(RichText::new(glyph).size(22.0).color(colour)).frame(!selected).min_size(TOOL);
+                            let response = ui.add(button).on_hover_text(tip(help, Action::SelectTool(tool)));
+                            if response.clicked() {
                                 s.tool = tool;
                             }
+                            if selected {
+                                chosen = Some(response.rect);
+                            }
+                        }
+                        if let Some(rect) = chosen {
+                            let y = anim::value(ui.ctx(), egui::Id::new("tool highlight"), rect.min.y, anim::QUICK);
+                            let at = egui::Rect::from_min_size(egui::pos2(rect.min.x, y), rect.size());
+                            ui.painter().set(highlight, egui::Shape::Vec(vec![
+                                egui::Shape::rect_filled(at.expand(3.0), 9.0, theme::ACCENT.gamma_multiply(0.15)),
+                                egui::Shape::rect_filled(at, 7.0, theme::ACCENT),
+                            ]));
                         }
                         ui.separator();
                         ui.horizontal_top(|ui| {
@@ -89,8 +105,8 @@ fn slider(
 ) {
     ui.allocate_ui_with_layout(vec2(WIDTH / 2.0, 0.0), egui::Layout::top_down(egui::Align::Center), |ui| {
         ui.set_width(WIDTH / 2.0);
-        ui.label(RichText::new(caption).small().weak());
+        ui.label(RichText::new(caption).small().color(theme::TEXT_DIM));
         ui.add(egui::Slider::new(value, range).vertical().logarithmic(log).show_value(false)).on_hover_text(help);
-        ui.label(RichText::new(format!("{value:.decimals$}")).small().color(theme::HEADER));
+        ui.label(RichText::new(format!("{value:.decimals$}")).small().color(theme::ACCENT));
     });
 }

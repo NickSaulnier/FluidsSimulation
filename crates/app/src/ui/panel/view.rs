@@ -5,7 +5,7 @@ use crate::render::Palette;
 use crate::render::composite::{CompositeSettings, Symmetry};
 use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
 use crate::render::waves::{WaveMode, WaveSettings};
-use crate::render::palette::PALETTES;
+use crate::render::palette::{GROUPS, named};
 use crate::ui::Frame;
 use crate::ui::shortcuts::{Action, tip};
 use crate::ui::widgets::{self, row};
@@ -44,6 +44,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     });
     widgets::group(ui, "Picture", |ui| picture(ui, f.state));
     widgets::group(ui, "Screen", |ui| screen(ui, f.state));
+    widgets::group(ui, "Interface", |ui| interface(ui, f.state));
     widgets::group(ui, "Feedback", |ui| feedback(ui, &mut f.state.feedback));
     widgets::group(ui, "Waves", |ui| waves(ui, &mut f.state.waves));
     widgets::group(ui, "Composite", |ui| composite(ui, &mut f.state.composite));
@@ -60,7 +61,7 @@ fn feedback(ui: &mut egui::Ui, s: &mut FeedbackSettings) {
     }
     let slider = |ui: &mut egui::Ui, label: &str, help: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>| {
         row(ui, label, help, |ui| {
-            ui.add(egui::Slider::new(value, range));
+            widgets::eased_slider(ui, value, range);
         });
     };
     row(ui, "Mode", "How the new picture combines with the old one.", |ui| {
@@ -98,7 +99,7 @@ fn feedback(ui: &mut egui::Ui, s: &mut FeedbackSettings) {
 fn composite(ui: &mut egui::Ui, s: &mut CompositeSettings) {
     let slider = |ui: &mut egui::Ui, label: &str, help: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>| {
         row(ui, label, help, |ui| {
-            ui.add(egui::Slider::new(value, range));
+            widgets::eased_slider(ui, value, range);
         });
     };
     row(ui, "Symmetry", "Mirror the picture, or fold it into a kaleidoscope round the centre.", |ui| {
@@ -133,7 +134,7 @@ fn composite(ui: &mut egui::Ui, s: &mut CompositeSettings) {
 fn waves(ui: &mut egui::Ui, s: &mut WaveSettings) {
     let slider = |ui: &mut egui::Ui, label: &str, help: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>| {
         row(ui, label, help, |ui| {
-            ui.add(egui::Slider::new(value, range));
+            widgets::eased_slider(ui, value, range);
         });
     };
     row(ui, "Wave", "The sound drawn on screen. With feedback on, it streaks into trails and tunnels.", |ui| {
@@ -206,7 +207,7 @@ fn flip_label(flip: EchoFlip) -> &'static str {
 /// Glow and the render scale: they apply to every scene, 2D or 3D.
 fn picture(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
     row(ui, "Glow", "Bloom: bright parts of the picture glow onto their surroundings.", |ui| {
-        ui.add(egui::Slider::new(&mut s.glow, 0.0..=1.0));
+        widgets::eased_slider(ui, &mut s.glow, 0.0..=1.0);
     });
     let label = |scale: f32| if scale > 0.0 { format!("{:.0}%", 100.0 * scale) } else { "Automatic".to_string() };
     row(ui, "Render scale", "The scene's resolution relative to the window. Automatic draws 4K at 75%.", |ui| {
@@ -216,6 +217,50 @@ fn picture(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
             }
         });
     });
+}
+
+/// The displays as Windows arranges them, numbered, the chosen one lit and the app's
+/// marked; clicking one chooses it.
+fn display_map(ui: &mut egui::Ui, displays: &[crate::ui::Display], chosen: &mut Option<String>, window: Option<&str>) {
+    use crate::ui::theme;
+    let (min_x, min_y) = displays.iter().fold((i32::MAX, i32::MAX), |(x, y), d| (x.min(d.rect[0]), y.min(d.rect[1])));
+    let (max_x, max_y) = displays.iter().fold((i32::MIN, i32::MIN), |(x, y), d| (x.max(d.rect[0] + d.rect[2]), y.max(d.rect[1] + d.rect[3])));
+    let (span_w, span_h) = ((max_x - min_x).max(1) as f32, (max_y - min_y).max(1) as f32);
+    let width = ui.available_width().min(320.0);
+    let scale = (width / span_w).min(110.0 / span_h);
+    let (area, _) = ui.allocate_exact_size(egui::vec2(width, span_h * scale), egui::Sense::hover());
+    let left = area.min.x + (width - span_w * scale) / 2.0;
+    for d in displays {
+        let r = egui::Rect::from_min_size(
+            egui::pos2(left + (d.rect[0] - min_x) as f32 * scale, area.min.y + (d.rect[1] - min_y) as f32 * scale),
+            egui::vec2(d.rect[2] as f32 * scale, d.rect[3] as f32 * scale),
+        )
+        .shrink(2.0);
+        let response = ui.interact(r, ui.id().with(("display", &d.id)), egui::Sense::click()).on_hover_text(&d.label);
+        let lit = chosen.as_deref() == Some(d.id.as_str()) || (chosen.is_none() && window == Some(d.id.as_str()));
+        let fill = if lit { theme::ACCENT.gamma_multiply(0.25) } else if response.hovered() { theme::WIDGET_HOVER } else { theme::WIDGET };
+        let stroke = egui::Stroke::new(if lit { 2.0 } else { 1.0 }, if lit { theme::ACCENT } else { theme::BORDER });
+        ui.painter().rect(r, 4.0, fill, stroke, egui::StrokeKind::Inside);
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, d.number.to_string(), theme::display(16.0), if lit { theme::TEXT } else { theme::TEXT_DIM });
+        if window == Some(d.id.as_str()) {
+            ui.painter().text(r.center_bottom() - egui::vec2(0.0, 4.0), egui::Align2::CENTER_BOTTOM, "app", egui::FontId::proportional(11.0), theme::ACCENT);
+        }
+        if response.clicked() {
+            *chosen = Some(d.id.clone());
+        }
+    }
+}
+
+/// The interface's size, and whether it moves.
+fn interface(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
+    row(ui, "Size", "How big the panels, text and buttons are drawn", |ui| {
+        egui::ComboBox::from_id_salt("ui_size").selected_text(s.ui_size.label()).width(150.0).show_ui(ui, |ui| {
+            for size in crate::ui::UiSize::ALL {
+                ui.selectable_value(&mut s.ui_size, size, size.label());
+            }
+        });
+    });
+    widgets::toggle(ui, &mut s.reduce_motion, "Reduce motion", "Change things at once instead of sliding and fading them (also on when Windows' animation effects are off)");
 }
 
 /// Where the visualizer shows, and the frame-rate cap.
@@ -230,17 +275,21 @@ fn screen(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
     ui.add_enabled_ui(screen.windowed, |ui| {
         widgets::toggle(ui, &mut screen.on_top, "Keep it on top", "While the visualizer shows in a window, keep that window above the others");
     });
-    ui.add_enabled_ui(!screen.windowed, |ui| {
-        row(ui, "Full screen on", "The monitor the visualizer fills", |ui| {
-            let current = screen.monitor.clone().unwrap_or_else(|| "This window's".into());
-            egui::ComboBox::from_id_salt("monitor").selected_text(current).width(150.0).truncate().show_ui(ui, |ui| {
-                ui.selectable_value(&mut screen.monitor, None, "This window's");
-                for name in &s.monitors {
-                    ui.selectable_value(&mut screen.monitor, Some(name.clone()), name);
-                }
-            });
+    row(ui, "Display", "Where the app and the visualizer show: the app moves there at once (Shift+F11 moves to the next)", |ui| {
+        let label = |id: &Option<String>| match id {
+            Some(id) => s.monitors.iter().find(|d| &d.id == id).map_or_else(|| id.clone(), |d| d.label.clone()),
+            None => "Where the window is".into(),
+        };
+        egui::ComboBox::from_id_salt("monitor").selected_text(label(&screen.monitor)).width(200.0).truncate().show_ui(ui, |ui| {
+            ui.selectable_value(&mut screen.monitor, None, "Where the window is");
+            for d in &s.monitors {
+                ui.selectable_value(&mut screen.monitor, Some(d.id.clone()), &d.label);
+            }
         });
     });
+    if s.monitors.len() > 1 {
+        display_map(ui, &s.monitors, &mut screen.monitor, s.window_display.as_deref());
+    }
     let label = |cap: u32| if cap == 0 { "No cap".to_string() } else { format!("{cap} fps") };
     row(ui, "Frame rate", "The most frames per second: lower saves power (and heat) on a fast display", |ui| {
         egui::ComboBox::from_id_salt("fps_cap").selected_text(label(screen.fps_cap)).width(150.0).show_ui(ui, |ui| {
@@ -255,14 +304,18 @@ fn screen(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
 /// custom palette). They colour particles, the liquid surface and dye alike.
 fn colours(ui: &mut egui::Ui, palette: &mut Palette) {
     row(ui, "Colours", "The fluid's colours, for every solver", |ui| {
-        egui::ComboBox::from_id_salt("palette").selected_text(palette.name().unwrap_or("Custom")).width(150.0).show_ui(
-            ui,
-            |ui| {
-                for (name, preset) in PALETTES {
-                    ui.selectable_value(palette, *preset, *name);
+        egui::ComboBox::from_id_salt("palette").selected_text(palette.name().unwrap_or("Custom")).width(150.0).height(520.0).show_ui(ui, |ui| {
+            for (group, names) in GROUPS {
+                ui.label(egui::RichText::new(group.to_uppercase()).font(crate::ui::theme::display(11.0)).color(crate::ui::theme::TEXT_DIM));
+                for name in *names {
+                    let Some(preset) = named(name) else { continue };
+                    if swatch_row(ui, name, &preset, *palette == preset).clicked() {
+                        *palette = preset;
+                    }
                 }
-            },
-        );
+                ui.add_space(4.0);
+            }
+        });
     });
     row(ui, "", "", |ui| {
         for (colour, what) in [
@@ -273,6 +326,21 @@ fn colours(ui: &mut egui::Ui, palette: &mut Palette) {
             ui.color_edit_button_srgb(colour).on_hover_text(what);
         }
     });
+}
+
+/// A palette in the menu: its three colours as swatches, then its name.
+fn swatch_row(ui: &mut egui::Ui, name: &str, p: &Palette, selected: bool) -> egui::Response {
+    // The swatches and the name are drawn at fixed places (padding the name with spaces
+    // depends on the font's space width).
+    let response = ui.add(egui::Button::selectable(selected, "").min_size(egui::vec2(190.0, 26.0)));
+    let left = response.rect.left_center() + egui::vec2(8.0, 0.0);
+    for (k, c) in [p.deep, p.base, p.highlight].into_iter().enumerate() {
+        let r = egui::Rect::from_center_size(left + egui::vec2(8.0 + 15.0 * k as f32, 0.0), egui::vec2(13.0, 13.0));
+        ui.painter().rect(r, 3.0, egui::Color32::from_rgb(c[0], c[1], c[2]), egui::Stroke::new(1.0, crate::ui::theme::BORDER), egui::StrokeKind::Outside);
+    }
+    let colour = ui.style().interact_selectable(&response, selected).text_color();
+    ui.painter().text(left + egui::vec2(52.0, 0.0), egui::Align2::LEFT_CENTER, name, egui::TextStyle::Button.resolve(ui.style()), colour);
+    response
 }
 
 fn overlay(ui: &mut egui::Ui, f: &mut Frame<'_>) {

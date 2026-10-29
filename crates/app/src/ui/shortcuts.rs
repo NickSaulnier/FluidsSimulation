@@ -38,6 +38,7 @@ pub enum Action {
     ToggleEditor,
     Screenshot,
     ToggleRecording,
+    NextDisplay,
     NextLookFade,
     HardCut,
     LockLook,
@@ -62,14 +63,20 @@ pub struct Shortcut {
     pub group: Group,
     /// Whether holding the key repeats the action.
     pub repeats: bool,
+    /// Whether it's the key with Shift held.
+    pub shift: bool,
 }
 
 const fn s(key: KeyCode, keys: &'static str, action: Action, what: &'static str, group: Group) -> Shortcut {
-    Shortcut { key, keys, action, what, group, repeats: false }
+    Shortcut { key, keys, action, what, group, repeats: false, shift: false }
 }
 
 const fn held(key: KeyCode, keys: &'static str, action: Action, what: &'static str, group: Group) -> Shortcut {
-    Shortcut { key, keys, action, what, group, repeats: true }
+    Shortcut { key, keys, action, what, group, repeats: true, shift: false }
+}
+
+const fn shifted(key: KeyCode, keys: &'static str, action: Action, what: &'static str, group: Group) -> Shortcut {
+    Shortcut { key, keys, action, what, group, repeats: false, shift: true }
 }
 
 use Action as A;
@@ -95,6 +102,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s(KeyCode::Backquote, "`", A::TogglePanel, "hide / show the side panel", G::View),
     s(KeyCode::F1, "F1", A::ToggleCheatSheet, "this cheat sheet", G::View),
     s(KeyCode::F11, "F11", A::TogglePresentation, "full-screen visualizer", G::View),
+    shifted(KeyCode::F11, "Shift+F11", A::NextDisplay, "move to the next display", G::View),
     s(KeyCode::Comma, ",", A::PreviousLook, "previous visualizer look", G::View),
     s(KeyCode::Period, ".", A::NextLook, "next visualizer look", G::View),
     s(KeyCode::KeyA, "A", A::ToggleAutoLooks, "change looks automatically", G::View),
@@ -122,10 +130,11 @@ pub const MOUSE: &[(&str, &str)] = &[
     ("Esc", "close this sheet, leave full screen, or quit"),
 ];
 
-/// The action bound to `key`, if any (ignoring auto-repeat unless the action repeats);
-/// `presenting`: in full screen, where the visualizer's keys come first.
-pub fn lookup(key: KeyCode, repeat: bool, presenting: bool) -> Option<Action> {
-    let find = |visualizer: bool| SHORTCUTS.iter().find(|s| s.key == key && (s.group == Group::Visualizer) == visualizer && (s.repeats || !repeat));
+/// The action bound to `key` (with Shift if `shift`), if any, ignoring auto-repeat
+/// unless the action repeats; `presenting`: in full screen, where the visualizer's keys
+/// come first.
+pub fn lookup(key: KeyCode, repeat: bool, presenting: bool, shift: bool) -> Option<Action> {
+    let find = |visualizer: bool| SHORTCUTS.iter().find(|s| s.key == key && s.shift == shift && (s.group == Group::Visualizer) == visualizer && (s.repeats || !repeat));
     presenting.then(|| find(true)).flatten().or_else(|| find(false)).map(|s| s.action)
 }
 
@@ -151,7 +160,7 @@ mod tests {
         for (i, a) in SHORTCUTS.iter().enumerate() {
             for b in &SHORTCUTS[i + 1..] {
                 if (a.group == Group::Visualizer) == (b.group == Group::Visualizer) {
-                    assert_ne!(a.key, b.key, "{} and {} share a key", a.what, b.what);
+                    assert_ne!((a.key, a.shift), (b.key, b.shift), "{} and {} share a key", a.what, b.what);
                 }
                 assert_ne!(a.action, b.action, "{} and {} share an action", a.what, b.what);
             }
@@ -160,19 +169,21 @@ mod tests {
 
     #[test]
     fn auto_repeat_only_fires_repeating_actions() {
-        assert_eq!(lookup(KeyCode::KeyR, false, false), Some(Action::Reset));
-        assert_eq!(lookup(KeyCode::KeyR, true, false), None);
-        assert_eq!(lookup(KeyCode::ArrowLeft, true, false), Some(Action::TiltLeft));
-        assert_eq!(lookup(KeyCode::KeyQ, false, false), None);
+        assert_eq!(lookup(KeyCode::KeyR, false, false, false), Some(Action::Reset));
+        assert_eq!(lookup(KeyCode::KeyR, true, false, false), None);
+        assert_eq!(lookup(KeyCode::ArrowLeft, true, false, false), Some(Action::TiltLeft));
+        assert_eq!(lookup(KeyCode::KeyQ, false, false, false), None);
     }
 
     /// In full screen the visualizer's keys win; elsewhere they keep their old meaning.
     #[test]
     fn full_screen_keys_take_over() {
-        assert_eq!(lookup(KeyCode::Space, false, false), Some(Action::TogglePause));
-        assert_eq!(lookup(KeyCode::Space, false, true), Some(Action::NextLookFade));
-        assert_eq!(lookup(KeyCode::KeyH, false, true), Some(Action::HardCut));
-        assert_eq!(lookup(KeyCode::KeyR, false, true), Some(Action::Reset), "the rest still work");
+        assert_eq!(lookup(KeyCode::Space, false, false, false), Some(Action::TogglePause));
+        assert_eq!(lookup(KeyCode::Space, false, true, false), Some(Action::NextLookFade));
+        assert_eq!(lookup(KeyCode::KeyH, false, true, false), Some(Action::HardCut));
+        assert_eq!(lookup(KeyCode::KeyR, false, true, false), Some(Action::Reset), "the rest still work");
+        assert_eq!(lookup(KeyCode::F11, false, false, true), Some(Action::NextDisplay), "Shift makes another key");
+        assert_eq!(lookup(KeyCode::F11, false, false, false), Some(Action::TogglePresentation));
     }
 
     #[test]

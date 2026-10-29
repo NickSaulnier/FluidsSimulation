@@ -171,6 +171,11 @@ struct State {
     presented: (bool, ui::Screen),
     /// When the monitors were last listed.
     monitors_listed: Option<Instant>,
+    /// Whether Shift is held (for Shift+ shortcuts).
+    shift: bool,
+    /// A window just moved to another display: centre it again, at the size it settled
+    /// at (a display with other scaling resizes it), after this many frames.
+    recentre: Option<(winit::monitor::MonitorHandle, u32)>,
     cursor_visible: bool,
     governor: governor::Governor,
     /// The (solver, scene) the governor is judging (3D solvers count down from the
@@ -234,6 +239,7 @@ impl ApplicationHandler for App {
                     state.music.load(path);
                 }
             }
+            WindowEvent::ModifiersChanged(m) => state.shift = m.state().shift_key(),
             WindowEvent::KeyboardInput {
                 event: KeyEvent { physical_key: PhysicalKey::Code(key), state: ElementState::Pressed, repeat, .. },
                 ..
@@ -373,6 +379,8 @@ impl State {
             param_bases: (usize::MAX, Vec::new()),
             presented: (false, ui::Screen::default()),
             monitors_listed: None,
+            shift: false,
+            recentre: None,
             cursor_visible: true,
             governor: governor::Governor::default(),
             governed: (usize::MAX, u64::MAX),
@@ -386,16 +394,40 @@ impl State {
     /// overlay is showing, and the resolution governor watching for slow motion.
     fn sync_presentation(&mut self, real_dt: f32) {
         let presenting = self.ui.presenting;
-        if self.monitors_listed.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+        if self.monitors_listed.is_none_or(|t| t.elapsed() > Duration::from_secs(1)) {
             self.monitors_listed = Some(Instant::now());
-            self.ui.monitors = self.window.available_monitors().filter_map(|m| m.name()).collect();
+            let primary = self.window.primary_monitor();
+            let raw = self
+                .window
+                .available_monitors()
+                .filter_map(|m| {
+                    let (p, s) = (m.position(), m.size());
+                    Some((m.name()?, [p.x, p.y, s.width as i32, s.height as i32], primary.as_ref() == Some(&m)))
+                })
+                .collect();
+            self.ui.monitors = ui::describe_displays(raw);
+            self.ui.window_display = self.window.current_monitor().and_then(|m| m.name());
         }
         let wanted = (presenting, self.ui.screen.clone());
         if wanted != self.presented {
             let screen = &self.ui.screen;
             let full = presenting && !screen.windowed;
+            let moved = screen.monitor != self.presented.1.monitor;
             let monitor = screen.monitor.as_ref().and_then(|name| self.window.available_monitors().find(|m| m.name().as_ref() == Some(name)));
-            self.window.set_fullscreen(full.then_some(winit::window::Fullscreen::Borderless(monitor)));
+            if full {
+                // Already full screen elsewhere: leave it first, or the window stays put.
+                if moved && self.presented.0 && !self.presented.1.windowed {
+                    self.window.set_fullscreen(None);
+                }
+                self.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
+            } else {
+                self.window.set_fullscreen(None);
+                // A display chosen (or remembered): the window moves there at once.
+                if let Some(m) = monitor.filter(|_| moved) {
+                    self.centre_on(&m, true);
+                    self.recentre = Some((m, 3));
+                }
+            }
             let on_top = presenting && screen.windowed && screen.on_top;
             self.window.set_window_level(if on_top { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
             if presenting != self.presented.0 {
@@ -405,6 +437,13 @@ impl State {
                 }
             }
             self.presented = wanted;
+        }
+        if let Some((m, frames)) = self.recentre.take() {
+            if frames > 0 {
+                self.recentre = Some((m, frames - 1));
+            } else {
+                self.centre_on(&m, false);
+            }
         }
         let cursor = !presenting || self.ui.revealed() || self.egui_ctx.is_pointer_over_egui();
         if cursor != self.cursor_visible {
@@ -466,6 +505,21 @@ impl State {
         if let [one] = imported.as_slice() {
             self.pending_look = Some(one.name.clone());
         }
+    }
+
+    /// Move the window to the middle of `monitor` (shrunk to fit if `fit` and it's too
+    /// big).
+    fn centre_on(&self, monitor: &winit::monitor::MonitorHandle, fit: bool) {
+        let (at, room) = (monitor.position(), monitor.size());
+        self.window.set_maximized(false);
+        let outer = self.window.outer_size();
+        let size = if fit { winit::dpi::PhysicalSize::new(outer.width.min(room.width * 9 / 10), outer.height.min(room.height * 9 / 10)) } else { outer };
+        if size != outer {
+            let _ = self.window.request_inner_size(size);
+        }
+        let x = at.x + (room.width.saturating_sub(size.width) / 2) as i32;
+        let y = at.y + (room.height.saturating_sub(size.height) / 2) as i32;
+        self.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
     }
 
     /// Read the user's looks again if their files changed. If the look on screen is one
@@ -794,7 +848,7 @@ impl State {
     /// Keyboard shortcuts, as listed in `ui::shortcuts::SHORTCUTS`.
     fn key(&mut self, key: KeyCode, repeat: bool) {
         use ui::shortcuts::Action;
-        let Some(action) = ui::shortcuts::lookup(key, repeat, self.ui.presenting) else { return };
+        let Some(action) = ui::shortcuts::lookup(key, repeat, self.ui.presenting, self.shift) else { return };
         let ui = &mut self.ui;
         match action {
             Action::TogglePause => ui.paused = !ui.paused,
@@ -858,6 +912,7 @@ impl State {
             Action::ToggleBrowser => ui.browser_open = !ui.browser_open,
             Action::Screenshot => self.screenshot_wanted = true,
             Action::ToggleRecording => self.toggle_recording(),
+            Action::NextDisplay => ui.next_display(),
             Action::ToggleEditor => ui.editor_open = !ui.editor_open,
         }
     }

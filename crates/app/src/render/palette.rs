@@ -28,7 +28,38 @@ pub const PALETTES: &[(&str, Palette)] = &[
     ("Slime", Palette { deep: [14, 78, 28], base: [64, 186, 58], highlight: [214, 255, 170] }),
     ("Ink", Palette { deep: [52, 14, 96], base: [146, 52, 210], highlight: [250, 196, 255] }),
     ("Mercury", Palette { deep: [44, 48, 56], base: [128, 136, 150], highlight: [244, 246, 250] }),
+    ("Sunset", Palette { deep: [74, 24, 104], base: [240, 110, 60], highlight: [255, 214, 120] }),
+    ("Ember", Palette { deep: [96, 14, 10], base: [232, 92, 24], highlight: [255, 236, 190] }),
+    ("Gold", Palette { deep: [92, 60, 8], base: [214, 160, 40], highlight: [255, 240, 190] }),
+    ("Blood", Palette { deep: [64, 6, 12], base: [176, 16, 36], highlight: [255, 150, 160] }),
+    ("Ice", Palette { deep: [16, 38, 92], base: [110, 180, 230], highlight: [240, 250, 255] }),
+    ("Aurora", Palette { deep: [10, 64, 72], base: [40, 210, 140], highlight: [232, 200, 255] }),
+    ("Deep sea", Palette { deep: [6, 40, 66], base: [16, 140, 150], highlight: [150, 255, 240] }),
+    ("Neon", Palette { deep: [40, 16, 110], base: [34, 211, 238], highlight: [255, 205, 255] }),
+    ("Vapor", Palette { deep: [70, 20, 110], base: [255, 100, 190], highlight: [120, 240, 255] }),
+    ("Candy", Palette { deep: [120, 20, 70], base: [255, 120, 170], highlight: [190, 255, 220] }),
+    ("Toxic", Palette { deep: [18, 60, 12], base: [140, 230, 30], highlight: [250, 255, 140] }),
+    ("Forest", Palette { deep: [20, 56, 30], base: [90, 150, 70], highlight: [220, 236, 170] }),
+    ("Rust", Palette { deep: [80, 30, 16], base: [180, 90, 50], highlight: [246, 200, 150] }),
+    ("Sand", Palette { deep: [100, 76, 48], base: [204, 170, 120], highlight: [252, 240, 214] }),
+    ("Slate", Palette { deep: [40, 48, 62], base: [104, 124, 150], highlight: [220, 230, 242] }),
+    ("Mono", Palette { deep: [40, 40, 40], base: [140, 140, 140], highlight: [255, 255, 255] }),
 ];
+
+/// The palettes in groups, for the menu (by name; every palette is in one).
+pub const GROUPS: &[(&str, &[&str])] = &[
+    ("Classic", &["Ocean", "Lava", "Slime", "Ink", "Mercury"]),
+    ("Warm", &["Sunset", "Ember", "Gold", "Blood"]),
+    ("Cool", &["Ice", "Aurora", "Deep sea"]),
+    ("Bright", &["Neon", "Vapor", "Candy", "Toxic"]),
+    ("Earthy", &["Forest", "Rust", "Sand", "Slate"]),
+    ("Plain", &["Mono"]),
+];
+
+/// A palette by name.
+pub fn named(name: &str) -> Option<Palette> {
+    PALETTES.iter().find(|(n, _)| *n == name).map(|(_, p)| *p)
+}
 
 impl Palette {
     /// The preset this palette is, if any.
@@ -219,6 +250,28 @@ mod tests {
         assert!(full_turn.base.iter().zip(p.base).all(|(a, b)| a.abs_diff(b) <= 1));
         let flashed = p.modulated(0.0, 1.0);
         assert!(flashed.base.iter().zip(p.base).all(|(a, b)| *a >= b) && flashed.base != p.base);
+    }
+
+    /// Every palette: a unique name, in exactly one group, its colours ordered by
+    /// brightness, and its deep colour still visible on the interface's near-black.
+    #[test]
+    fn the_palettes_are_sound() {
+        let luma = |c: [u8; 3]| {
+            let lin = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+        };
+        for (i, (name, p)) in PALETTES.iter().enumerate() {
+            assert!(PALETTES[i + 1..].iter().all(|(n, _)| n != name), "{name} twice");
+            assert_eq!(GROUPS.iter().filter(|(_, names)| names.contains(name)).count(), 1, "{name} isn't in exactly one group");
+            assert!(luma(p.deep) < luma(p.base) && luma(p.base) < luma(p.highlight), "{name} isn't ordered by brightness");
+            assert!(luma(p.deep) >= 0.01, "{name}'s deep colour disappears on black: {}", luma(p.deep));
+            assert_eq!(named(name), Some(*p));
+        }
+        assert_eq!(GROUPS.iter().map(|(_, n)| n.len()).sum::<usize>(), PALETTES.len());
+        assert_eq!(PALETTES.len(), 21);
     }
 
     #[test]

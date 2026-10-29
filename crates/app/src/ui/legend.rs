@@ -3,7 +3,7 @@
 //! categorical fields.
 
 use crate::render::{Palette, colormap};
-use egui::{Align2, Color32, Frame, Margin, RichText, Sense, vec2};
+use egui::{Align2, Color32, Margin, RichText, Sense, vec2};
 use sim::{FieldInfo, FieldKind};
 
 const INSET: f32 = 10.0;
@@ -17,8 +17,7 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, field: &FieldInfo, (lo, hi)
         .fixed_pos(canvas.max - vec2(INSET, INSET))
         .interactable(false)
         .show(ctx, |ui| {
-            Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(28, 30, 35, 225))
+            super::presentation::panel_frame()
                 .corner_radius(8)
                 .inner_margin(Margin::same(8))
                 .show(ui, |ui| {

@@ -14,18 +14,18 @@ use crate::ui::Frame;
 use crate::ui::params::live_float_params;
 use crate::ui::shortcuts::{Action, tip};
 use crate::ui::theme;
-use crate::ui::widgets::{self, row};
+use crate::ui::widgets::{self, icon_button, row};
 use egui::{Color32, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
 use std::time::Duration;
 
 /// Reactions table column widths, points.
-const TRIGGER_W: f32 = 98.0;
-const EFFECT_W: f32 = 80.0;
-const GAIN_W: f32 = 30.0;
-const BUTTON: egui::Vec2 = vec2(32.0, 24.0);
+const TRIGGER_W: f32 = 112.0;
+const EFFECT_W: f32 = 92.0;
+const GAIN_W: f32 = 36.0;
+const BUTTON: egui::Vec2 = widgets::ICON_BUTTON;
 /// Both source cards take this height, so switching source doesn't move what's below.
-const CARD_HEIGHT: f32 = 86.0;
+const CARD_HEIGHT: f32 = 104.0;
 const DIM: Color32 = Color32::from_gray(90);
 
 pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
@@ -515,10 +515,6 @@ fn fixed(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-/// A fixed-size icon button.
-fn icon_button(ui: &mut Ui, glyph: &str) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(glyph).size(16.0)).min_size(BUTTON))
-}
 
 fn clock(seconds: f32) -> String {
     let s = seconds.max(0.0) as u32;

@@ -5,6 +5,7 @@
 //! a specific solver. Whatever is left after the bars and panel is the canvas; its rect
 //! is returned so the scene view is fitted into exactly that area.
 
+pub mod anim;
 pub mod browser;
 mod cheat_sheet;
 mod editor;
@@ -29,7 +30,7 @@ use std::time::{Duration, Instant};
 use sim::{Vec2, World};
 
 /// Side panel width in points.
-pub const PANEL_WIDTH: f32 = 320.0;
+pub const PANEL_WIDTH: f32 = 380.0;
 /// Brush radius limits (m), and the factor `[` and `]` change it by.
 pub const BRUSH_RADIUS: std::ops::RangeInclusive<f32> = 0.02..=0.3;
 pub const BRUSH_STEP: f32 = 1.15;
@@ -50,6 +51,46 @@ pub struct Screen {
     pub fps_cap: u32,
 }
 
+/// A display, as the interface shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Display {
+    /// Windows' name for it (`\\.\DISPLAY2`), which the settings keep.
+    pub id: String,
+    /// Its number, as Windows numbers it, and how the interface names it.
+    pub number: u32,
+    pub label: String,
+    /// Where it is on the desktop, in pixels: x, y, width, height.
+    pub rect: [i32; 4],
+    pub primary: bool,
+}
+
+/// The displays (`id`, desktop rectangle, whether it's the main one) described for the
+/// interface: numbered as Windows numbers them, sized, and placed relative to the main
+/// one ("Display 2 · 1080 × 1920 · right").
+pub fn describe_displays(raw: Vec<(String, [i32; 4], bool)>) -> Vec<Display> {
+    let main = raw.iter().find(|d| d.2).map(|d| d.1);
+    let centre = |r: [i32; 4]| (r[0] + r[2] / 2, r[1] + r[3] / 2);
+    let mut out: Vec<Display> = raw
+        .iter()
+        .enumerate()
+        .map(|(i, (id, rect, primary))| {
+            let digits: String = id.chars().rev().take_while(char::is_ascii_digit).collect::<Vec<_>>().into_iter().rev().collect();
+            let number = digits.parse().unwrap_or(i as u32 + 1);
+            let place = match (primary, main) {
+                (true, _) | (_, None) => "main".to_string(),
+                (false, Some(m)) => {
+                    let ((x, y), (mx, my)) = (centre(*rect), centre(m));
+                    let (dx, dy) = (x - mx, y - my);
+                    if dx.abs() >= dy.abs() { if dx < 0 { "left" } else { "right" } } else if dy < 0 { "above" } else { "below" }.to_string()
+                }
+            };
+            Display { id: id.clone(), number, label: format!("Display {number} · {} × {} · {place}", rect[2], rect[3]), rect: *rect, primary: *primary }
+        })
+        .collect();
+    out.sort_by_key(|d| d.number);
+    out
+}
+
 /// The frame-rate caps offered.
 pub const FPS_CAPS: [u32; 5] = [0, 30, 60, 120, 144];
 
@@ -68,6 +109,35 @@ pub enum Tool {
 pub enum SolverChoice {
     TwoD(usize),
     ThreeD(usize),
+}
+
+/// How big the interface is drawn (a zoom on everything but the scene).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum UiSize {
+    Compact,
+    #[default]
+    Normal,
+    Large,
+}
+
+impl UiSize {
+    pub const ALL: [UiSize; 3] = [UiSize::Compact, UiSize::Normal, UiSize::Large];
+
+    pub fn zoom(self) -> f32 {
+        match self {
+            UiSize::Compact => 0.85,
+            UiSize::Normal => 1.0,
+            UiSize::Large => 1.2,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UiSize::Compact => "Compact",
+            UiSize::Normal => "Normal",
+            UiSize::Large => "Large",
+        }
+    }
 }
 
 /// Side panel tabs.
@@ -101,8 +171,9 @@ pub struct UiState {
     /// The scene's resolution relative to the window; 0 picks automatically.
     pub render_scale: f32,
     pub screen: Screen,
-    /// The monitors' names, as the app last found them.
-    pub monitors: Vec<String>,
+    /// The displays, as the app last found them, and the one the window is on (by id).
+    pub monitors: Vec<Display>,
+    pub window_display: Option<String>,
     pub show_particles: bool,
     pub faucet_speed: f32,
     /// Draw particles as a continuous liquid surface.
@@ -113,6 +184,11 @@ pub struct UiState {
     pub surface_threshold: f32,
     pub tab: Tab,
     pub panel_open: bool,
+    /// The interface's size, whether it moves (or changes at once), and which groups
+    /// are folded.
+    pub ui_size: UiSize,
+    pub reduce_motion: bool,
+    pub folds: widgets::Folds,
     pub cheat_sheet: bool,
     /// The song playing, as shown (see `audio::media`), when its title card was last
     /// shown, and whether one shows for each new song.
@@ -182,14 +258,18 @@ impl Default for UiState {
             render_scale: 0.0,
             screen: Screen::default(),
             monitors: Vec::new(),
+            window_display: None,
             show_particles: true,
             faucet_speed: 2.0,
             liquid: true,
             orbit: 0.12,
             blob_size: 3.0,
             surface_threshold: 0.5,
-            tab: Tab::Simulate,
+            tab: Tab::Music,
             panel_open: true,
+            ui_size: UiSize::Normal,
+            reduce_motion: false,
+            folds: widgets::Folds::default(),
             cheat_sheet: false,
             song: None,
             title_card: None,
@@ -229,6 +309,18 @@ impl UiState {
     pub fn gravity(&self) -> Vec2 {
         let a = self.gravity_deg.to_radians();
         Vec2::new(a.sin(), -a.cos()) * self.gravity_mag
+    }
+
+    /// Choose the display after the one the app is on (or chosen), round to the first:
+    /// the app moves there at once.
+    pub fn next_display(&mut self) {
+        let ids: Vec<&String> = self.monitors.iter().map(|d| &d.id).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let at = self.screen.monitor.as_ref().or(self.window_display.as_ref());
+        let next = at.and_then(|id| ids.iter().position(|d| *d == id)).map_or(0, |i| (i + 1) % ids.len());
+        self.screen.monitor = Some(ids[next].clone());
     }
 
     /// Presentation mode: show the overlay and cursor for a few seconds (the mouse moved).
@@ -298,29 +390,68 @@ pub struct Frame<'a> {
 /// canvas the bars and panel leave over, minus the tool strip's column, so the strip
 /// never hides any of the fluid.
 pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> egui::Rect {
-    if let Some((text, until)) = &f.state.notice {
-        if Instant::now() < *until {
-            let text = text.clone();
-            presentation::notice(ui.ctx(), ui.max_rect(), &text);
+    let ctx = ui.ctx().clone();
+    anim::set_reduced(&ctx, f.state.reduce_motion || system_reduces_motion());
+    if (ctx.zoom_factor() - f.state.ui_size.zoom()).abs() > 1e-3 {
+        ctx.set_zoom_factor(f.state.ui_size.zoom());
+    }
+    f.state.folds.lend(&ctx);
+    let canvas = lay_out(ui, f, cursor);
+    f.state.folds.take_back(&ctx);
+    canvas
+}
+
+/// Whether Windows asks for less animation (its "Animation effects" setting).
+#[cfg(windows)]
+fn system_reduces_motion() -> bool {
+    use std::sync::OnceLock;
+    use windows::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
+    static OFF: OnceLock<bool> = OnceLock::new();
+    *OFF.get_or_init(|| {
+        let mut on = windows::core::BOOL(1);
+        // Safety: the call writes one BOOL into `on`, which lives across it.
+        let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some((&raw mut on).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
+        ok.is_ok() && !on.as_bool()
+    })
+}
+
+#[cfg(not(windows))]
+fn system_reduces_motion() -> bool {
+    false
+}
+
+fn lay_out(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> egui::Rect {
+    if let Some((text, until)) = f.state.notice.clone() {
+        let now = Instant::now();
+        if now < until {
+            // Drops in over a quarter second, rises away over the last third.
+            let shown_for = (now + NOTICE).saturating_duration_since(until).as_secs_f32();
+            let left = until.saturating_duration_since(now).as_secs_f32();
+            let shown = if anim::reduced(ui.ctx()) { 1.0 } else { anim::ease_out(shown_for / 0.25).min(anim::ease_out(left / 0.35)) };
+            presentation::notice(ui.ctx(), ui.max_rect(), &text, shown);
         } else {
             f.state.notice = None;
         }
     }
     if f.state.presenting {
-        // The whole window is canvas; the overlay shows while the mouse is active (or on
-        // it, so it doesn't vanish under the pointer).
+        // The whole window is canvas; the bar rises into view while the mouse is active
+        // (or on it, so it doesn't vanish under the pointer).
         let canvas = ui.max_rect();
-        if f.state.revealed() || ui.ctx().is_pointer_over_egui() {
-            presentation::overlay(ui.ctx(), canvas, f);
+        let wanted = f.state.revealed() || ui.ctx().is_pointer_over_egui();
+        let shown = anim::toward(ui.ctx(), egui::Id::new("overlay shown"), wanted, anim::SLOW);
+        if shown > 0.0 {
+            presentation::overlay(ui.ctx(), canvas, f, shown);
         }
         windows(ui.ctx(), canvas, f);
         return canvas;
     }
     egui::Panel::top("top_bar").show(ui, |ui| top_bar::show(ui, f));
     egui::Panel::bottom("status_bar").show(ui, |ui| status_bar::show(ui, f));
-    if f.state.panel_open {
-        egui::Panel::right("side_panel").resizable(false).exact_size(PANEL_WIDTH).show(ui, |ui| panel::show(ui, f));
-    }
+    // The side panel slides in and out from the right. (No separator line: egui draws
+    // it inside a sliding panel, over its contents; the panel's fill sets it apart.)
+    let mut open = f.state.panel_open;
+    egui::Panel::right("side_panel").resizable(false).show_separator_line(false).exact_size(PANEL_WIDTH).show_collapsible(ui, &mut open, |ui| panel::show(ui, f));
+    f.state.panel_open = open;
     let canvas = ui.available_rect_before_wrap();
     if f.world3d.is_some() {
         // The 3D tools, but no overlay legend or brush outline.
@@ -365,8 +496,14 @@ fn windows(ctx: &egui::Context, canvas: egui::Rect, f: &mut Frame<'_>) {
             .fixed_pos(canvas.right_top() + egui::vec2(-16.0, 16.0))
             .interactable(false)
             .show(ctx, |ui| {
-                let text = egui::RichText::new(format!("{} REC {}:{:02}", egui_phosphor::regular::RECORD, s / 60, s % 60)).strong().color(egui::Color32::from_rgb(240, 70, 70));
-                ui.label(text).on_hover_text(shortcuts::tip("Stop recording", shortcuts::Action::ToggleRecording));
+                // The dot pulses while recording.
+                let pulse = if anim::reduced(ui.ctx()) { 1.0 } else { 0.6 + 0.4 * (0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 4.0).sin()) };
+                let red = egui::Color32::from_rgb(255, 70, 70);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::RECORD).size(18.0).color(red.gamma_multiply(pulse)));
+                    ui.label(egui::RichText::new(format!("REC {}:{:02}", s / 60, s % 60)).font(theme::display(13.0)).color(red))
+                        .on_hover_text(shortcuts::tip("Stop recording", shortcuts::Action::ToggleRecording));
+                });
             });
     }
     if let (Some(since), Some(song)) = (f.state.title_card, &f.state.song) {
@@ -421,6 +558,28 @@ mod tests {
         // A key the current solver doesn't have (after switching) restarts the cycle.
         assert_eq!(next_overlay(Some("gone"), &fields), Some("a"));
         assert_eq!(next_overlay(None, &[]), None);
+    }
+
+    /// Displays are numbered as Windows numbers them, sized, and placed relative to the
+    /// main one; the next display wraps round.
+    #[test]
+    fn displays_are_described_and_cycled() {
+        let raw = vec![
+            (r"\\.\DISPLAY3".to_string(), [0, 0, 3840, 2160], true),
+            (r"\\.\DISPLAY1".to_string(), [-2160, -225, 1728, 3072], false),
+            (r"\\.\DISPLAY2".to_string(), [5760, 183, 1620, 2880], false),
+        ];
+        let d = describe_displays(raw);
+        assert_eq!(d.iter().map(|d| d.label.as_str()).collect::<Vec<_>>(), [
+            "Display 1 · 1728 × 3072 · left",
+            "Display 2 · 1620 × 2880 · right",
+            "Display 3 · 3840 × 2160 · main",
+        ]);
+        let mut s = UiState { monitors: d, window_display: Some(r"\\.\DISPLAY3".into()), ..UiState::default() };
+        s.next_display();
+        assert_eq!(s.screen.monitor.as_deref(), Some(r"\\.\DISPLAY1"), "after the window's display, round to the first");
+        s.next_display();
+        assert_eq!(s.screen.monitor.as_deref(), Some(r"\\.\DISPLAY2"));
     }
 
     #[test]

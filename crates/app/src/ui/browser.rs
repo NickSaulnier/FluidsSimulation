@@ -3,7 +3,7 @@
 //! tags. Clicking a card fades to it.
 
 use super::shortcuts::{Action, tip};
-use super::{Frame, theme};
+use super::{Frame, anim, theme};
 use crate::looks::{Look, Source};
 use egui::{Color32, RichText, Sense, vec2};
 use egui_phosphor::regular as icon;
@@ -97,7 +97,11 @@ fn contents(ui: &mut egui::Ui, f: &mut Frame<'_>) {
                 let current = s.director.current == Some(i);
                 ui.vertical(|ui| {
                     ui.set_width(CARD.x);
-                    let (rect, response) = ui.allocate_exact_size(CARD, Sense::click());
+                    let (slot, response) = ui.allocate_exact_size(CARD, Sense::click());
+                    // The card rises a little under the pointer, its shadow deepening.
+                    let lift = anim::toward(ui.ctx(), response.id.with("lift"), response.hovered(), anim::QUICK);
+                    let rect = slot.translate(vec2(0.0, -4.0 * lift));
+                    ui.painter().rect_filled(slot.translate(vec2(0.0, 3.0 * lift)).expand(2.0 * lift), 8.0, Color32::from_black_alpha((90.0 * lift) as u8));
                     match s.thumbnails.get(ui.ctx(), &look) {
                         Some(texture) => {
                             ui.painter().image(texture.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
@@ -107,17 +111,17 @@ fn contents(ui: &mut egui::Ui, f: &mut Frame<'_>) {
                     let stroke = if current {
                         egui::Stroke::new(2.0, theme::ACCENT)
                     } else if response.hovered() {
-                        egui::Stroke::new(1.0, Color32::from_gray(200))
+                        egui::Stroke::new(1.5, theme::ACCENT.gamma_multiply(0.7))
                     } else {
-                        egui::Stroke::new(1.0, Color32::from_gray(60))
+                        egui::Stroke::new(1.0, theme::BORDER)
                     };
-                    ui.painter().rect_stroke(rect, 4, stroke, egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, 6, stroke, egui::StrokeKind::Inside);
                     if response.on_hover_text(hover(&look)).clicked() {
                         pick = Some(i);
                     }
                     ui.horizontal(|ui| {
                         let mine = if matches!(look.source, Source::File(_)) { format!(" {}", icon::PENCIL_SIMPLE) } else { String::new() };
-                        ui.add(egui::Label::new(RichText::new(format!("{}{mine}", look.name)).strong()).truncate());
+                        ui.add(egui::Label::new(RichText::new(format!("{}{mine}", look.name)).font(theme::bold(15.0)).color(theme::TEXT)).truncate());
                     });
                     marks(ui, s, &look.name);
                 });
@@ -132,22 +136,34 @@ fn contents(ui: &mut egui::Ui, f: &mut Frame<'_>) {
 }
 
 /// The stars (click one to rate) and the heart.
+/// When rated, the stars fill one after another; the heart pops when it changes.
 fn marks(ui: &mut egui::Ui, s: &mut super::UiState, name: &str) {
     let mark = s.looks.mark(name);
+    let id = egui::Id::new(("marks", name));
+    let unlit = theme::TEXT_DIM.gamma_multiply(0.5);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
+        let filling = anim::progress(ui.ctx(), id.with("stars"), 0.35);
         for k in 1..=5u8 {
-            let lit = mark.rating != 0 && k <= mark.rating;
-            let glyph = if lit { RichText::new(icon::STAR).color(theme::WARN) } else { RichText::new(icon::STAR).color(Color32::from_gray(90)) };
+            // While filling, star k lights a little after star k - 1.
+            let reached = filling.is_none_or(|t| t * 5.0 >= f32::from(k - 1));
+            let lit = mark.rating != 0 && k <= mark.rating && reached;
+            let glyph = RichText::new(icon::STAR).size(17.0).color(if lit { theme::WARN } else { unlit });
             let what = if k == 1 { "1 star: never picked by itself".to_string() } else { format!("{k} stars") };
             if ui.add(egui::Button::new(glyph).frame(false)).on_hover_text(tip(&what, Action::RateUp)).clicked() {
                 s.looks.marks.entry(name.to_string()).or_default().rating = if mark.rating == k { 0 } else { k };
+                anim::kick(ui.ctx(), id.with("stars"));
             }
         }
-        ui.add_space(8.0);
-        let (glyph, colour) = if mark.favourite { (icon::HEART, Color32::from_rgb(240, 90, 120)) } else { (icon::HEART, Color32::from_gray(90)) };
-        if ui.add(egui::Button::new(RichText::new(glyph).color(colour)).frame(false)).on_hover_text("Favourite").clicked() {
+        ui.add_space(10.0);
+        let pop = anim::progress(ui.ctx(), id.with("heart"), 0.35).map_or(1.0, anim::overshoot);
+        let colour = if mark.favourite { Color32::from_rgb(255, 90, 130) } else { unlit };
+        let glyph = if mark.favourite { icon::HEART } else { icon::HEART_STRAIGHT };
+        let size = 17.0 * (0.7 + 0.3 * pop);
+        let heart = ui.add_sized([22.0, 22.0], egui::Button::new(RichText::new(glyph).size(size).color(colour)).frame(false));
+        if heart.on_hover_text("Favourite").clicked() {
             s.looks.marks.entry(name.to_string()).or_default().favourite = !mark.favourite;
+            anim::kick(ui.ctx(), id.with("heart"));
         }
     });
 }

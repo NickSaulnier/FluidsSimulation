@@ -5,10 +5,7 @@
 //! Advanced sections start collapsed: their header toggles them, and while collapsed
 //! their parameters are skipped.
 
-use super::theme;
 use super::widgets::{self, param_text};
-use egui::RichText;
-use egui_phosphor::regular as icon;
 
 /// A world whose solver's parameters can be visited (and which can start over, to
 /// apply restart-only ones): the 2D one or the 3D one.
@@ -219,21 +216,8 @@ impl sim::ParamVisitor for EguiParams<'_> {
 
     fn advanced_section(&mut self, title: &'static str) {
         let ui = self.open_group();
-        let id = ui.make_persistent_id(("advanced", title));
-        let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
-        let caret = if open { icon::CARET_DOWN } else { icon::CARET_RIGHT };
-        let header = RichText::new(format!("{caret} {title}")).strong().size(14.0).color(theme::HEADER);
-        let clicked = ui
-            .horizontal(|ui| {
-                let clicked = ui.add(egui::Button::new(header).frame(false)).clicked();
-                ui.weak("advanced");
-                clicked
-            })
-            .inner;
-        if clicked {
-            open = !open;
-            ui.data_mut(|d| d.insert_temp(id, open));
-        }
+        let open = widgets::fold_header(ui, title, "advanced");
         self.collapsed = !open;
     }
+
 }

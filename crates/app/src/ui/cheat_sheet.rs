@@ -2,7 +2,7 @@
 
 use super::shortcuts::{Group, MOUSE, SHORTCUTS};
 use super::widgets;
-use egui::{Align2, Color32, Frame, Margin, RichText};
+use egui::{Align2, Margin, RichText};
 
 pub fn show(ctx: &egui::Context, canvas: egui::Rect, open: &mut bool) {
     egui::Area::new(egui::Id::new("cheat_sheet"))
@@ -10,8 +10,7 @@ pub fn show(ctx: &egui::Context, canvas: egui::Rect, open: &mut bool) {
         .pivot(Align2::CENTER_CENTER)
         .fixed_pos(canvas.center())
         .show(ctx, |ui| {
-            Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(20, 22, 26, 235))
+            super::presentation::panel_frame()
                 .corner_radius(10)
                 .inner_margin(Margin::same(18))
                 .show(ui, |ui| {
