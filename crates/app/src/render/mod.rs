@@ -7,6 +7,7 @@ pub mod colormap;
 pub mod composite;
 mod liquid;
 pub mod feedback;
+pub mod fractal;
 pub mod grab;
 pub mod palette;
 mod overlay;

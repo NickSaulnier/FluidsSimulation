@@ -4,6 +4,7 @@
 use crate::render::Palette;
 use crate::render::composite::{CompositeSettings, Symmetry};
 use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
+use crate::render::fractal::{FractalKind, MAX_ITERATIONS, MAX_ZOOM};
 use crate::render::waves::{WaveMode, WaveSettings};
 use crate::render::palette::{GROUPS, named};
 use crate::ui::Frame;
@@ -185,6 +186,35 @@ fn waves(ui: &mut egui::Ui, s: &mut WaveSettings) {
         slider(ui, "Spin", "Radians per second.", &mut art.spin, -3.0..=3.0);
         slider(ui, "Bass pulse", "", &mut art.bass_pulse, 0.0..=1.0);
         slider(ui, "Light", "Above 1 glows.", &mut art.brightness, 0.0..=4.0);
+    }
+    let fractal = &mut s.fractal;
+    widgets::toggle(ui, &mut fractal.enabled, "Fractal", "An escape-time fractal in the fluid's colours, drawn into the picture so the feedback carries it.");
+    if fractal.enabled {
+        row(ui, "Kind", "", |ui| {
+            egui::ComboBox::from_id_salt("fractal_kind").selected_text(fractal.kind.label()).width(150.0).show_ui(ui, |ui| {
+                for kind in FractalKind::ALL {
+                    ui.selectable_value(&mut fractal.kind, kind, kind.label());
+                }
+            });
+        });
+        row(ui, "Zoom", "", |ui| {
+            ui.add(egui::Slider::new(&mut fractal.zoom, 0.2..=MAX_ZOOM).logarithmic(true));
+        });
+        slider(ui, "Across", "The point at the middle of the canvas.", &mut fractal.centre[0], -2.5..=2.5);
+        slider(ui, "Up", "", &mut fractal.centre[1], -2.0..=2.0);
+        if fractal.kind == FractalKind::Julia {
+            slider(ui, "Julia real", "The constant c: its shape.", &mut fractal.julia[0], -2.0..=2.0);
+            slider(ui, "Julia imaginary", "", &mut fractal.julia[1], -2.0..=2.0);
+        }
+        slider(ui, "Turn", "Radians.", &mut fractal.rotation, -3.15..=3.15);
+        slider(ui, "Spin", "Radians per second.", &mut fractal.spin, -1.0..=1.0);
+        row(ui, "Detail", "Iterations: more shows finer filaments when zoomed in, and costs more.", |ui| {
+            ui.add(egui::Slider::new(&mut fractal.iterations, 16..=MAX_ITERATIONS).logarithmic(true));
+        });
+        slider(ui, "Bands", "How many times the palette repeats toward the edge.", &mut fractal.bands, 0.0..=8.0);
+        slider(ui, "Colour speed", "Palette cycles per second.", &mut fractal.colour_speed, -1.0..=1.0);
+        slider(ui, "Opacity", "", &mut fractal.opacity, 0.0..=1.0);
+        slider(ui, "Light", "Above 1 glows.", &mut fractal.brightness, 0.0..=4.0);
     }
 }
 

@@ -120,11 +120,13 @@ pub struct WaveSettings {
     pub shapes: [ShapeSettings; 2],
     /// The song's cover art (drawn by `render::art`, not here).
     pub art: super::art::ArtSettings,
+    /// A fractal (drawn by `render::fractal`, not here).
+    pub fractal: super::fractal::FractalSettings,
 }
 
 impl WaveSettings {
     pub const OFF: Self =
-        Self { mode: WaveMode::Off, scale: 1.0, size: 0.5, y: 0.0, thickness: 3.0, brightness: 1.5, push: 0.0, shapes: [ShapeSettings::OFF; 2], art: super::art::ArtSettings::OFF };
+        Self { mode: WaveMode::Off, scale: 1.0, size: 0.5, y: 0.0, thickness: 3.0, brightness: 1.5, push: 0.0, shapes: [ShapeSettings::OFF; 2], art: super::art::ArtSettings::OFF, fractal: super::fractal::FractalSettings::OFF };
 
     /// Whether anything is drawn.
     pub fn any(&self) -> bool {

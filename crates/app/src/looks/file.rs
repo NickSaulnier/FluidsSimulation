@@ -9,6 +9,7 @@ use crate::expr::{self, Program, Stage};
 use crate::render::feedback::{self, FeedbackSettings};
 use crate::render::palette::{PALETTES, Palette};
 use crate::render::art::ArtSettings;
+use crate::render::fractal::FractalSettings;
 use crate::render::composite::CompositeSettings;
 use crate::render::waves::{ShapeSettings, WaveSettings};
 use serde::Deserialize;
@@ -43,6 +44,7 @@ struct Doc {
     shape: Vec<ShapeSettings>,
     composite: Option<CompositeSettings>,
     art: Option<ArtSettings>,
+    fractal: Option<FractalSettings>,
     #[serde(default)]
     code: CodeDoc,
 }
@@ -147,7 +149,9 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
     let mut waves_known = keys(WaveSettings::OFF);
     waves_known.remove("shapes");
     waves_known.remove("art");
+    waves_known.remove("fractal");
     unknown("art", raw.get("art"), keys(ArtSettings::OFF))?;
+    unknown("fractal", raw.get("fractal"), keys(FractalSettings::OFF))?;
     unknown("feedback", raw.get("feedback"), keys(FeedbackSettings::OFF))?;
     unknown("waves", raw.get("waves"), waves_known)?;
     unknown("composite", raw.get("composite"), keys(CompositeSettings::OFF))?;
@@ -253,6 +257,10 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         art.enabled = section("art").is_none_or(|t| !t.contains_key("enabled")) || art.enabled;
         waves.art = art;
     }
+    if let Some(mut fractal) = doc.fractal {
+        fractal.enabled = section("fractal").is_none_or(|t| !t.contains_key("enabled")) || fractal.enabled;
+        waves.fractal = fractal;
+    }
 
     let code = compile_doc_code(text, &doc.code).map_err(|(offset, message)| fail(offset, message))?;
     let meta = doc.meta;
@@ -346,12 +354,15 @@ pub fn write(look: &Look) -> String {
         feedback.insert(0, ("enabled".into(), toml::Value::Boolean(false)));
     }
     section("[feedback]", feedback, fb.enabled);
-    section("[waves]", changed(look.waves, WaveSettings::OFF, &["shapes", "art"]), false);
+    section("[waves]", changed(look.waves, WaveSettings::OFF, &["shapes", "art", "fractal"]), false);
     for shape in look.waves.shapes.iter().filter(|s| s.enabled) {
         section("[[shape]]", changed(*shape, ShapeSettings::OFF, &["enabled"]), true);
     }
     if look.waves.art.enabled {
         section("[art]", changed(look.waves.art, ArtSettings::OFF, &["enabled"]), true);
+    }
+    if look.waves.fractal.enabled {
+        section("[fractal]", changed(look.waves.fractal, FractalSettings::OFF, &["enabled"]), true);
     }
     section("[composite]", changed(look.composite, CompositeSettings::OFF, &[]), false);
     let code = &look.code.source;
@@ -471,6 +482,7 @@ pub fn compile_code(source: &CodeSource) -> Result<Code, CodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::fractal::FractalKind;
 
     const BASE: &str = "[meta]\nname = \"T\"\n[sim]\nsolver = \"FLIP\"\nscene = \"Dam break\"\npalette = \"Ocean\"\n";
 
@@ -495,6 +507,10 @@ mod tests {
         assert!(art.enabled && art.size == 0.5 && art.spin == 0.2, "{art:?}");
         assert!(!load("").unwrap().waves.art.enabled);
         assert!(error("[art]\nzise = 0.5\n").message.contains("size"));
+        let fractal = load("[fractal]\nkind = \"julia\"\nzoom = 2.0\n").unwrap().waves.fractal;
+        assert!(fractal.enabled && fractal.kind == FractalKind::Julia && fractal.zoom == 2.0, "{fractal:?}");
+        assert!(!load("").unwrap().waves.fractal.enabled);
+        assert!(error("[fractal]\nzoon = 2.0\n").message.contains("zoom"));
         let look = load("[feedback]\ntrail = 0.3\n[[shape]]\nsides = 5\n").unwrap();
         assert!(look.feedback.enabled && look.feedback.trail == 0.3);
         assert!(look.waves.shapes[0].enabled && look.waves.shapes[0].sides == 5 && !look.waves.shapes[1].enabled);
@@ -581,6 +597,14 @@ mod tests {
         assert!(fails("scene = \"Dam break\"\n").contains("solver"));
         assert!(fails("solver = \"FLIP\"\n").contains("scene"));
         assert!(fails("params = { buoyancy = 0.2 }\n").contains("no fluid"));
+    }
+
+    #[test]
+    fn a_fractal_survives_writing() {
+        let look = load("[fractal]\nkind = \"burning_ship\"\ncentre = [-1.75, -0.03]\nzoom = 20.0\niterations = 300\n").unwrap();
+        assert_eq!(look.waves.fractal.kind, FractalKind::BurningShip);
+        let source = Source::Builtin("t.toml");
+        assert_eq!(parse(&write(&look), "t.toml", source).unwrap(), look, "{}", write(&look));
     }
 
     /// `init` and `frame` share variables; `pixel` becomes shader code.

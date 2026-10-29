@@ -174,6 +174,19 @@ impl Settings {
                 brightness: clamp(w.art.brightness, 0.0, 4.0),
                 ..w.art
             },
+            fractal: crate::render::fractal::FractalSettings {
+                centre: w.fractal.centre.map(|c| clamp(c, -2.5, 2.5)),
+                zoom: clamp(w.fractal.zoom, 0.2, crate::render::fractal::MAX_ZOOM),
+                julia: w.fractal.julia.map(|c| clamp(c, -2.0, 2.0)),
+                rotation: clamp(w.fractal.rotation, -3.15, 3.15),
+                spin: clamp(w.fractal.spin, -1.0, 1.0),
+                iterations: w.fractal.iterations.clamp(16, crate::render::fractal::MAX_ITERATIONS),
+                bands: clamp(w.fractal.bands, 0.0, 8.0),
+                colour_speed: clamp(w.fractal.colour_speed, -1.0, 1.0),
+                opacity: clamp(w.fractal.opacity, 0.0, 1.0),
+                brightness: clamp(w.fractal.brightness, 0.0, 4.0),
+                ..w.fractal
+            },
             ..*w
         };
         let c = &self.composite;

@@ -151,6 +151,7 @@ struct State {
     /// (title, artist, album) and the track last seen.
     media: audio::media::Media,
     art: render::art::ArtLayer,
+    fractal: render::fractal::FractalLayer,
     cover: Option<(std::sync::Arc<Vec<u8>>, egui::TextureHandle, render::Palette)>,
     announced: Option<(String, String, String)>,
     last_track: Option<String>,
@@ -307,6 +308,7 @@ impl State {
         let feedback = render::feedback::FeedbackLayer::new(&gpu.device);
         let waves = render::waves::WavesLayer::new(&gpu.device);
         let art = render::art::ArtLayer::new(&gpu.device);
+        let fractal = render::fractal::FractalLayer::new(&gpu.device);
 
         let egui_ctx = egui::Context::default();
         ui::theme::apply(&egui_ctx);
@@ -380,6 +382,7 @@ impl State {
             music,
             media: audio::media::Media::start(),
             art,
+            fractal,
             cover: None,
             announced: None,
             last_track: None,
@@ -1119,6 +1122,7 @@ impl State {
         self.composite_clock.advance(&self.look_frame.composite, self.frame_dt);
         self.waves.update(&self.waveform, &self.look_frame.waves, self.frame_dt);
         self.art.update(&self.look_frame.waves.art, self.frame_dt);
+        self.fractal.update(&self.look_frame.waves.fractal, self.frame_dt);
         let (drag, wheel) = self.input.take_orbit();
         if self.world3d.is_some() {
             self.step_3d(drag, wheel, real_dt);
@@ -1335,6 +1339,10 @@ impl State {
             if feedback.enabled {
                 self.draw_flow_2d(&mut encoder, view, scene_size);
             }
+        }
+        if waves.fractal.enabled {
+            let viewport = self.viewport_3d().map(|v| v * scale);
+            self.fractal.draw(&self.gpu.queue, &mut encoder, &scene, viewport, &waves.fractal, &self.palette_now);
         }
         if waves.art.enabled && self.art.has_cover() {
             let viewport = self.viewport_3d().map(|v| v * scale);
