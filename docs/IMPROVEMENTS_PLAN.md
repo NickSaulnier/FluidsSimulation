@@ -656,3 +656,45 @@ independent of the rest and could be done in either order.
   - **Checked in the app** (debug build): each material on the dam break, tank with
     obstacle and fountain (jelly slides as a block, snow holds as a slab, sand slopes),
     and the three looks in full screen with the test beat.
+
+- **Phase F, GPU stable fluids (done):** the dye solver on the GPU (§3.8),
+  `sim-gpu/src/stable.rs` and `stable.wgsl`. Phase F is complete.
+  - **The algorithm** is the CPU solver's, dye mode: a 2D port of the 3D smoke solver's
+    kernels with the CPU solver's boundaries. Per substep, one compute pass: classify
+    the cells (the scene's walls and drains, worked out on the CPU when the mask or the
+    drains change; the emitters' nozzles on the GPU, releasing dye, striped for wide
+    ones) -> prescribed faces -> buoyancy -> vorticity confinement -> brushes ->
+    semi-Lagrangian velocity advection -> divergence -> red-black SOR pressure sweeps
+    (warm-started) -> projection -> MacCormack dye advection, faded.
+  - **Nothing comes back while stepping.** The dye (with the fastest speed in the fluid,
+    an atomic max, for the next substep's size) and the velocity are read back only
+    when the app asks (`fill_field`, `velocity_field`: once a frame, for drawing).
+  - **8 storage buffers** is all a stage may bind by default: the dye's three copies
+    share one buffer (vec4 per cell), the cell kinds and the scene's base kinds another,
+    and the last kernel leaves a compact copy of the dye in the spare velocity buffer
+    to read back.
+  - **Parameters:** the CPU solver's (buoyancy, vorticity, dissipation, pressure
+    iterations, over-relaxation, CFL) under the same keys, so looks and the randomizer
+    carry over; 384 cells up by default (768 × 384: nine times the CPU solver's cells).
+    The pressure is plain SOR, not the CPU's multigrid: at this size it doesn't fully
+    converge, which leaves the flow slightly compressible but stable.
+  - **Without a GPU** the registry falls back to the CPU solver, as GPU PBF does.
+  - **The wind tunnel's inlet now reaches into the walls** (which win). It used to stop
+    5 mm short of them: the inlet draws from the pocket behind it, and at 384 cells those
+    gaps were two cells wide and the pocket's only way in, so the inflow went through
+    them at 96 m/s and the substeps shrank to nothing (6 % slow motion). At the CPU's
+    resolution the gaps were under a cell, so the pocket was sealed. More pressure
+    sweeps didn't help, which is how it was found not to be the solver.
+  - **Looks:** *Ink nebula* (heavy ink in the double dam break, stirred by the snare;
+    Ink) and *Silk streams* (the wind tunnel's streaklines curling round the cylinder,
+    mirrored; Aurora). The randomizer picks it like the CPU dye solver.
+  - **Tests** (on a GPU, skipped without): heavy dye slumps along the floor and keeps
+    its amount, between 0 and 1, finite; light dye rises; the wind tunnel flows through
+    without piling dye up; a spinning brush stirs a vortex its way. The app's tests of
+    looks, random looks and the soak now build their worlds with the GPU solvers too,
+    as the app does (before, a GPU look was quietly run on the CPU's first solver).
+  - **Checked in the app** (debug build): beside the CPU solver on the double dam break
+    (far finer swirls), wind tunnel and fountain (88 fps where the CPU solver falls to
+    slow motion), and the two looks in full screen (75 to 107 fps).
+  - Twice in this phase a compiler crash left an incremental cache broken (sim, then
+    the app); clearing that crate's cache fixed the build each time.

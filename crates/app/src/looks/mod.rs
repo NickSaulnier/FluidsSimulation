@@ -68,6 +68,8 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("jelly_drop.toml", include_str!("../../looks/jelly_drop.toml")),
     ("snow_globe.toml", include_str!("../../looks/snow_globe.toml")),
     ("shifting_dunes.toml", include_str!("../../looks/shifting_dunes.toml")),
+    ("ink_nebula.toml", include_str!("../../looks/ink_nebula.toml")),
+    ("silk_streams.toml", include_str!("../../looks/silk_streams.toml")),
 ];
 
 /// How much the director favours a look by its stars (one to five), when picking by
@@ -522,7 +524,7 @@ mod tests {
     fn every_look_refers_to_things_that_exist() {
         for look in library().looks.iter().filter(|l| l.has_fluid() && l.solver_3d().is_none()) {
             assert!(!look.reactions.is_empty(), "{}: no reactions", look.name);
-            let mut world = World::new(0, 0);
+            let mut world = World::with_solvers(&crate::SOLVERS, 0, 0);
             let mut ui = UiState::default();
             assert!(apply(look, &mut world, &mut ui).is_empty(), "{}: unknown parameters", look.name);
             assert_eq!(world.solvers[world.solver_index].name, look.solver);

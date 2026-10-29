@@ -5,13 +5,16 @@
 //! to make them selectable (see `World::with_solvers`).
 
 pub mod pbf;
+pub mod stable;
 
 use anyhow::Context;
 use sim::SolverEntry;
 
 pub use pbf::GpuPbf;
+pub use stable::GpuStable;
 
-pub static SOLVERS: &[SolverEntry] = &[SolverEntry { name: "PBF (GPU)", make: pbf::make }];
+pub static SOLVERS: &[SolverEntry] =
+    &[SolverEntry { name: "PBF (GPU)", make: pbf::make }, SolverEntry { name: "Stable fluids (GPU)", make: stable::make }];
 
 /// A wgpu device for compute work: either headless (`new`, for tests and the bench, and
 /// the 2D GPU solver, which reads its particles back for drawing), or the renderer's own

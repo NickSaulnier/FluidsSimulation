@@ -42,6 +42,7 @@ optimises the dependencies and the `sim` crate).
 | PBF | Position Based Fluids, particles only |
 | PBF (GPU) | The same on wgpu compute |
 | Stable fluids (dye) | Grid fluid carrying dye, with buoyancy and vorticity confinement |
+| Stable fluids (GPU) | The same on wgpu compute, at three times the resolution, for crisp ink at full screen |
 | Smoke & fire | Stable fluids with fuel, temperature, burning and smoke |
 | Lattice Boltzmann (dye) | D2Q9 LBM with a Smagorinsky model |
 | Shallow water | A water surface seen from above (height field), lit: waves, wakes and ripples; the music's drops ring out on it |
@@ -148,7 +149,7 @@ F1 shows them all in the app. The main ones:
 | Crate | What |
 |---|---|
 | `crates/sim` | Headless 2D solvers and scenes. Knows nothing of graphics. |
-| `crates/sim-gpu` | GPU solvers implementing `sim::Solver` (PBF). |
+| `crates/sim-gpu` | GPU solvers implementing `sim::Solver` (PBF, stable fluids). |
 | `crates/sim3d` | 3D GPU solvers, scenes and their world. |
 | `crates/app` | The app (`fluid-toy`): rendering, interface, audio analysis, looks, equations, director. |
 | `crates/bench` | Headless runs: timing per phase, thread scaling, invariant checks. |

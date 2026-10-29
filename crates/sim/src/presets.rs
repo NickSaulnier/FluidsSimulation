@@ -113,7 +113,10 @@ pub fn wind_tunnel_in(d: Vec2) -> Scene {
     let mut s = tank(d);
     s.gravity = Vec2::ZERO;
     let inner = s.solid.interior();
-    let height = inner.size().y - 0.01;
+    // The inlet reaches into the walls (which win), so it spans the tunnel at any
+    // resolution: a gap left at its ends would be the only way into the pocket behind
+    // it, which it draws from, and a fine grid forced the whole inflow through it.
+    let height = inner.size().y + 0.02;
     s.emitters.push(Emitter { pos: Vec2::new(inner.min.x + 0.01, 0.5 * d.y), dir: Vec2::X, speed: 1.0, width: height });
     s.drains.push(Rect::new(Vec2::new(inner.max.x - 0.12, inner.min.y), inner.max));
     s.solid.paint_disc(Vec2::new(0.5, 0.52 * d.y), 0.06, true);

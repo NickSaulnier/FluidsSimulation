@@ -58,7 +58,7 @@ mod tests {
     /// seconds. Returns the looks applied, in order.
     fn soak(seconds: f32, interval: f32) -> Vec<usize> {
         let audio = playlist();
-        let mut world = World::new(0, 0);
+        let mut world = World::with_solvers(&crate::SOLVERS, 0, 0);
         let mut ui = UiState { presenting: true, ..UiState::default() };
         ui.director.interval_s = interval;
         let mut analyzer = Analyzer::new(RATE);

@@ -1,0 +1,20 @@
+[meta]
+name = "Ink nebula"
+tags = ["fluid", "dye", "ink"]
+energy = "calm"
+
+[sim]
+solver = "Stable fluids (GPU)"
+scene = "Double dam break"
+palette = "Ink"
+params = { buoyancy = 0.3, vorticity = 0.45 }
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 0.8 },
+    { trigger = "kick", effect = "vortex", gain = 0.5 },
+    { trigger = "mid", effect = "gust", gain = 0.3 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[composite]
+contrast = 1.1
+vignette = 0.35

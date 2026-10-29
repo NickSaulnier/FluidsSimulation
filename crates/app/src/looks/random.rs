@@ -31,6 +31,7 @@ pub const PHYSICS: &[(&str, &[Range])] = &[
     ("FLIP", &[("flip_ratio", 0.7, 0.99, false)]),
     ("PBF", &[("viscosity", 0.0, 0.05, false), ("tensile_k", 0.005, 0.03, false)]),
     ("Stable fluids (dye)", &[("buoyancy", -0.4, 0.5, false), ("vorticity", 0.05, 0.9, false), ("dissipation", 0.0, 0.1, false)]),
+    ("Stable fluids (GPU)", &[("buoyancy", -0.4, 0.5, false), ("vorticity", 0.05, 0.9, false), ("dissipation", 0.0, 0.1, false)]),
     (
         "Smoke & fire",
         &[
@@ -86,6 +87,7 @@ const FLUIDS: &[(&str, &[&str], f32)] = &[
     ("FLIP", &["Dam break", "Double dam break", "Tank with obstacle", "Fountain", "Martin & Moyce column"], 1.5),
     ("PBF", &["Dam break", "Double dam break", "Tank with obstacle", "Martin & Moyce column"], 1.0),
     ("Stable fluids (dye)", &["Dam break", "Double dam break", "Tank with obstacle", "Martin & Moyce column"], 2.0),
+    ("Stable fluids (GPU)", &["Dam break", "Double dam break", "Tank with obstacle", "Martin & Moyce column", "Wind tunnel"], 1.5),
     ("Smoke & fire", &["Campfire"], 1.5),
     ("Lattice Boltzmann (dye)", &["Wind tunnel"], 1.0),
     ("Shallow water", &["Pond", "Breakwater", "Dam break", "Tank with obstacle", "Wind tunnel", "Falling blocks"], 1.5),
@@ -824,7 +826,7 @@ mod tests {
                 assert!(min <= lo && hi <= max && lo < hi, "{solver}: {key} {lo}..{hi} outside {min}..{max}");
             }
         };
-        let mut world = sim::World::new(0, 0);
+        let mut world = sim::World::with_solvers(&crate::SOLVERS, 0, 0);
         for (solver, ..) in FLUIDS.iter().filter(|f| !f.0.is_empty() && !f.0.contains("3D")) {
             let index = world.solvers.iter().position(|s| s.name == *solver).unwrap_or_else(|| panic!("no solver {solver}"));
             world.switch_solver(index, false);
@@ -848,7 +850,7 @@ mod tests {
     #[test]
     fn random_looks_apply() {
         for look in looks(200).iter().filter(|l| l.has_fluid() && l.solver_3d().is_none()) {
-            let mut world = sim::World::new(0, 0);
+            let mut world = sim::World::with_solvers(&crate::SOLVERS, 0, 0);
             let mut ui = UiState::default();
             assert!(crate::looks::apply(look, &mut world, &mut ui).is_empty(), "{}: unknown parameters", look.name);
             for key in look.code.frame.iter().flat_map(|p| &p.params).chain(look.reactions.iter().filter_map(|r| r.param.as_ref())) {
