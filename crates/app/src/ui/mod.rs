@@ -23,7 +23,7 @@ pub mod thumbnails;
 pub mod title_card;
 mod tool_strip;
 mod top_bar;
-mod widgets;
+pub mod widgets;
 
 use crate::audio::Music;
 use std::time::{Duration, Instant};
@@ -241,6 +241,9 @@ pub struct UiState {
     pub save_look_request: Option<String>,
     /// A solver change for the app to make after this frame's layout.
     pub solver_request: Option<SolverChoice>,
+    /// A random look for the app to make: a new one, or (true) a variation on the look
+    /// on screen.
+    pub random_request: Option<bool>,
 }
 
 impl Default for UiState {
@@ -300,6 +303,7 @@ impl Default for UiState {
             save_name: String::new(),
             save_look_request: None,
             solver_request: None,
+            random_request: None,
         }
     }
 }

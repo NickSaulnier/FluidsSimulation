@@ -11,6 +11,7 @@
 
 mod file;
 pub mod milk;
+pub mod random;
 pub mod runtime;
 
 use crate::audio::reactions::Reaction;
@@ -20,7 +21,7 @@ use crate::render::palette::Palette;
 use crate::render::composite::CompositeSettings;
 use crate::render::waves::WaveSettings;
 use crate::ui::{UiState, params};
-pub use file::{CodeError, LoadError, Part, compile_code};
+pub use file::{CodeError, LoadError, Part, compile_code, write};
 use sim::{PRESETS, World};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
@@ -69,6 +70,8 @@ pub const STAR_WEIGHTS: [f32; 5] = [0.0, 0.6, 1.0, 1.5, 2.0];
 
 /// How often the user's folder is checked for changed files, seconds.
 const POLL_S: f32 = 1.0;
+/// How many random looks are kept (the oldest goes first), until one is saved.
+const RANDOM_KEPT: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Energy {
@@ -85,6 +88,8 @@ pub enum Energy {
 pub enum Source {
     Builtin(&'static str),
     File(PathBuf),
+    /// Made by the randomizer this session (see `random`), not saved.
+    Random,
 }
 
 /// A look's equations, compiled: the per-frame program (its `init` part runs once, when
@@ -183,6 +188,10 @@ pub struct Library {
     pub folder: Option<PathBuf>,
     /// Ratings and favourites, by look name.
     pub marks: std::collections::BTreeMap<String, Mark>,
+    /// The random looks made this session, oldest first (listed after the rest), and
+    /// how many have been made (for their names).
+    randoms: Vec<Look>,
+    random_count: u32,
     /// The folder's look files as last read: path, modified time, length.
     seen: Vec<(PathBuf, Option<SystemTime>, u64)>,
     checked: Option<Instant>,
@@ -197,7 +206,8 @@ impl Default for Library {
 impl Library {
     /// Only the built-in looks.
     pub fn builtin() -> Self {
-        let mut library = Self { looks: Vec::new(), errors: Vec::new(), folder: None, marks: Default::default(), seen: Vec::new(), checked: None };
+        let mut library =
+            Self { looks: Vec::new(), errors: Vec::new(), folder: None, marks: Default::default(), randoms: Vec::new(), random_count: 0, seen: Vec::new(), checked: None };
         library.load();
         library
     }
@@ -231,10 +241,34 @@ impl Library {
         mark.rating
     }
 
+    /// The next random look's name: "Random 1", "Random 2" and so on.
+    pub fn next_random_name(&mut self) -> String {
+        loop {
+            self.random_count += 1;
+            let name = format!("Random {}", self.random_count);
+            if !self.looks.iter().any(|l| l.name == name) {
+                return name;
+            }
+        }
+    }
+
+    /// Add a random look (see `random`), after the rest. Returns its index. The oldest
+    /// goes once `RANDOM_KEPT` are kept.
+    pub fn add_random(&mut self, look: Look) -> usize {
+        if self.randoms.len() >= RANDOM_KEPT {
+            let gone = self.randoms.remove(0);
+            self.looks.retain(|l| !(l.source == Source::Random && l.name == gone.name));
+        }
+        self.randoms.push(look.clone());
+        self.looks.push(look);
+        self.looks.len() - 1
+    }
+
     /// How much the director favours each look when picking by itself (see
     /// `Director::update`): by its stars (`STAR_WEIGHTS`: one star never, three as
     /// usual, five twice as often), and never for a look that isn't a favourite if
     /// `favourites_only`, or lacks any of `tags` (each only while some look qualifies).
+    /// Random looks never, unless favourites: they had their turn when made.
     pub fn weights(&self, favourites_only: bool, tags: &[String]) -> Vec<f32> {
         let favourite = |l: &Look| self.mark(&l.name).favourite;
         let tagged = |l: &Look| tags.iter().all(|t| l.tags.contains(t));
@@ -243,7 +277,7 @@ impl Library {
         self.looks
             .iter()
             .map(|l| {
-                let kept = (!only_favourites || favourite(l)) && (!only_tagged || tagged(l));
+                let kept = (!only_favourites || favourite(l)) && (!only_tagged || tagged(l)) && (l.source != Source::Random || favourite(l));
                 if kept { STAR_WEIGHTS[usize::from(self.mark(&l.name).stars()) - 1] } else { 0.0 }
             })
             .collect()
@@ -346,6 +380,9 @@ impl Library {
         for e in &self.errors {
             log::warn!("look {e}");
         }
+        // The random looks, but any since saved (a file of the same name).
+        self.randoms.retain(|r| !self.looks.iter().any(|l| l.name == r.name));
+        self.looks.extend(self.randoms.iter().cloned());
     }
 }
 
@@ -639,6 +676,49 @@ mod tests {
         assert!(!l.poll(start + std::time::Duration::from_millis(100)), "polled too soon after the last check");
         assert!(l.poll(start + std::time::Duration::from_secs(2)), "the change wasn't seen");
         assert_eq!(l.looks[l.find("Mine").unwrap()].feedback.trail, 0.65);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Random looks join after the rest under names not in use, and stay when the
+    /// folder is read again; the director doesn't pick them by itself; once saved, the
+    /// file takes over; past `RANDOM_KEPT`, the oldest goes.
+    #[test]
+    fn random_looks_join_until_kept() {
+        let dir = std::env::temp_dir().join(format!("fluid-toy-random-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut l = Library::with_folder(dir.clone());
+        let mut rng = utils::rng::SplitMix64::new(1);
+        let name = l.next_random_name();
+        assert_eq!(name, "Random 1");
+        let i = l.add_random(random::random(&mut rng, &name));
+        assert_eq!((i, &l.looks[i].source), (l.looks.len() - 1, &Source::Random));
+        assert_eq!(l.weights(false, &[])[i], 0.0, "not picked by itself");
+        l.marks.insert(name.clone(), Mark { rating: 0, favourite: true });
+        assert!(l.weights(false, &[])[i] > 0.0, "unless a favourite");
+        l.load();
+        assert_eq!(l.find(&name), Some(i), "kept on reading again");
+
+        l.save(&l.looks[i].clone()).unwrap();
+        let saved: Vec<&Look> = l.looks.iter().filter(|x| x.name == name).collect();
+        assert_eq!(saved.len(), 1);
+        assert!(matches!(saved[0].source, Source::File(_)) && saved[0].author == random::AUTHOR);
+        std::fs::write(dir.join("other.toml"), "[meta]
+name = \"Random 2\"
+[sim]
+palette = \"Ink\"
+").unwrap();
+        l.seen = l.scan();
+        l.load();
+        assert_eq!(l.next_random_name(), "Random 3", "a name in use is skipped");
+
+        for _ in 0..RANDOM_KEPT + 3 {
+            let name = l.next_random_name();
+            l.add_random(random::random(&mut rng, &name));
+        }
+        let randoms: Vec<&str> = l.looks.iter().filter(|x| x.source == Source::Random).map(|x| x.name.as_str()).collect();
+        assert_eq!(randoms.len(), RANDOM_KEPT);
+        assert_eq!((randoms[0], *randoms.last().unwrap()), ("Random 7", "Random 26"));
+        assert!(l.errors.is_empty(), "{:?}", l.errors);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

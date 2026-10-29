@@ -45,6 +45,8 @@ pub enum Action {
     NextLookFade,
     HardCut,
     LockLook,
+    RandomLook,
+    VaryLook,
 }
 
 /// Cheat-sheet columns.
@@ -126,6 +128,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s(KeyCode::Period, ".", A::NextLook, "next visualizer look", G::View),
     s(KeyCode::KeyA, "A", A::ToggleAutoLooks, "change looks automatically", G::View),
     s(KeyCode::Backspace, "Backspace", A::BackLook, "back to the look before", G::View),
+    s(KeyCode::KeyD, "D", A::RandomLook, "a new random look", G::View),
+    shifted(KeyCode::KeyD, "Shift+D", A::VaryLook, "vary the look on screen", G::View),
     s(KeyCode::Equal, "+", A::RateUp, "rate the look higher", G::View),
     s(KeyCode::Minus, "-", A::RateDown, "rate the look lower", G::View),
     s(KeyCode::KeyT, "T", A::ShowTitle, "show the song's title", G::View),
@@ -202,6 +206,8 @@ mod tests {
         assert_eq!(lookup(KeyCode::KeyR, false, true, Mods::None), Some(Action::Reset), "the rest still work");
         assert_eq!(lookup(KeyCode::F11, false, false, Mods::Shift), Some(Action::NextDisplay), "Shift makes another key");
         assert_eq!(lookup(KeyCode::F11, false, false, Mods::None), Some(Action::TogglePresentation));
+        assert_eq!(lookup(KeyCode::KeyD, false, true, Mods::None), Some(Action::RandomLook));
+        assert_eq!(lookup(KeyCode::KeyD, false, false, Mods::Shift), Some(Action::VaryLook));
     }
 
     /// Ctrl+Z undoes a wall stroke; Z alone, or with Ctrl held, does nothing else.

@@ -69,6 +69,10 @@ const TILT_STEP_DEG: f32 = 5.0;
 const STRENGTH_STEP: f32 = 0.5;
 /// A look's thumbnail is taken this long after it starts.
 const THUMBNAIL_AFTER_S: f32 = 8.0;
+/// How often the director, mixing in random looks, makes one instead of its own pick,
+/// and how many tries it takes at one that suits the music's energy.
+const RANDOM_SHARE: f32 = 0.25;
+const RANDOM_TRIES: usize = 8;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -939,7 +943,42 @@ impl State {
             Action::ToggleRecording => self.toggle_recording(),
             Action::NextDisplay => ui.next_display(),
             Action::ToggleEditor => ui.editor_open = !ui.editor_open,
+            Action::RandomLook | Action::VaryLook => self.show_random(action == Action::VaryLook),
         }
+    }
+
+    /// Make a random look (or, `vary`, a variation on the one on screen) and blend to it.
+    fn show_random(&mut self, vary: bool) {
+        let index = self.make_random(vary, None);
+        let name = self.ui.looks.looks[index].name.clone();
+        self.ui.director.request(index);
+        ui::anim::kick(&self.egui_ctx, ui::widgets::dice_id());
+        self.ui.show_notice(format!("{name}: Save as keeps it, Backspace goes back"));
+    }
+
+    /// Make a random look (see `looks::random`), or `vary` the one on screen, and add it
+    /// to the library; `energy`: one that suits it, if a few tries find one. Returns its
+    /// index.
+    fn make_random(&mut self, vary: bool, energy: Option<looks::Energy>) -> usize {
+        let name = self.ui.looks.next_random_name();
+        let current = self.ui.director.current.and_then(|i| self.ui.looks.looks.get(i)).cloned();
+        let mut make = || match (vary, &current) {
+            (true, Some(c)) => looks::random::vary(c, &mut self.rng, &name),
+            _ => looks::random::random(&mut self.rng, &name),
+        };
+        let mut look = make();
+        for _ in 0..RANDOM_TRIES {
+            if energy.is_none_or(|e| e == looks::Energy::Any || look.energy == e || look.energy == looks::Energy::Any) {
+                break;
+            }
+            look = make();
+        }
+        log::info!("random look {name}:
+{}", looks::write(&look));
+        let before: Vec<String> = self.ui.looks.looks.iter().map(|l| l.name.clone()).collect();
+        let index = self.ui.looks.add_random(look);
+        self.ui.director.reindex(&before, &self.ui.looks.looks);
+        index
     }
 
     /// The canvas (what the UI's bars and panel leave over, last laid out; the whole
@@ -1050,6 +1089,9 @@ impl State {
         if let Some(name) = self.ui.save_look_request.take() {
             self.save_look(name);
         }
+        if let Some(vary) = self.ui.random_request.take() {
+            self.show_random(vary);
+        }
 
         self.sync_presentation(real_dt);
         self.refit_domain(now);
@@ -1058,7 +1100,14 @@ impl State {
         let kicked = self.music.onsets().iter().any(|o| o.kind == audio::analyzer::OnsetKind::Kick);
         let weights = self.ui.look_weights();
         if let Some(change) = self.ui.director.update(&self.ui.looks.looks, &weights, self.ui.presenting, self.music.features(), kicked, real_dt) {
-            self.apply_look(change.look, change.cut);
+            let mut look = change.look;
+            // Now and then, a new random look in place of the director's own pick.
+            if self.ui.director.random_looks && self.ui.director.picked_itself() && self.rng.next_f32() < RANDOM_SHARE {
+                let energy = self.ui.looks.looks.get(look).map(|l| l.energy);
+                look = self.make_random(false, energy);
+                self.ui.director.substitute(look);
+            }
+            self.apply_look(look, change.cut);
         }
         if self.no_fluid.is_some_and(|at| self.world3d.is_some() || at != (self.world.solver_index, self.world.scene_generation)) {
             self.no_fluid = None;

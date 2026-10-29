@@ -351,7 +351,7 @@ independent of the rest and could be done in either order.
       cards rise with a deepening shadow.
     - "Reduce motion" (a setting, and on when Windows' animation effects are off) makes
       every change instant, egui's own included.
-    - The dice tumble waits for the randomizer (phase E).
+    - The dice tumble came with the randomizer (phase E).
   - **The display choice** (§3.3):
     - Picking a display moves the app there at once (the window centred, or the
       visualizer filling it), and the app starts on the display chosen.
@@ -482,3 +482,74 @@ independent of the rest and could be done in either order.
   - A note on the test run: once, the sim3d GPU tests hung (a process waiting on the
     GPU for 20 minutes, using no CPU) while another copy of the app was running; run
     again, they passed in 8 s. Not reproduced since.
+
+- **Phase E (done):** the randomizer (§3.2), `app/src/looks/random.rs`.
+  - **D** (or the dice in the top bar and the full-screen bar) makes a new look and
+    blends to it; **Shift+D** (or Shift-clicking the dice) varies the look on screen.
+    The dice tumbles, turning over twice as its face changes. A notice says how to keep
+    it or go back.
+  - **What a random look is:**
+    - The fluid: none (the most likely, weight 3), FLIP, PBF, Stable fluids, Smoke &
+      fire, Lattice Boltzmann, Fire 3D or Smoke 3D, each in the scenes its built-ins
+      use (the dye solvers need something to stir; fire needs its burner). The debug
+      solver and the GPU PBF (not always there) are left out.
+    - Its physics: every physical parameter, from a table of watchable ranges inside the
+      controls' (`PHYSICS`; a test checks each against the solver, the 3D ones on the
+      GPU). Numerics (iterations, resolution, CFL) keep their defaults. Every key is
+      set, so nothing carries over from the look before.
+    - Colours: a built-in palette (40 %) or one from a hue scheme (analogous,
+      complementary or triadic), ordered by brightness, the base no brighter than
+      luma 0.55, the highlight well above it.
+    - The picture: feedback mode, trail, zoom, turn, drift, warp, bass zoom, echo; a
+      wave mode (and push, for 2D fluids) and up to two shapes; symmetry, hue drift,
+      grading, palette map, aberration, vignette, grain. Liquid surface for particles;
+      an orbit speed in 3D.
+    - Reactions: two to four from a set that suits the fluid (particles, dye, 2D fire,
+      3D fire, 3D smoke, none), the first always its signature (kick splash, snare
+      vortex, kick jet, kick flash), sometimes the bass on a physical parameter.
+    - Equations, half the time: one to three per-frame snippets (a wandering centre, a
+      beat pulse, a swinging turn, a hue swing, a pulsing vignette) and with feedback
+      on, sometimes one per-pixel (a spiral twist, ripples, petals, a faster rim). The
+      2D fluids' gravity leans or swings now and then (gravity is set through the
+      equations, so it's kept with the look), and sometimes the bass moves a physical
+      parameter.
+    - Energy (calm, energetic, either) from how hard it moves.
+  - **Watchable:** after drawing, `tame` clamps every value, and in brightest mode keeps
+    out what blew out: a strong zoom with bright waves or long trails, long trails
+    with much zoom or echo, bright waves under any zoom, filled shapes, exposure above
+    1.05, long trails on particles and dye, and a strong palette map over a bright
+    palette.
+  - **Keeping it:** random looks are named "Random 1", "Random 2" and so on (skipping
+    names in use), with the author "random" and the tag "random". They sit in the
+    library after the rest (the browser, the menu, the director's history), the last
+    20 kept, until Save as writes one to the folder, where the file takes over.
+    Backspace goes back as with any look. The director doesn't pick them by itself
+    unless they're favourites.
+  - **In the director's rotation** (Music tab, "Mix in random looks", off by default):
+    a quarter of the director's own picks become a new random look of the same energy
+    (eight tries), not requests or a locked look's refresh. The passed-over pick then
+    counts as never shown, so it comes soon.
+  - **Left out:** glow, blob size and the overlay. They're the user's display
+    settings, not part of a look, so a random look that set them would change them for
+    every look after.
+  - **Tests:** a thousand random looks round-trip through their files with their
+    equations compiled; every value in range and none of the bright combinations;
+    every fluid, wave mode and energy turns up; variations keep their fluid and code,
+    stay within ±20 % and load; the physics ranges fit the controls (2D and 3D); random
+    2D looks apply with every parameter known; the library keeps, names, saves and
+    drops random looks; the director's own picks are marked and can be replaced; the
+    D keys and the setting round-trip.
+  - **Checked in the app** (debug build, the long test beat, muted, full screen): three
+    tours of twenty random looks, screenshotted.
+    - The first showed two blown out to white: brightest feedback over a filled shape
+      and bright spectrum, and bright particles under a strong palette map.
+    - The second, after taming those, showed four nearly black: no-fluid looks with
+      smear feedback fading toward the black between thin waves. Without fluid, a
+      random look now uses brightest 90 % of the time, as every built-in does. Its
+      equations also repeated a snippet; each now appears once.
+    - The third: twenty varied looks at 52 to 240 fps, none black or blown out. One
+      liquid look kept a large flat white area, and one particle look was sparse.
+      Backspace went back. No errors.
+    - Not checked in the app: Shift+D (a posted Shift doesn't reach the app; the tests
+      cover varying), clicking the dice and the director mixing in random looks (both
+      covered by tests).

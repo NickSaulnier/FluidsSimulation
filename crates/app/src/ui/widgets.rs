@@ -201,6 +201,37 @@ pub fn icon_button_sized(ui: &mut Ui, glyph: &str, size: f32) -> egui::Response 
     response
 }
 
+/// How long the dice tumbles, seconds.
+const TUMBLE_S: f32 = 0.6;
+
+/// The randomize button's tumble (see `dice_button`): kick it to start.
+pub fn dice_id() -> egui::Id {
+    egui::Id::new("dice tumble")
+}
+
+/// The randomize button: a die that tumbles for a moment after `anim::kick(ctx,
+/// dice_id())`, turning over twice as its face changes, and settles on five.
+pub fn dice_button(ui: &mut Ui) -> egui::Response {
+    use egui_phosphor::regular as icon;
+    let glow = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(egui::Button::new("").min_size(ICON_BUTTON));
+    paint_glow(ui, glow, &response);
+    let faces = [icon::DICE_ONE, icon::DICE_THREE, icon::DICE_SIX, icon::DICE_TWO, icon::DICE_FOUR, icon::DICE_FIVE];
+    let (face, angle) = match anim::progress(ui.ctx(), dice_id(), TUMBLE_S) {
+        Some(t) => {
+            ui.ctx().request_repaint();
+            (faces[((t * 9.0) as usize).min(faces.len() - 1)], std::f32::consts::TAU * 2.0 * anim::ease_out(t))
+        }
+        None => (icon::DICE_FIVE, 0.0),
+    };
+    let colour = ui.style().interact(&response).fg_stroke.color;
+    let galley = ui.painter().layout_no_wrap(face.to_string(), egui::FontId::proportional(18.0), colour);
+    // A text shape turns about its top-left corner: place that so it turns about the middle.
+    let pos = response.rect.center() - egui::emath::Rot2::from_angle(angle) * (galley.size() / 2.0);
+    ui.painter().add(egui::epaint::TextShape::new(pos, galley, colour).with_angle(angle));
+    response
+}
+
 /// Fill the reserved `slot` with a soft accent glow round `response`, as it's hovered.
 pub fn paint_glow(ui: &Ui, slot: egui::layers::ShapeIdx, response: &egui::Response) {
     let t = anim::toward(ui.ctx(), response.id.with("glow"), response.hovered() && ui.is_enabled(), anim::QUICK);

@@ -90,6 +90,8 @@ struct Pending {
     target: usize,
     waited: f32,
     transition: Transition,
+    /// The director's own pick (not a refresh of the locked look).
+    own: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +104,9 @@ pub struct Director {
     pub favourites_only: bool,
     /// Pick only looks with the browser's picked tags when changing by itself.
     pub tags_only: bool,
+    /// Now and then show a new random look instead of its own pick (the app makes it:
+    /// see `picked_itself`).
+    pub random_looks: bool,
     /// The look on screen, if a look was applied.
     pub current: Option<usize>,
     elapsed: f32,
@@ -124,6 +129,8 @@ pub struct Director {
     going_back: bool,
     /// The app reported a new song since the last update.
     told_new_song: bool,
+    /// The change under way (or the last) was the director's own pick, not asked for.
+    own: bool,
 }
 
 impl Default for Director {
@@ -133,6 +140,7 @@ impl Default for Director {
             interval_s: 90.0,
             favourites_only: false,
             tags_only: false,
+            random_looks: false,
             current: None,
             elapsed: 0.0,
             silence: 0.0,
@@ -147,6 +155,7 @@ impl Default for Director {
             history: Vec::new(),
             going_back: false,
             told_new_song: false,
+            own: false,
         }
     }
 }
@@ -154,7 +163,7 @@ impl Default for Director {
 impl Director {
     /// Blend to look `target` (a manual choice, or the director's own), now.
     pub fn request(&mut self, target: usize) {
-        self.change(target, 0.0, Transition::Blend(BLEND_S));
+        self.change(target, 0.0, Transition::Blend(BLEND_S), false);
     }
 
     /// A new song has begun (known, not guessed from silence): change look for it after
@@ -166,7 +175,7 @@ impl Director {
     /// Change to look `target` at once, without a blend.
     pub fn cut(&mut self, target: usize) {
         self.fade = Fade::None;
-        self.change(target, 0.0, Transition::Cut);
+        self.change(target, 0.0, Transition::Cut, false);
     }
 
     /// Blend back to the look shown before this one, if there was one (and step further
@@ -187,10 +196,29 @@ impl Director {
         self.choose(looks, weights, self.slow > ENERGETIC)
     }
 
+    /// Whether the change that just landed (see `update`) was the director's own pick,
+    /// not one asked for or a refresh of the locked look.
+    pub fn picked_itself(&self) -> bool {
+        self.own
+    }
+
+    /// Show look `look` in place of the one the change that just landed brought (the
+    /// app made a random look instead of the director's pick, which then counts as
+    /// never shown, so it comes soon).
+    pub fn substitute(&mut self, look: usize) {
+        if let Some(passed) = self.current.and_then(|c| self.shown.get_mut(c)) {
+            *passed = 0;
+        }
+        self.current = Some(look);
+        self.shown.resize(self.shown.len().max(look + 1), 0);
+        self.shown[look] = self.applied;
+    }
+
     /// Start a change to `target`, `length` seconds from now (unless one is already on
-    /// its way).
-    fn change(&mut self, target: usize, length: f32, transition: Transition) {
+    /// its way). `own`: the director's own pick.
+    fn change(&mut self, target: usize, length: f32, transition: Transition, own: bool) {
         if !matches!(self.fade, Fade::Out { .. }) {
+            self.own = own;
             let held = self.blend();
             self.fade = Fade::Out { t: 0.0, target, length, transition, captured: false, held };
             self.waiting = None;
@@ -334,7 +362,7 @@ impl Director {
                 && ((settled && song_change) || told || self.due)
                 && self.waiting.is_none()
             {
-                self.waiting = Some(Pending { target: current, waited: 0.0, transition: blend });
+                self.waiting = Some(Pending { target: current, waited: 0.0, transition: blend, own: false });
             }
             self.land(features, kicked, dt);
             return None;
@@ -349,14 +377,14 @@ impl Director {
                 None
             } else if heard >= LISTEN_S {
                 let target = self.choose(looks, weights, sum / heard > ENERGETIC);
-                self.request(target);
+                self.change(target, 0.0, blend, true);
                 None
             } else {
                 Some((heard, sum))
             };
             return None;
         }
-        let pending = |target, transition| Some(Pending { target, waited: 0.0, transition });
+        let pending = |target, transition| Some(Pending { target, waited: 0.0, transition, own: true });
         match section {
             Some(SectionKind::Drop) if settled => self.waiting = pending(self.choose(looks, weights, true), Transition::Cut),
             Some(SectionKind::Breakdown) if settled => self.waiting = pending(self.choose(looks, weights, false), Transition::Blend(SLOW_BLEND_S)),
@@ -391,7 +419,7 @@ impl Director {
             None => (p.transition == Transition::Cut || kicked || waited >= KICK_WAIT_S).then_some(0.0),
         };
         match start {
-            Some(length) => self.change(p.target, length, p.transition),
+            Some(length) => self.change(p.target, length, p.transition, p.own),
             None => self.waiting = Some(Pending { waited, ..p }),
         }
     }
@@ -759,5 +787,29 @@ mod tests {
         let mut d = Director { current: Some(1), ..Director::default() };
         d.reindex(&before, &moved);
         assert_eq!(d.current, None);
+    }
+
+    /// The director's own picks are marked as its own (asked-for changes aren't), and
+    /// one can be replaced: the replacement is on screen, back returns past it, and the
+    /// passed-over pick comes round next.
+    #[test]
+    fn own_picks_can_be_replaced() {
+        let mut d = settled(0.3);
+        d.request(4);
+        assert_eq!((0..200).filter_map(|_| step(&mut d, true, None, false)).last(), Some(4));
+        assert!(!d.picked_itself(), "asked for");
+        let applied = run(&mut d, &music(0.3), Some(30), 95.0);
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert!(d.picked_itself(), "the timer's pick");
+        let passed = applied[0];
+        d.substitute(9);
+        assert_eq!(d.current, Some(9));
+        // Against the look shown before it, the passed-over pick counts as never shown.
+        let weights: Vec<f32> = (0..looks().len()).map(|i| if i == passed || i == 4 { 1.0 } else { 0.0 }).collect();
+        if looks()[passed].suits(false) && looks()[4].suits(false) {
+            assert_eq!(d.pick(looks(), &weights), passed, "the passed-over pick comes next");
+        }
+        assert!(d.back());
+        assert_eq!((0..200).filter_map(|_| step(&mut d, false, None, false)).last(), Some(4));
     }
 }

@@ -118,6 +118,12 @@ fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
         row(ui, "Change every", "The longest a look stays (in full screen, with automatic changes)", |ui| {
             ui.add(egui::Slider::new(&mut d.interval_s, 30.0..=300.0).suffix(" s").fixed_decimals(0));
         });
+        widgets::toggle(
+            ui,
+            &mut d.random_looks,
+            "Mix in random looks",
+            "Changing looks by itself, now and then make a new random look instead (Save as keeps one you like).",
+        );
         if let Some(folder) = &library.folder {
             row(ui, "Files", "Your own looks: TOML files in this folder, read again whenever one changes (see looks/README.md)", |ui| {
                 if icon_button(ui, icon::FOLDER_OPEN).on_hover_text(format!("Open the folder: {}", folder.display())).clicked() {
@@ -140,6 +146,7 @@ fn looks(ui: &mut Ui, f: &mut Frame<'_>) {
                 let replaces = library.looks.iter().find(|l| l.name == name).map(|l| match l.source {
                     crate::looks::Source::File(_) => format!("Save over your look \"{name}\""),
                     crate::looks::Source::Builtin(_) => format!("Save as your own \"{name}\", in place of the built-in one"),
+                    crate::looks::Source::Random => format!("Keep the random look \"{name}\" in your folder"),
                 });
                 let tip = replaces.unwrap_or_else(|| "Save as a new look".into());
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));

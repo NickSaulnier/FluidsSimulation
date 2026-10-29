@@ -55,6 +55,7 @@ fn looks(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     if widgets::icon_button(ui, icon::CARET_RIGHT).on_hover_text(tip("Next look", Action::NextLook)).clicked() {
         d.request(d.neighbour(1, looks.len()));
     }
+    top_bar::dice(ui, f);
     if widgets::icon_button(ui, icon::SQUARES_FOUR).on_hover_text(tip("Browse the looks", Action::ToggleBrowser)).clicked() {
         f.state.browser_open = !f.state.browser_open;
     }

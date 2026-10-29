@@ -43,6 +43,7 @@ pub struct Settings {
     /// The browser's picked tags, and whether the director keeps to them.
     pub look_tags: Vec<String>,
     pub tags_only: bool,
+    pub random_looks: bool,
     pub look_marks: std::collections::BTreeMap<String, crate::looks::Mark>,
     pub glow: f32,
     pub render_scale: f32,
@@ -87,6 +88,7 @@ impl Settings {
             album_colours: s.album_colours,
             look_tags: s.browser.tags.clone(),
             tags_only: s.director.tags_only,
+            random_looks: s.director.random_looks,
             look_marks: s.looks.marks.clone(),
             glow: s.glow,
             render_scale: s.render_scale,
@@ -126,6 +128,7 @@ impl Settings {
         s.album_colours = self.album_colours;
         s.browser.tags = self.look_tags.clone();
         s.director.tags_only = self.tags_only;
+        s.director.random_looks = self.random_looks;
         s.looks.marks = self.look_marks.clone();
         s.glow = clamp(self.glow, 0.0, 1.0);
         s.render_scale = if self.render_scale > 0.0 { clamp(self.render_scale, 0.5, 1.0) } else { 0.0 };
@@ -243,6 +246,7 @@ mod tests {
         state.director.favourites_only = true;
         state.browser.tags = vec!["water".into()];
         state.director.tags_only = true;
+        state.director.random_looks = true;
         state.screen = crate::ui::Screen { monitor: Some("DISPLAY2".into()), windowed: true, on_top: true, fps_cap: 60 };
         let json = serde_json::to_string(&Settings::from_state(&state)).unwrap();
         let mut back = UiState::default();

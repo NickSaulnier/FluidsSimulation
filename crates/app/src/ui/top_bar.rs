@@ -57,6 +57,15 @@ fn look(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     if icon_button(ui, icon::CARET_RIGHT).on_hover_text(tip("Next look", Action::NextLook)).clicked() {
         d.request(d.neighbour(1, looks.len()));
     }
+    dice(ui, f);
+}
+
+/// The dice: a new random look, or with Shift held a variation on this one.
+pub(super) fn dice(ui: &mut egui::Ui, f: &mut Frame<'_>) {
+    let tip = format!("{}; with Shift, vary this one ({})", tip("A new random look", Action::RandomLook), super::shortcuts::keys(Action::VaryLook).unwrap_or(""));
+    if widgets::dice_button(ui).on_hover_text(tip).clicked() {
+        f.state.random_request = Some(ui.input(|i| i.modifiers.shift));
+    }
 }
 
 fn transport(ui: &mut egui::Ui, f: &mut Frame<'_>) {
