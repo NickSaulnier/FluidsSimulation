@@ -152,6 +152,14 @@ pub enum Func {
     Below,
     Equal,
     Rand,
+    // MilkDrop's, for its presets: `sqr(x)`, `int(x)` (toward zero), `band`, `bor` and
+    // `bnot` (1 or 0), and `rand(n)` (a whole number from 0 up to n).
+    Sqr,
+    Int,
+    Band,
+    Bor,
+    Bnot,
+    RandInt,
 }
 
 /// The functions: name, arity.
@@ -183,6 +191,11 @@ const FUNCS: &[(&str, Func, usize)] = &[
     ("below", Func::Below, 2),
     ("equal", Func::Equal, 2),
     ("rand", Func::Rand, 0),
+    ("sqr", Func::Sqr, 1),
+    ("int", Func::Int, 1),
+    ("band", Func::Band, 2),
+    ("bor", Func::Bor, 2),
+    ("bnot", Func::Bnot, 1),
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -439,6 +452,9 @@ impl Parser<'_> {
                     }
                 }
                 self.expect(")")?;
+                if func == Func::Rand && args.len() == 1 {
+                    return Ok(Raw::Call(Func::RandInt, args));
+                }
                 if args.len() != arity {
                     let s = if arity == 1 { "" } else { "s" };
                     return Err(error(self.src, at, format!("`{name}` takes {arity} argument{s}, not {}", args.len())));
@@ -564,7 +580,7 @@ pub fn compile(src: &str, stage: Stage) -> Result<Program, Error> {
 
 fn uses_rand(e: &Expr) -> bool {
     match e {
-        Expr::Call(Func::Rand, _) => true,
+        Expr::Call(Func::Rand | Func::RandInt, _) => true,
         Expr::Call(_, args) => args.iter().any(uses_rand),
         Expr::Unary(_, a) => uses_rand(a),
         Expr::Binary(_, a, b) => uses_rand(a) || uses_rand(b),

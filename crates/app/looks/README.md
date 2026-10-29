@@ -76,6 +76,17 @@ picked there. Its equation editor (E, or the function button) edits
 the `[code]` of the look on screen while it runs; Save there writes the look as Save as
 does, under its own name.
 
+## Classic MilkDrop presets
+
+Drop `.milk` files (or a folder of them) on the window, or run `fluid-toy --import
+<file or folder>`, to convert them into looks in your folder (`milk_<name>.toml`, over
+an earlier import of the same preset). Their warp, decay, echo, waveform (the nearest
+of our modes, coloured by the wave's colour), first two shapes and equations come
+across; the equations run between lines that convert our values to MilkDrop's units
+(per frame at 60 a second, y down) and back. MilkDrop 2 shaders, custom waves, shape
+equations, borders and motion vectors have no equivalent and are left out, and listed
+at the top of the file, as are equations that don't compile.
+
 ## `[sim]`
 
 - `solver`, `scene`: names as the app shows them. A 3D solver (`Smoke (3D GPU)`,
@@ -163,6 +174,9 @@ use `pow(a, b)`. Dividing by 0 gives 0. Names don't care about case.
 Functions: `sin cos tan asin acos atan atan2(y, x) abs sqrt pow(a, b) exp log log10
 min(a, b) max(a, b) floor ceil round fract sign clamp(x, lo, hi) sigmoid(x, k)
 if(c, a, b) above(a, b) below(a, b) equal(a, b)`, and `rand()` (0 to 1, per frame only).
+MilkDrop's are there too, for its presets: `sqr(x)`, `int(x)` (toward zero), `band(a, b)`,
+`bor(a, b)`, `bnot(a)` (1 or 0), and `rand(n)` (a whole number from 0 up to n, per frame
+only).
 `sqrt`, `log` and `pow` keep to numbers they can take (`sqrt(-4)` is 2).
 
 ### What every program reads

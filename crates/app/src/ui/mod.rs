@@ -119,6 +119,8 @@ pub struct UiState {
     pub song: Option<title_card::Song>,
     pub title_card: Option<Instant>,
     pub title_cards: bool,
+    /// While a video is recording: when it started (for the indicator).
+    pub recording: Option<Instant>,
     /// Colour the looks by the song's cover art (listening live).
     pub album_colours: bool,
     /// The look browser and the equation editor windows.
@@ -192,6 +194,7 @@ impl Default for UiState {
             song: None,
             title_card: None,
             title_cards: true,
+            recording: None,
             album_colours: true,
             browser_open: false,
             editor_open: false,
@@ -354,6 +357,18 @@ pub fn layout(ui: &mut egui::Ui, f: &mut Frame<'_>, cursor: Option<Cursor>) -> e
 /// The windows over the canvas: the title card, the browser, the editor and the cheat
 /// sheet.
 fn windows(ctx: &egui::Context, canvas: egui::Rect, f: &mut Frame<'_>) {
+    if let Some(since) = f.state.recording {
+        let s = since.elapsed().as_secs();
+        egui::Area::new(egui::Id::new("recording"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(canvas.right_top() + egui::vec2(-16.0, 16.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                let text = egui::RichText::new(format!("{} REC {}:{:02}", egui_phosphor::regular::RECORD, s / 60, s % 60)).strong().color(egui::Color32::from_rgb(240, 70, 70));
+                ui.label(text).on_hover_text(shortcuts::tip("Stop recording", shortcuts::Action::ToggleRecording));
+            });
+    }
     if let (Some(since), Some(song)) = (f.state.title_card, &f.state.song) {
         let alpha = title_card::opacity(since, Instant::now());
         if alpha > 0.0 {

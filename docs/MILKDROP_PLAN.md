@@ -1,6 +1,6 @@
 # MilkDrop-Style Visualizer Plan
 
-Status: **approved; phases A to I done** (E with the analyzer plan, which did most of its audio work; part of F came with I); J, the optional extras, not started. Decisions (§9) taken as recommended (2026-10-25):
+Status: **approved; phases A to J done** (E with the analyzer plan, which did most of its audio work; part of F came with I; J with classic import, screenshots and recording, leaving Spout, MIDI and OSC, as decided). Decisions (§9) taken as recommended (2026-10-25):
 - our own MilkDrop-inspired preset format, with a classic `.milk` importer later;
 - presets in TOML;
 - our own equation language, interpreted on the CPU and compiled to WGSL per pixel;
@@ -790,4 +790,50 @@ that makes variety cheap. A suggested order is A, B, C, D, E, F, then the rest b
     with the cover, and both looks coloured from the cover. Not checked in the app: a
     song starting while listening (the title card and the change of look come on its
     first playing report), since nothing was playing.
+- **Phase J (done, as decided: classic import, screenshots and recording; Spout, MIDI
+  and OSC left for later):** `app/src/looks/milk.rs`, `output.rs`, `render/grab.rs`.
+  - Frames read back without stalling (`render::grab`): the composite drawn again into
+    one of four slots, copied to a buffer and mapped a few frames later; when all four
+    are busy a grab is refused (a frame dropped) rather than waiting.
+  - Screenshots (F12): the picture at the window's size, without the interface, as a
+    PNG in `Pictures\fluid-toy`, named after the look ("Lava lamp 1.png"), written on
+    a thread.
+  - Recordings (F10): frames at the window's shape, at most 1080 high (even sides), at
+    30 fps, piped raw to ffmpeg (libx264, CRF 18) into `Videos\fluid-toy`. The app's
+    frames come when they come: a pacer repeats a frame when the app falls behind and
+    skips one that comes early, so the video keeps time. A track playing from a file
+    goes in as the sound, from where it was when the recording started; live audio
+    isn't recorded. A "REC" counter shows while it runs; quitting finishes the file.
+    ffmpeg must be on the PATH (the app says so if it isn't).
+  - Classic presets: `.milk` files dropped on the window (or a folder of them), or
+    `fluid-toy --import <file or folder>`, become looks without fluid in the user's
+    folder (`milk_<name>.toml`):
+    - The warp, decay, echo, gamma and invert as settings. MilkDrop counts per frame:
+      values are taken at 60 a second (a zoom of 1.01 a frame is 1.01^60 a second), and
+      its y runs down.
+    - The waveform as the nearest of our modes, the palette from its colour; the first
+      two custom shapes, without their equations.
+    - The equations, almost as written: our language gained MilkDrop's `sqr`, `int`,
+      `band`, `bor`, `bnot` and `rand(n)`, and `a += b` and `$PI` are written out. Each
+      program runs between lines that convert our values into MilkDrop's units and back,
+      so its arithmetic is unchanged; per pixel, `y`, `rad` and `ang` become MilkDrop's
+      (`y` down, the radius 1 in the corners). Its inputs we don't have (`progress`,
+      `meshx`, `aspectx`...) are given values.
+    - Left out, and listed at the top of the file: MilkDrop 2 shaders, custom waves,
+      shape equations, borders, motion vectors, the brighten/darken/solarize filters,
+      and any program that doesn't compile (the rest still loads).
+  - Tests: the grabber on the GPU (four in flight, a fifth refused, frames back in order
+    and swapped to RGBA); the pacer, recording sizes, file names and ffmpeg's
+    arguments; MilkDrop's functions; a preset converted (settings, units, shapes,
+    palette, author and title from the file name), its equations running in MilkDrop's
+    units, what's left out listed, statements tidied, folders searched.
+  - Checked in the app (release, scratch settings and home folders): two presets written
+    for the test imported with `--import` (Windows line endings; one with a MilkDrop 2
+    shader, listed as left out) and shown: a curling line and a spinning ring, both
+    much as MilkDrop draws them. F12 saved the picture (4K, 3.9 MB). Without ffmpeg, F10
+    said recording needs it; with ffmpeg 9.0.2 installed (winget), F10 recorded 8.3 s of
+    Ink storm with the test track: H.264, 1920x1080, 30 fps, 250 frames, none dropped,
+    with the track's sound (AAC, the same length), the frames' colours right. The REC
+    counter's dot was missing from the font; it uses the icon font's record symbol.
+    Dropping files on the window isn't scripted here.
 

@@ -104,7 +104,12 @@ fn expr(p: &Program, e: &Expr) -> String {
                 Func::Above => return format!("x_bool({} > {})", a[0], a[1]),
                 Func::Below => return format!("x_bool({} < {})", a[0], a[1]),
                 Func::Equal => return format!("x_bool({} == {})", a[0], a[1]),
-                Func::Rand => unreachable!("per-frame only, refused by the compiler"),
+                Func::Sqr => return format!("({0} * {0})", a[0]),
+                Func::Int => "trunc",
+                Func::Band => return format!("x_bool({} != 0.0 && {} != 0.0)", a[0], a[1]),
+                Func::Bor => return format!("x_bool({} != 0.0 || {} != 0.0)", a[0], a[1]),
+                Func::Bnot => return format!("x_bool({} == 0.0)", a[0]),
+                Func::Rand | Func::RandInt => unreachable!("per-frame only, refused by the compiler"),
             };
             format!("{name}({})", a.join(", "))
         }

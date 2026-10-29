@@ -10,6 +10,7 @@
 //! and the camera orbits at its `orbit` speed.
 
 mod file;
+pub mod milk;
 pub mod runtime;
 
 use crate::audio::reactions::Reaction;

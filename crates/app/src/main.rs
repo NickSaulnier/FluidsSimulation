@@ -9,12 +9,17 @@
 //! instead listens to whatever the computer is playing (Spotify, a browser...).
 //! `--visualizer` starts full screen with the controls hidden (F11 toggles it), and
 //! listens live unless a track is given.
+//!
+//! `fluid-toy --import <file or folder>` converts classic MilkDrop presets (`.milk`)
+//! into looks in the user's looks folder and exits; dropping them on the window does the
+//! same (see `looks::milk`).
 
 mod audio;
 mod director;
 mod expr;
 mod governor;
 mod looks;
+mod output;
 mod react3d;
 mod soak;
 #[cfg(test)]
@@ -61,6 +66,11 @@ const TILT_STEP_DEG: f32 = 5.0;
 const THUMBNAIL_AFTER_S: f32 = 8.0;
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--import") {
+        let path = args.get(i + 1).ok_or_else(|| anyhow::anyhow!("--import needs a .milk file or a folder of them"))?;
+        return import_presets(std::path::Path::new(path));
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,fluid_toy=info")).init();
     let threads = sim::default_threads();
     rayon::ThreadPoolBuilder::new().num_threads(threads).build_global()?;
@@ -135,6 +145,14 @@ struct State {
     cover: Option<(std::sync::Arc<Vec<u8>>, egui::TextureHandle, render::Palette)>,
     announced: Option<(String, String, String)>,
     last_track: Option<String>,
+    /// Frames read back for screenshots and recordings, a screenshot asked for, the
+    /// recording under way, and word from the threads that save them.
+    grabber: render::grab::Grabber<Grab>,
+    screenshot_wanted: bool,
+    /// A look just imported, to show once the looks are read again.
+    pending_look: Option<String>,
+    recorder: Option<output::Recorder>,
+    saved: (std::sync::mpsc::Sender<Saved>, std::sync::mpsc::Receiver<Saved>),
     /// The colours drawn from: the look's, or the cover's, eased between.
     palette_ease: render::palette::PaletteEase,
     palette_base: render::Palette,
@@ -167,10 +185,19 @@ struct State {
 impl ApplicationHandler for App {
     /// Called once on every way out (window closed, Esc): remember the UI settings.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = &self.state
-            && let Err(e) = ui::settings::save(&state.ui)
-        {
+        let Some(state) = &mut self.state else { return };
+        if let Err(e) = ui::settings::save(&state.ui) {
             log::warn!("couldn't save settings: {e:#}");
+        }
+        // Let a recording under way finish its file.
+        if let Some(recorder) = state.recorder.take() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            recorder.stop(tx);
+            match rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(Ok(path)) => log::info!("saved {}", path.display()),
+                Ok(Err(e)) => log::warn!("couldn't save the recording: {e}"),
+                Err(_) => log::warn!("the recording didn't finish in time"),
+            }
         }
     }
 
@@ -199,7 +226,14 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => state.gpu.resize(size),
             WindowEvent::RedrawRequested => state.frame(),
-            WindowEvent::DroppedFile(path) => state.music.load(path),
+            WindowEvent::DroppedFile(path) => {
+                // MilkDrop presets (or a folder of them) are imported; anything else is music.
+                if path.is_dir() || path.extension().is_some_and(|x| x.eq_ignore_ascii_case("milk")) {
+                    state.import_milk(&path);
+                } else {
+                    state.music.load(path);
+                }
+            }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { physical_key: PhysicalKey::Code(key), state: ElementState::Pressed, repeat, .. },
                 ..
@@ -325,6 +359,11 @@ impl State {
             announced: None,
             last_track: None,
             palette_ease: render::palette::PaletteEase::default(),
+            grabber: render::grab::Grabber::default(),
+            screenshot_wanted: false,
+            pending_look: None,
+            recorder: None,
+            saved: std::sync::mpsc::channel(),
             palette_base: render::Palette::default(),
             field_values: Vec::new(),
             field_range: None,
@@ -392,6 +431,43 @@ impl State {
         }
     }
 
+    /// Import the MilkDrop presets at `path` (a file, or a folder) into the user's looks,
+    /// and show the look if it was one.
+    fn import_milk(&mut self, path: &std::path::Path) {
+        let Some(folder) = self.ui.looks.folder.clone() else {
+            return self.ui.show_notice("there's no looks folder to import into".into());
+        };
+        let presets = looks::milk::presets_in(path);
+        let (mut imported, mut partly, mut failed) = (Vec::new(), 0, Vec::new());
+        for preset in &presets {
+            match looks::milk::import_file(preset, &folder) {
+                Ok((file, look)) => {
+                    log::info!("imported {} as {}{}", preset.display(), file.display(), if look.left_out.is_empty() { String::new() } else { format!(" (left out: {})", look.left_out.join("; ")) });
+                    partly += usize::from(!look.left_out.is_empty());
+                    imported.push(look);
+                }
+                Err(e) => failed.push(format!("{}: {e}", preset.display())),
+            }
+        }
+        for f in &failed {
+            log::warn!("couldn't import {f}");
+        }
+        let notice = match (imported.as_slice(), failed.len()) {
+            ([], 0) => "no MilkDrop presets there".to_string(),
+            ([], _) => format!("couldn't import: {}", failed[0]),
+            ([one], 0) if one.left_out.is_empty() => format!("imported {}", one.name),
+            ([one], 0) => format!("imported {} (left out: {})", one.name, one.left_out.join("; ")),
+            (many, n) => {
+                let failed = if n > 0 { format!(", {n} couldn't be") } else { String::new() };
+                format!("imported {} presets ({partly} with parts left out: see the top of each file){failed}", many.len())
+            }
+        };
+        self.ui.show_notice(notice);
+        if let [one] = imported.as_slice() {
+            self.pending_look = Some(one.name.clone());
+        }
+    }
+
     /// Read the user's looks again if their files changed. If the look on screen is one
     /// of them, show the change: at once if only its picture, colours, reactions or code
     /// changed, or by applying it afresh if its fluid did.
@@ -401,6 +477,10 @@ impl State {
             return;
         }
         self.ui.director.reindex(&before, &self.ui.looks.looks);
+        if let Some(i) = self.pending_look.take().and_then(|name| self.ui.looks.looks.iter().position(|l| l.name == name)) {
+            self.ui.director.request(i);
+            return;
+        }
         if let Some(error) = self.ui.looks.errors.first() {
             let more = self.ui.looks.errors.len() - 1;
             let others = if more > 0 { format!(" (and {more} more: see the Music tab)") } else { String::new() };
@@ -528,6 +608,62 @@ impl State {
                 self.announce();
             }
         }
+    }
+
+    /// Frames read back since last frame: screenshots saved, recordings fed; and word
+    /// from the threads saving them.
+    fn collect_grabs(&mut self) {
+        for (tag, image) in self.grabber.poll(&self.gpu.device) {
+            match tag {
+                Grab::Screenshot => output::save_screenshot(image, &self.output_name(), self.saved.0.clone()),
+                Grab::Video(t) => {
+                    if let Some(r) = &mut self.recorder {
+                        r.push(t, image);
+                    }
+                }
+            }
+        }
+        while let Ok(result) = self.saved.1.try_recv() {
+            match result {
+                Ok(path) => {
+                    log::info!("saved {}", path.display());
+                    self.ui.show_notice(format!("saved {}", path.display()));
+                }
+                Err(e) => {
+                    log::warn!("couldn't save: {e}");
+                    self.ui.show_notice(format!("couldn't save: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Start recording a video, or stop the one under way.
+    fn toggle_recording(&mut self) {
+        if let Some(recorder) = self.recorder.take() {
+            if recorder.dropped > 0 {
+                log::info!("recording dropped {} frames", recorder.dropped);
+            }
+            self.ui.show_notice(format!("finishing {}", recorder.path.display()));
+            recorder.stop(self.saved.0.clone());
+            self.ui.recording = None;
+            return;
+        }
+        let window = [self.gpu.config.width, self.gpu.config.height];
+        // A track playing from a file goes in as the sound; live audio can't.
+        let track = self.music.track.as_ref().filter(|_| !self.music.is_live() && self.music.is_playing()).map(|t| (t.path.clone(), self.music.position()));
+        match output::Recorder::start(window, &self.output_name(), track.as_ref().map(|(p, at)| (p.as_path(), *at))) {
+            Ok(recorder) => {
+                log::info!("recording to {}", recorder.path.display());
+                self.ui.recording = Some(Instant::now());
+                self.recorder = Some(recorder);
+            }
+            Err(e) => self.ui.show_notice(e),
+        }
+    }
+
+    /// What screenshots and recordings are named after: the look on screen.
+    fn output_name(&self) -> String {
+        self.ui.director.current.and_then(|i| self.ui.looks.looks.get(i)).map_or_else(|| "fluid-toy".to_string(), |l| l.name.clone())
     }
 
     /// Show `art` as the song's cover (none: no cover).
@@ -720,6 +856,8 @@ impl State {
                 None => ui.show_notice("no track loaded".into()),
             },
             Action::ToggleBrowser => ui.browser_open = !ui.browser_open,
+            Action::Screenshot => self.screenshot_wanted = true,
+            Action::ToggleRecording => self.toggle_recording(),
             Action::ToggleEditor => ui.editor_open = !ui.editor_open,
         }
     }
@@ -756,6 +894,7 @@ impl State {
         self.music.update();
         self.music.waveform(&mut self.waveform);
         self.follow_song();
+        self.collect_grabs();
         let cover = self.cover.as_ref().map(|c| c.2).filter(|_| self.ui.album_colours && self.music.is_live());
         self.palette_base = self.palette_ease.follow(cover.as_ref().unwrap_or(&self.ui.palette), real_dt);
         let mut frame = ui::Frame {
@@ -1047,6 +1186,23 @@ impl State {
             self.post.capture(device, &mut encoder, &picture, surface);
             self.ui.director.captured();
         }
+        // Screenshots and recordings: the composite again, into a frame to read back.
+        if std::mem::take(&mut self.screenshot_wanted) {
+            match self.grabber.begin(device, surface, self.gpu.config.format, Grab::Screenshot) {
+                Some(view) => {
+                    self.post.composite_again(device, &mut encoder, &picture, &view);
+                    self.grabber.end(&mut encoder);
+                }
+                None => self.ui.show_notice("busy: try the screenshot again".into()),
+            }
+        }
+        if let Some(recorder) = self.recorder.as_ref().filter(|r| r.wants_frame()) {
+            let tag = Grab::Video(recorder.time());
+            if let Some(view) = self.grabber.begin(device, recorder.size, self.gpu.config.format, tag) {
+                self.post.composite_again(device, &mut encoder, &picture, &view);
+                self.grabber.end(&mut encoder);
+            }
+        }
         if let Some(key) = self.thumbnail_key.take() {
             let thumbnail = self.thumbnailer.target(device, surface, self.gpu.config.format);
             self.post.composite_again(device, &mut encoder, &picture, &thumbnail);
@@ -1244,6 +1400,47 @@ impl PerfCounter {
     }
 }
 
+
+/// `fluid-toy --import <path>`: convert the MilkDrop presets there into looks, and
+/// say how it went.
+fn import_presets(path: &std::path::Path) -> anyhow::Result<()> {
+    let folder = looks::Library::user_folder().ok_or_else(|| anyhow::anyhow!("no folder for looks"))?;
+    let presets = looks::milk::presets_in(path);
+    if presets.is_empty() {
+        anyhow::bail!("no .milk presets at {}", path.display());
+    }
+    let (mut ok, mut partly, mut failed) = (0, 0, 0);
+    for preset in &presets {
+        match looks::milk::import_file(preset, &folder) {
+            Ok((file, look)) => {
+                ok += 1;
+                if look.left_out.is_empty() {
+                    println!("{} -> {}", preset.display(), file.display());
+                } else {
+                    partly += 1;
+                    println!("{} -> {} (left out: {})", preset.display(), file.display(), look.left_out.join("; "));
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                println!("{}: not imported: {e}", preset.display());
+            }
+        }
+    }
+    println!("{ok} imported into {} ({partly} with parts left out), {failed} not", folder.display());
+    Ok(())
+}
+
+/// Word from a thread saving a screenshot or a recording: where it went, or why not.
+type Saved = Result<std::path::PathBuf, String>;
+
+/// What a frame was grabbed for.
+#[derive(Clone, Copy, Debug)]
+enum Grab {
+    Screenshot,
+    /// A recording's frame, grabbed this many seconds into it.
+    Video(f64),
+}
 
 /// `v` turned `degrees` anticlockwise.
 fn tilt(v: sim::Vec2, degrees: f32) -> sim::Vec2 {

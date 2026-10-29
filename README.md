@@ -26,6 +26,8 @@ cargo run --release -p app -- path/to/song.mp3 --visualizer
 - `--visualizer` starts full screen with the controls hidden, listening live unless a
   track is given.
 - `--mute` analyses the track without playing it.
+- `--import <file or folder>` converts classic MilkDrop presets (`.milk`) into looks and
+  exits; dropping them on the window does the same.
 
 Use `--release`: a debug build of the solvers is far too slow (the dev profile already
 optimises the dependencies and the `sim` crate).
@@ -89,6 +91,13 @@ resolution in full screen if the simulation falls behind real time.
   carry.
 - **The browser** (B): every look with a thumbnail (taken the first time a look plays),
   search, tags, stars and favourites.
+- **MilkDrop presets:** classic `.milk` presets convert into looks: their warp, decay,
+  waveform, shapes and equations (run in MilkDrop's units). MilkDrop 2 shaders, custom
+  waves and borders are left out, and listed at the top of each file.
+- **Screenshots and recordings:** F12 saves the picture (without the interface) as a
+  PNG in `Pictures\fluid-toy`. F10 records a video into `Videos\fluid-toy` (1080p,
+  30 fps, with the track's sound when one is playing); it needs
+  [ffmpeg](https://ffmpeg.org) on the PATH.
 - **Screen:** the monitor for full screen, the visualizer in a window kept on top, a
   frame-rate cap.
 
@@ -108,6 +117,7 @@ F1 shows them all in the app. The main ones:
 | `+` `-` | rate the look |
 | B, E | the look browser, the equation editor |
 | T | the song's title card |
+| F12, F10 | a screenshot; start / stop recording |
 | M | play / pause the music |
 | R, P, N | reset, next scene, next solver |
 | 1 to 4 | push, wall, erase, faucet |
@@ -153,5 +163,4 @@ The design notes and progress, phase by phase, are in `docs/`:
 [PLAN.md](docs/PLAN.md) (the fluid toy), [3D_PLAN.md](docs/3D_PLAN.md),
 [UI_REDESIGN.md](docs/UI_REDESIGN.md), [VISUALIZER_PLAN.md](docs/VISUALIZER_PLAN.md),
 [ANALYZER_PLAN.md](docs/ANALYZER_PLAN.md) and [MILKDROP_PLAN.md](docs/MILKDROP_PLAN.md).
-Still to come there: the optional extras (classic `.milk` preset import, recording,
-Spout, MIDI and OSC).
+Not done (the optional extras left for later): Spout, MIDI and OSC.

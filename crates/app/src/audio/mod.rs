@@ -38,12 +38,14 @@ const MAX_FEED_S: f32 = 0.5;
 
 pub struct Track {
     pub name: String,
+    pub path: PathBuf,
     pub duration: f32,
 }
 
 /// Decoded audio, produced by the loader thread.
 struct Loaded {
     name: String,
+    path: PathBuf,
     channels: NonZero<u16>,
     rate: NonZero<u32>,
     samples: Vec<f32>,
@@ -313,7 +315,7 @@ impl Music {
     }
 
     fn start(&mut self, loaded: Loaded) {
-        let Loaded { name, channels, rate, samples } = loaded;
+        let Loaded { name, path, channels, rate, samples } = loaded;
         let duration = samples.len() as f32 / (f32::from(channels.get()) * rate.get() as f32);
         // Dropping a file means "play this": leave live mode.
         self.live = None;
@@ -331,7 +333,7 @@ impl Music {
         }
         log::info!("loaded {name}: {duration:.1} s");
         self.samples = Some((channels, rate, samples));
-        self.track = Some(Track { name, duration });
+        self.track = Some(Track { name, path, duration });
         self.restart_analysis(Some(rate.get()));
     }
 }
@@ -342,5 +344,5 @@ fn decode(path: &PathBuf, name: String) -> Result<Loaded, String> {
     let decoder = rodio::Decoder::try_from(file).map_err(|e| format!("{name}: {e}"))?;
     let (channels, rate) = (decoder.channels(), decoder.sample_rate());
     let samples: Vec<f32> = decoder.collect();
-    Ok(Loaded { name, channels, rate, samples })
+    Ok(Loaded { name, path: path.clone(), channels, rate, samples })
 }

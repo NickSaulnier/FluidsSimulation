@@ -189,6 +189,13 @@ impl Machine {
                     let mut arg = || s.pop().unwrap_or(0.0);
                     let v = match f {
                         Func::Rand => rng.next_f32(),
+                        Func::RandInt => (rng.next_f32() * arg().max(0.0)).floor(),
+                        Func::Sqr => {
+                            let a = arg();
+                            a * a
+                        }
+                        Func::Int => arg().trunc(),
+                        Func::Bnot => bool(!truth(arg())),
                         Func::Sin => arg().sin(),
                         Func::Cos => arg().cos(),
                         Func::Tan => arg().tan(),
@@ -211,7 +218,7 @@ impl Machine {
                             let a = arg();
                             if a > 0.0 { 1.0 } else if a < 0.0 { -1.0 } else { 0.0 }
                         }
-                        Func::Atan2 | Func::Pow | Func::Min | Func::Max | Func::Sigmoid | Func::Above | Func::Below | Func::Equal => {
+                        Func::Atan2 | Func::Pow | Func::Min | Func::Max | Func::Sigmoid | Func::Above | Func::Below | Func::Equal | Func::Band | Func::Bor => {
                             let (b, a) = (arg(), arg());
                             match f {
                                 Func::Atan2 => a.atan2(b),
@@ -221,6 +228,8 @@ impl Machine {
                                 Func::Sigmoid => sigmoid(a, b),
                                 Func::Above => bool(a > b),
                                 Func::Below => bool(a < b),
+                                Func::Band => bool(truth(a) && truth(b)),
+                                Func::Bor => bool(truth(a) || truth(b)),
                                 _ => bool(a == b),
                             }
                         }
@@ -290,6 +299,16 @@ mod tests {
         assert_eq!(value("above(2, 1) + below(2, 1) + equal(2, 2)"), 2.0);
         let r = value("rand()");
         assert!((0.0..1.0).contains(&r));
+    }
+
+    /// MilkDrop's functions, for imported presets.
+    #[test]
+    fn milkdrop_functions() {
+        assert_eq!(value("sqr(-3)"), 9.0);
+        assert_eq!(value("int(-2.7) + int(2.7)"), 0.0);
+        assert_eq!(value("band(1, 0.5) + bor(0, 0) + bnot(0)"), 2.0);
+        let r = value("rand(10)");
+        assert!(r == r.floor() && (0.0..10.0).contains(&r), "{r}");
     }
 
     /// Variables keep their values between runs; the shared block is read and written.
