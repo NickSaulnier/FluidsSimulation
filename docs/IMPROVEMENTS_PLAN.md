@@ -419,3 +419,36 @@ independent of the rest and could be done in either order.
       to 90° (it piled on the right); 3D smoke with gravity to the right drifted left.
     - A first try looked broken: my script posted the arrows without the extended-key
       flag, so they arrived as the numpad's 4 and 6. Posted as real arrows, they work.
+
+- **Phase C (done):** walls that look designed (§3.4); they stay.
+  - **Shape** (`app/src/render/solid.rs`):
+    - The walls are drawn from a distance field: the mask, softened by a small
+      Gaussian (twice, about a cell and a half), is sampled at three times its
+      resolution, and each sample's distance to the half-full contour is found
+      exactly (Felzenszwalb's separable transform), sharpened near the edge from the
+      occupancy's slope. Stored in 8 bits (±16 samples) and filtered, it gives smooth,
+      round edges with no cell steps at any size.
+    - Built on the CPU (in parallel) when the mask changes, not by a GPU jump flood:
+      the mask is small, and it changes only while painting.
+    - The domain's own border is left out: it lies just outside the window, and drawn
+      it would only shadow the fluid's edges.
+  - **Shading** (`scene.wgsl`): a bevel lit from the top left, a thin rim along the
+    edge in the palette's highlight (brightest facing the light, and caught by the
+    glow), a soft shadow cast down and right onto whatever is behind, and the fill from
+    the palette's deep colour, darkened. Walls change colour with the palette.
+  - **In the visualizer:** with feedback on, the walls are drawn after it, over a copy
+    of its picture, so they stay sharp while the fluid around them smears. The choice
+    to let them smear (a look setting) was left out: nothing asked for it yet.
+  - **The tools:**
+    - A preview under the cursor with the wall and erase tools: the wall the stroke
+      would leave, shaded, faint; or, erasing, the part that would go in red.
+    - Ctrl+Z undoes the last wall stroke (32 kept, per scene). Shortcuts learned Ctrl.
+  - Tests: the field measures distance to a painted disc (within a cell), the border
+    left out, thin strokes kept, the transform exact; undo stroke by stroke and per
+    scene; Ctrl+Z; a headless render of the obstacle (solid, shadowed, lit rim) and of
+    both previews.
+  - Checked in the app (debug build): the obstacle round and smooth, lit and
+    shadowed; under Firestorm's feedback it stays crisp, in the look's red and gold.
+    My scripts can't paint (posted mouse moves read as the cursor leaving the
+    window), so painting, the preview and Ctrl+Z were checked by the tests and the
+    headless render, not by hand.

@@ -18,6 +18,7 @@ pub enum Action {
     SelectTool(Tool),
     BrushSmaller,
     BrushBigger,
+    UndoWall,
     TiltLeft,
     TiltRight,
     Stronger,
@@ -65,20 +66,33 @@ pub struct Shortcut {
     pub group: Group,
     /// Whether holding the key repeats the action.
     pub repeats: bool,
-    /// Whether it's the key with Shift held.
-    pub shift: bool,
+    /// The modifier held with the key.
+    pub mods: Mods,
+}
+
+/// A modifier held with a shortcut's key (one at most).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mods {
+    #[default]
+    None,
+    Shift,
+    Ctrl,
 }
 
 const fn s(key: KeyCode, keys: &'static str, action: Action, what: &'static str, group: Group) -> Shortcut {
-    Shortcut { key, keys, action, what, group, repeats: false, shift: false }
+    Shortcut { key, keys, action, what, group, repeats: false, mods: Mods::None }
 }
 
 const fn held(key: KeyCode, keys: &'static str, action: Action, what: &'static str, group: Group) -> Shortcut {
-    Shortcut { key, keys, action, what, group, repeats: true, shift: false }
+    Shortcut { key, keys, action, what, group, repeats: true, mods: Mods::None }
 }
 
 const fn shifted(key: KeyCode, keys: &'static str, action: Action, what: &'static str, group: Group) -> Shortcut {
-    Shortcut { key, keys, action, what, group, repeats: false, shift: true }
+    Shortcut { key, keys, action, what, group, repeats: false, mods: Mods::Shift }
+}
+
+const fn ctrl(key: KeyCode, keys: &'static str, action: Action, what: &'static str, group: Group) -> Shortcut {
+    Shortcut { key, keys, action, what, group, repeats: false, mods: Mods::Ctrl }
 }
 
 use Action as A;
@@ -99,6 +113,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     s(KeyCode::Digit4, "4", A::SelectTool(Tool::Faucet), "faucet tool", G::Tools),
     held(KeyCode::BracketLeft, "[", A::BrushSmaller, "smaller brush", G::Tools),
     held(KeyCode::BracketRight, "]", A::BrushBigger, "bigger brush", G::Tools),
+    ctrl(KeyCode::KeyZ, "Ctrl+Z", A::UndoWall, "undo the last wall stroke", G::Tools),
     s(KeyCode::KeyO, "O", A::NextOverlay, "next overlay field", G::View),
     s(KeyCode::KeyH, "H", A::ToggleParticles, "hide / show particles", G::View),
     s(KeyCode::KeyL, "L", A::ToggleLiquid, "liquid surface on / off", G::View),
@@ -134,11 +149,10 @@ pub const MOUSE: &[(&str, &str)] = &[
     ("Esc", "close this sheet, leave full screen, or quit"),
 ];
 
-/// The action bound to `key` (with Shift if `shift`), if any, ignoring auto-repeat
-/// unless the action repeats; `presenting`: in full screen, where the visualizer's keys
-/// come first.
-pub fn lookup(key: KeyCode, repeat: bool, presenting: bool, shift: bool) -> Option<Action> {
-    let find = |visualizer: bool| SHORTCUTS.iter().find(|s| s.key == key && s.shift == shift && (s.group == Group::Visualizer) == visualizer && (s.repeats || !repeat));
+/// The action bound to `key` with `mods` held, if any, ignoring auto-repeat unless the
+/// action repeats; `presenting`: in full screen, where the visualizer's keys come first.
+pub fn lookup(key: KeyCode, repeat: bool, presenting: bool, mods: Mods) -> Option<Action> {
+    let find = |visualizer: bool| SHORTCUTS.iter().find(|s| s.key == key && s.mods == mods && (s.group == Group::Visualizer) == visualizer && (s.repeats || !repeat));
     presenting.then(|| find(true)).flatten().or_else(|| find(false)).map(|s| s.action)
 }
 
@@ -164,7 +178,7 @@ mod tests {
         for (i, a) in SHORTCUTS.iter().enumerate() {
             for b in &SHORTCUTS[i + 1..] {
                 if (a.group == Group::Visualizer) == (b.group == Group::Visualizer) {
-                    assert_ne!((a.key, a.shift), (b.key, b.shift), "{} and {} share a key", a.what, b.what);
+                    assert_ne!((a.key, a.mods), (b.key, b.mods), "{} and {} share a key", a.what, b.what);
                 }
                 assert_ne!(a.action, b.action, "{} and {} share an action", a.what, b.what);
             }
@@ -173,21 +187,29 @@ mod tests {
 
     #[test]
     fn auto_repeat_only_fires_repeating_actions() {
-        assert_eq!(lookup(KeyCode::KeyR, false, false, false), Some(Action::Reset));
-        assert_eq!(lookup(KeyCode::KeyR, true, false, false), None);
-        assert_eq!(lookup(KeyCode::ArrowLeft, true, false, false), Some(Action::TiltLeft));
-        assert_eq!(lookup(KeyCode::KeyQ, false, false, false), None);
+        assert_eq!(lookup(KeyCode::KeyR, false, false, Mods::None), Some(Action::Reset));
+        assert_eq!(lookup(KeyCode::KeyR, true, false, Mods::None), None);
+        assert_eq!(lookup(KeyCode::ArrowLeft, true, false, Mods::None), Some(Action::TiltLeft));
+        assert_eq!(lookup(KeyCode::KeyQ, false, false, Mods::None), None);
     }
 
     /// In full screen the visualizer's keys win; elsewhere they keep their old meaning.
     #[test]
     fn full_screen_keys_take_over() {
-        assert_eq!(lookup(KeyCode::Space, false, false, false), Some(Action::TogglePause));
-        assert_eq!(lookup(KeyCode::Space, false, true, false), Some(Action::NextLookFade));
-        assert_eq!(lookup(KeyCode::KeyH, false, true, false), Some(Action::HardCut));
-        assert_eq!(lookup(KeyCode::KeyR, false, true, false), Some(Action::Reset), "the rest still work");
-        assert_eq!(lookup(KeyCode::F11, false, false, true), Some(Action::NextDisplay), "Shift makes another key");
-        assert_eq!(lookup(KeyCode::F11, false, false, false), Some(Action::TogglePresentation));
+        assert_eq!(lookup(KeyCode::Space, false, false, Mods::None), Some(Action::TogglePause));
+        assert_eq!(lookup(KeyCode::Space, false, true, Mods::None), Some(Action::NextLookFade));
+        assert_eq!(lookup(KeyCode::KeyH, false, true, Mods::None), Some(Action::HardCut));
+        assert_eq!(lookup(KeyCode::KeyR, false, true, Mods::None), Some(Action::Reset), "the rest still work");
+        assert_eq!(lookup(KeyCode::F11, false, false, Mods::Shift), Some(Action::NextDisplay), "Shift makes another key");
+        assert_eq!(lookup(KeyCode::F11, false, false, Mods::None), Some(Action::TogglePresentation));
+    }
+
+    /// Ctrl+Z undoes a wall stroke; Z alone, or with Ctrl held, does nothing else.
+    #[test]
+    fn ctrl_makes_another_key() {
+        assert_eq!(lookup(KeyCode::KeyZ, false, false, Mods::Ctrl), Some(Action::UndoWall));
+        assert_eq!(lookup(KeyCode::KeyZ, false, false, Mods::None), None);
+        assert_eq!(lookup(KeyCode::KeyR, false, false, Mods::Ctrl), None);
     }
 
     #[test]

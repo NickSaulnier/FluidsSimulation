@@ -582,7 +582,7 @@ pub(crate) mod tests {
     }
 
     /// Half floats for the test's uploads and readbacks.
-    mod half_float {
+    pub(crate) mod half_float {
         use bytemuck::{Pod, Zeroable};
 
         #[repr(C)]

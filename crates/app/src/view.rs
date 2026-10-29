@@ -60,7 +60,7 @@ impl View {
     }
 
     #[cfg(test)]
-    fn to_clip(self, p: Vec2) -> Vec2 {
+    pub fn to_clip(self, p: Vec2) -> Vec2 {
         p * self.scale + self.offset
     }
 }

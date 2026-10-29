@@ -177,7 +177,7 @@ struct State {
     /// When the monitors were last listed.
     monitors_listed: Option<Instant>,
     /// Whether Shift is held (for Shift+ shortcuts).
-    shift: bool,
+    mods: ui::shortcuts::Mods,
     /// A new window shape waiting to rebuild the scene (the domain, since when), and
     /// whether the scene has been fitted to the window yet.
     refit: Option<(glam::Vec2, Instant)>,
@@ -250,7 +250,11 @@ impl ApplicationHandler for App {
                     state.music.load(path);
                 }
             }
-            WindowEvent::ModifiersChanged(m) => state.shift = m.state().shift_key(),
+            WindowEvent::ModifiersChanged(m) => {
+                use ui::shortcuts::Mods;
+                let m = m.state();
+                state.mods = if m.control_key() { Mods::Ctrl } else if m.shift_key() { Mods::Shift } else { Mods::None };
+            }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { physical_key: PhysicalKey::Code(key), state: ElementState::Pressed, repeat, .. },
                 ..
@@ -390,7 +394,7 @@ impl State {
             param_bases: (usize::MAX, Vec::new()),
             presented: (false, ui::Screen::default()),
             monitors_listed: None,
-            shift: false,
+            mods: ui::shortcuts::Mods::None,
             refit: None,
             fitted: false,
             recentre: None,
@@ -862,7 +866,7 @@ impl State {
     /// Keyboard shortcuts, as listed in `ui::shortcuts::SHORTCUTS`.
     fn key(&mut self, key: KeyCode, repeat: bool) {
         use ui::shortcuts::Action;
-        let Some(action) = ui::shortcuts::lookup(key, repeat, self.ui.presenting, self.shift) else { return };
+        let Some(action) = ui::shortcuts::lookup(key, repeat, self.ui.presenting, self.mods) else { return };
         let ui = &mut self.ui;
         match action {
             Action::TogglePause => ui.paused = !ui.paused,
@@ -884,6 +888,11 @@ impl State {
                 self.choose_solver(choice);
             }
             Action::SelectTool(tool) => ui.tool = tool,
+            Action::UndoWall => {
+                if self.world3d.is_none() && !self.input.undo(&mut self.world) {
+                    ui.show_notice("nothing to undo".into());
+                }
+            }
             Action::BrushSmaller => ui.scale_brush(1.0 / ui::BRUSH_STEP),
             Action::BrushBigger => ui.scale_brush(ui::BRUSH_STEP),
             Action::TiltLeft => ui.turn_gravity(-TILT_STEP_DEG),
@@ -1297,7 +1306,16 @@ impl State {
         let picture = if feedback.enabled {
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
             let (shared, pixel) = (&self.look_frame.shared, &self.look_pixel);
-            self.feedback.run(device, queue, &mut encoder, &scene, scene_size, &feedback, shared, pixel, self.frame_dt)
+            let picture = self.feedback.run(device, queue, &mut encoder, &scene, scene_size, &feedback, shared, pixel, self.frame_dt);
+            if self.world3d.is_none() && self.no_fluid.is_none() {
+                // The walls over the feedback's picture, not into it, so they stay
+                // sharp: on a copy (the scene texture is free again by now).
+                encoder.copy_texture_to_texture(picture.texture().as_image_copy(), scene.texture().as_image_copy(), scene.texture().size());
+                self.renderer.draw_walls(&mut encoder, &scene);
+                scene.clone()
+            } else {
+                picture
+            }
         } else {
             self.feedback.pause();
             scene.clone()
@@ -1438,6 +1456,8 @@ impl State {
             pixel_scale: scale,
             black_letterbox: self.look_frame.feedback.enabled,
             palette: self.palette_now,
+            walls: !self.look_frame.feedback.enabled,
+            brush: self.input.wall_brush(view, &self.ui).filter(|_| !self.egui_ctx.is_pointer_over_egui()),
         };
         self.field_range = self.renderer.render(device, queue, encoder, target, options);
     }

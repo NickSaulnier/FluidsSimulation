@@ -30,7 +30,7 @@ pub use glam::Vec2;
 pub use params::{FloatSpec, IntSpec, ParamVisitor, ToggleSpec};
 pub use presets::{DEFAULT_DOMAIN, PRESETS, Preset, domain_for};
 pub use registry::{SOLVERS, SolverEntry};
-pub use scene::{Emitter, ForceBrush, Rect, Scene, SolidMask, StepInput};
+pub use scene::{BORDER_CELLS, Emitter, ForceBrush, Rect, Scene, SolidMask, StepInput};
 pub use solver::{FieldInfo, FieldKind, FieldLayout, Init, Metric, ParticleView, Solver, Stats};
 pub use stepper::{FrameReport, Stepper};
 pub use world::World;

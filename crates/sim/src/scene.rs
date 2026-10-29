@@ -144,6 +144,23 @@ impl SolidMask {
         self.generation += 1;
     }
 
+    /// Put back occupancy taken earlier with `occupancy` (an undo). Ignored if the
+    /// mask has since changed size; the border stays solid regardless.
+    pub fn restore(&mut self, bytes: &[u8]) {
+        if bytes.len() != self.occ.as_slice().len() {
+            return;
+        }
+        let (nx, ny) = (self.occ.nx(), self.occ.ny());
+        let b = BORDER_CELLS;
+        for j in b..ny - b {
+            for i in b..nx - b {
+                self.occ[(i, j)] = bytes[j * nx + i];
+            }
+        }
+        self.sdf_dirty = true;
+        self.generation += 1;
+    }
+
     pub fn is_solid(&self, p: Vec2) -> bool {
         let (i, j) = self.cell_of(p);
         self.occ[(i, j)] != 0
@@ -326,5 +343,23 @@ mod tests {
         m.update_derived();
         assert!(!m.is_solid(p));
         assert!(m.distance(p) > 0.3);
+    }
+
+    #[test]
+    fn restoring_undoes_painting() {
+        let mut m = mask();
+        let before = m.occupancy().2.to_vec();
+        let p = Vec2::new(1.0, 0.5);
+        m.paint_disc(p, 0.1, true);
+        let g = m.generation();
+        m.restore(&before);
+        m.update_derived();
+        assert!(m.generation() > g, "a restore is an edit");
+        assert_eq!(m.occupancy().2, &before[..]);
+        assert!(!m.is_solid(p) && m.distance(p) > 0.3);
+        // A snapshot of another size is ignored.
+        m.paint_disc(p, 0.1, true);
+        m.restore(&[0; 7]);
+        assert!(m.is_solid(p));
     }
 }

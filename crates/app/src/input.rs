@@ -2,6 +2,7 @@
 //! left button orbits the camera and the wheel zooms, and the right button pushes the
 //! gas or holds a torch.
 
+use crate::render::WallBrush;
 use crate::render3d::OrbitCamera;
 use crate::ui::{Tool, UiState};
 use crate::view::View;
@@ -14,6 +15,8 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 const MAX_PUSH_SPEED: f32 = 6.0;
 /// Touchpads scroll in pixels; this many make one wheel step.
 const PIXELS_PER_WHEEL_STEP: f32 = 40.0;
+/// Wall strokes that can be undone.
+const UNDO_DEPTH: usize = 32;
 
 #[derive(Default)]
 pub struct Input {
@@ -28,6 +31,9 @@ pub struct Input {
     /// Cursor motion (pixels) during the stroke, and wheel steps, since last taken.
     drag: Vec2,
     wheel: f32,
+    /// The walls before each recent stroke, newest last, with the scene they belong to
+    /// (the world's scene generation).
+    undo: Vec<(u64, Vec<u8>)>,
 }
 
 impl Input {
@@ -75,6 +81,27 @@ impl Input {
         (self.stroke.filter(|b| *b == MouseButton::Left).map(|_| drag), std::mem::take(&mut self.wheel))
     }
 
+    /// The wall the selected tool would leave under the cursor, to preview: the wall and
+    /// erase tools only, and not while the right button pushes.
+    pub fn wall_brush(&self, view: &View, ui: &UiState) -> Option<WallBrush> {
+        let paint = match ui.tool {
+            Tool::PaintWall => true,
+            Tool::EraseWall => false,
+            _ => return None,
+        };
+        let cursor = self.cursor.filter(|_| self.stroke != Some(MouseButton::Right))?;
+        Some(WallBrush { pos: view.screen_to_world(cursor), radius: ui.brush_radius, paint })
+    }
+
+    /// Put the walls back as they were before the last stroke on this scene. False if
+    /// there is none.
+    pub fn undo(&mut self, world: &mut World) -> bool {
+        self.undo.retain(|(scene, _)| *scene == world.scene_generation);
+        let Some((_, walls)) = self.undo.pop() else { return false };
+        world.scene.solid.restore(&walls);
+        true
+    }
+
     fn end_stroke(&mut self) {
         self.stroke = None;
         self.prev_world = None;
@@ -117,6 +144,7 @@ impl Input {
             return input;
         };
         let here = view.screen_to_world(cursor);
+        let starting = self.prev_world.is_none();
         let prev = self.prev_world.unwrap_or(here);
         self.prev_world = Some(here);
 
@@ -139,6 +167,12 @@ impl Input {
                 input.emitters.push(Emitter { pos: here, dir, speed: ui.faucet_speed, width: ui.brush_radius });
             }
             Tool::PaintWall | Tool::EraseWall => {
+                if starting {
+                    if self.undo.len() == UNDO_DEPTH {
+                        self.undo.remove(0);
+                    }
+                    self.undo.push((world.scene_generation, world.scene.solid.occupancy().2.to_vec()));
+                }
                 // Stamp along the segment since last frame, so fast strokes leave no gaps.
                 let solid = tool == Tool::PaintWall;
                 let steps = ((here - prev).length() / (0.25 * ui.brush_radius)).ceil().max(1.0) as usize;
@@ -227,5 +261,46 @@ mod tests {
         input.handle(&wheel(MouseScrollDelta::LineDelta(0.0, 5.0)), true);
         assert_eq!(input.take_orbit(), (None, 1.0));
         assert_eq!(input.take_orbit(), (None, 0.0));
+    }
+
+    /// Two wall strokes, then Ctrl+Z twice: each undo takes one stroke away; a third
+    /// finds nothing. A new scene forgets the strokes of the last.
+    #[test]
+    fn undo_takes_back_one_stroke_at_a_time() {
+        let mut world = World::new(0, 0);
+        let (size, window) = (Vec2::new(800.0, 400.0), winit::dpi::PhysicalSize::new(800, 400));
+        let view = View::cover(Vec2::ZERO, world.scene.size, Vec2::ZERO, size, window);
+        let mut ui = UiState { tool: Tool::PaintWall, ..UiState::default() };
+        let mut input = Input::default();
+        let walls = |world: &World| world.scene.solid.occupancy().2.iter().filter(|&&v| v != 0).count();
+        let empty = walls(&world);
+        let stroke = |input: &mut Input, world: &mut World, ui: &UiState, x: f64| {
+            input.handle(&moved(x, 200.0), false);
+            input.handle(&button(ElementState::Pressed, MouseButton::Left), false);
+            input.apply(&view, ui, world, 0.016);
+            input.handle(&moved(x + 40.0, 200.0), false);
+            input.apply(&view, ui, world, 0.016);
+            input.handle(&button(ElementState::Released, MouseButton::Left), false);
+        };
+        stroke(&mut input, &mut world, &ui, 200.0);
+        let one = walls(&world);
+        stroke(&mut input, &mut world, &ui, 500.0);
+        assert!(walls(&world) > one && one > empty);
+        assert!(input.undo(&mut world));
+        assert_eq!(walls(&world), one);
+        assert!(input.undo(&mut world));
+        assert_eq!(walls(&world), empty);
+        assert!(!input.undo(&mut world), "nothing left");
+
+        stroke(&mut input, &mut world, &ui, 200.0);
+        world.load_preset(1);
+        assert!(!input.undo(&mut world), "a stroke on another scene");
+
+        // The preview: the wall tools only, where the cursor is.
+        input.handle(&moved(400.0, 200.0), false);
+        let brush = input.wall_brush(&view, &ui).expect("a wall tool");
+        assert!(brush.paint && (brush.pos - view.screen_to_world(Vec2::new(400.0, 200.0))).length() < 1e-6);
+        ui.tool = Tool::Push;
+        assert!(input.wall_brush(&view, &ui).is_none());
     }
 }
