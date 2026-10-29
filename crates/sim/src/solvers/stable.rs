@@ -265,7 +265,7 @@ impl StableFluids {
                 let c = self.centre(i, j);
                 let nozzle = emitters.iter().find_map(|e| super::nozzle_offset(e, h, c).map(|across| (e, across)));
                 // (dye or smoke, fuel, temperature) to hold in walls, drains and nozzles.
-                let (kind, held) = if self.solid[(i, j)] {
+                let (kind, held) = if self.solid[(i, j)] && !super::opens_border(scene, c) {
                     (CellType::Solid, Some((0.0, 0.0, 0.0)))
                 } else if let Some((e, across)) = nozzle {
                     self.inlets.push((i, j, e.dir.normalize_or(Vec2::NEG_Y) * e.speed));

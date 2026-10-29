@@ -89,59 +89,73 @@ pub static PRESETS: &[Preset3d] = &[
     Preset3d { name: "Chimney", build: chimney },
 ];
 
-const DOMAIN: Vec3 = Vec3::new(1.0, 1.5, 1.0);
-/// Depth of the vent across the top of most scenes.
+/// The open air every scene stands in: a floor, open on every side and the top, the
+/// fire in the middle.
+const DOMAIN: Vec3 = Vec3::new(2.0, 2.0, 2.0);
+const MIDDLE: f32 = 1.0;
+/// Depth of the vents along the open sides.
 const VENT: f32 = 0.06;
 
-fn top_vent() -> Aabb {
-    Aabb::new(Vec3::new(0.0, DOMAIN.y - VENT, 0.0), DOMAIN)
+/// A floor in the open: vents along the four sides and across the top, so gas leaves
+/// freely and air comes back in (each vent opens only the wall it lies against).
+fn open_air() -> Scene3d {
+    let mut s = Scene3d::empty_box(DOMAIN);
+    let (d, v) = (DOMAIN, VENT);
+    s.vents.push(Aabb::new(Vec3::new(0.0, d.y - v, 0.0), d));
+    s.vents.push(Aabb::new(Vec3::ZERO, Vec3::new(v, d.y, d.z)));
+    s.vents.push(Aabb::new(Vec3::new(d.x - v, 0.0, 0.0), d));
+    s.vents.push(Aabb::new(Vec3::ZERO, Vec3::new(d.x, d.y, v)));
+    s.vents.push(Aabb::new(Vec3::new(0.0, 0.0, d.z - v), d));
+    s
 }
 
 fn floor_burner(x: f32, z: f32, radius: f32, speed: f32) -> Burner {
     Burner { pos: Vec3::new(x, 0.03, z), dir: Vec3::Y, radius, speed }
 }
 
-/// A wide, gentle burner on the floor, open at the top.
+/// A wide, gentle burner on the floor.
 pub fn campfire() -> Scene3d {
-    let mut s = Scene3d::empty_box(DOMAIN);
-    s.burners.push(floor_burner(0.5, 0.5, 0.14, 0.3));
-    s.vents.push(top_vent());
+    let mut s = open_air();
+    s.burners.push(floor_burner(MIDDLE, MIDDLE, 0.14, 0.3));
     s
 }
 
 /// A narrow, fast jet of flame.
 pub fn torch() -> Scene3d {
-    let mut s = Scene3d::empty_box(DOMAIN);
-    s.burners.push(floor_burner(0.5, 0.5, 0.05, 1.2));
-    s.vents.push(top_vent());
+    let mut s = open_air();
+    s.burners.push(floor_burner(MIDDLE, MIDDLE, 0.05, 1.2));
     s
 }
 
 /// Two burners with a ball hanging between their plumes.
 pub fn twin_burners() -> Scene3d {
-    let mut s = Scene3d::empty_box(DOMAIN);
-    s.burners.push(floor_burner(0.3, 0.5, 0.08, 0.5));
-    s.burners.push(floor_burner(0.7, 0.5, 0.08, 0.5));
-    s.solids.push(Shape::Sphere { centre: Vec3::new(0.5, 0.8, 0.5), radius: 0.14 });
-    s.vents.push(top_vent());
+    let mut s = open_air();
+    s.burners.push(floor_burner(MIDDLE - 0.2, MIDDLE, 0.08, 0.5));
+    s.burners.push(floor_burner(MIDDLE + 0.2, MIDDLE, 0.08, 0.5));
+    s.solids.push(Shape::Sphere { centre: Vec3::new(MIDDLE, 0.8, MIDDLE), radius: 0.14 });
     s
 }
 
-/// A broad burner under a roof with a square flue in the middle: the smoke funnels out.
+/// A broad burner under a square hood with a flue pipe in the middle: the smoke
+/// gathers under the hood, some spilling round its edges, and funnels up the pipe.
 pub fn chimney() -> Scene3d {
-    let mut s = Scene3d::empty_box(DOMAIN);
-    s.burners.push(floor_burner(0.5, 0.5, 0.22, 0.3));
-    let (y0, y1) = (1.1, 1.16);
-    let (a, b) = (0.42, 0.58); // the flue opening
-    for (min, max) in [
-        (Vec3::new(0.0, y0, 0.0), Vec3::new(a, y1, 1.0)),
-        (Vec3::new(b, y0, 0.0), Vec3::new(1.0, y1, 1.0)),
-        (Vec3::new(a, y0, 0.0), Vec3::new(b, y1, a)),
-        (Vec3::new(a, y0, b), Vec3::new(b, y1, 1.0)),
-    ] {
-        s.solids.push(Shape::Cuboid(Aabb::new(min, max)));
-    }
-    s.vents.push(top_vent());
+    let mut s = open_air();
+    s.burners.push(floor_burner(MIDDLE, MIDDLE, 0.22, 0.3));
+    let (y0, y1, top) = (1.1, 1.16, 1.5);
+    let (lo, hi) = (MIDDLE - 0.5, MIDDLE + 0.5); // the hood
+    let (a, b) = (MIDDLE - 0.08, MIDDLE + 0.08); // the flue
+    let wall = 0.02;
+    let cuboid = |min: Vec3, max: Vec3| Shape::Cuboid(Aabb::new(min, max));
+    // The hood, round the flue.
+    s.solids.push(cuboid(Vec3::new(lo, y0, lo), Vec3::new(a, y1, hi)));
+    s.solids.push(cuboid(Vec3::new(b, y0, lo), Vec3::new(hi, y1, hi)));
+    s.solids.push(cuboid(Vec3::new(a, y0, lo), Vec3::new(b, y1, a)));
+    s.solids.push(cuboid(Vec3::new(a, y0, b), Vec3::new(b, y1, hi)));
+    // The pipe above it.
+    s.solids.push(cuboid(Vec3::new(a - wall, y1, a - wall), Vec3::new(a, top, b + wall)));
+    s.solids.push(cuboid(Vec3::new(b, y1, a - wall), Vec3::new(b + wall, top, b + wall)));
+    s.solids.push(cuboid(Vec3::new(a, y1, a - wall), Vec3::new(b, top, a)));
+    s.solids.push(cuboid(Vec3::new(a, y1, b), Vec3::new(b, top, b + wall)));
     s
 }
 
@@ -177,9 +191,26 @@ mod tests {
     }
 
     #[test]
-    fn the_chimney_roof_has_a_flue() {
+    fn the_chimney_hood_has_a_flue() {
         let s = chimney();
-        assert!(s.is_solid(Vec3::new(0.2, 1.13, 0.2)), "roof");
-        assert!(!s.is_solid(Vec3::new(0.5, 1.13, 0.5)), "flue");
+        assert!(s.is_solid(Vec3::new(0.7, 1.13, 0.7)), "hood");
+        assert!(!s.is_solid(Vec3::new(1.0, 1.13, 1.0)), "flue");
+        assert!(!s.is_solid(Vec3::new(1.0, 1.3, 1.0)), "pipe");
+        assert!(s.is_solid(Vec3::new(1.09, 1.3, 1.0)), "pipe wall");
+        assert!(!s.is_solid(Vec3::new(0.3, 1.13, 0.3)), "beyond the hood");
+    }
+
+    /// Every scene stands in the open: every side and the top open, the floor not.
+    #[test]
+    fn scenes_are_open_but_for_the_floor() {
+        for p in PRESETS {
+            let s = (p.build)();
+            let touches = |inside: Vec3| s.vents.iter().any(|v| v.contains(inside));
+            let (d, e) = (s.size, 0.01);
+            for side in [Vec3::new(e, 1.0, 1.0), Vec3::new(d.x - e, 1.0, 1.0), Vec3::new(1.0, 1.0, e), Vec3::new(1.0, 1.0, d.z - e), Vec3::new(1.0, d.y - e, 1.0)] {
+                assert!(touches(side), "{}: closed at {side}", p.name);
+            }
+            assert!(s.burners.iter().all(|b| (b.pos.x - 0.5 * d.x).abs() < 0.3), "{}: the fire is off-centre", p.name);
+        }
     }
 }

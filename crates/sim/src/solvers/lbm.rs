@@ -258,7 +258,7 @@ impl Lbm {
         for j in 0..ny {
             for i in 0..nx {
                 let c = self.centre(i, j);
-                self.role[(i, j)] = if self.solid[(i, j)] {
+                self.role[(i, j)] = if self.solid[(i, j)] && !super::opens_border(scene, c) {
                     self.dye[(i, j)] = 0.0;
                     Role::Solid
                 } else if let Some((e, across)) =

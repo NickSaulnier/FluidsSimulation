@@ -29,6 +29,13 @@ use rayon::prelude::*;
 /// got slower beyond 8 threads).
 pub(crate) const PAR_CHUNK: usize = 1024;
 
+/// Whether a drain opens the domain's border at `c`: drains reaching into the border
+/// (outside the interior, where the walls are always solid) make it open there, so a
+/// scene can let gas out through its edges, unseen. Painted walls stay solid.
+pub fn opens_border(scene: &Scene, c: Vec2) -> bool {
+    !scene.solid.interior().contains(c) && scene.drains.iter().any(|d| d.contains(c))
+}
+
 /// Resample the scene's solids onto a grid of cell size `h`: a cell is solid if its
 /// centre is inside a scene solid. The outer ring is always solid so the domain stays
 /// closed even where the scene's walls are thinner than a cell.

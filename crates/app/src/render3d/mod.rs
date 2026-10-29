@@ -1,4 +1,5 @@
-//! The 3D view: an orbit camera, the scene's lines (floor grid, domain box, burners,
+//! The 3D view: an orbit camera, the scene's lines (a floor grid fading out round the
+//! fire, and the burners; no box: the domain is open air,
 //! vents) and, over them, the gas raymarched from the solver's volume texture, with the
 //! solids shaded where the rays hit them (`march.wgsl`).
 //!
@@ -24,11 +25,11 @@ struct Vertex {
 }
 
 /// Linear-space colours (the surface is sRGB).
-const EDGE: [f32; 4] = [0.35, 0.38, 0.45, 1.0];
 const GRID: [f32; 4] = [0.12, 0.13, 0.16, 1.0];
 const BURNER: [f32; 4] = [1.0, 0.35, 0.05, 1.0];
-const VENT: [f32; 4] = [0.15, 0.4, 0.8, 1.0];
 const GRID_STEP: f32 = 0.1;
+/// The floor grid fades into the background between these distances from the middle.
+const GRID_FADE: std::ops::Range<f32> = 0.35..0.9;
 const CIRCLE_SEGMENTS: usize = 40;
 /// The colour around and behind the domain, matching the 2D view's letterbox.
 const BACKGROUND: wgpu::Color = wgpu::Color { r: 0.012, g: 0.014, b: 0.022, a: 1.0 };
@@ -453,19 +454,33 @@ fn outline(scene: &Scene3d) -> Vec<Vertex> {
         v.push(Vertex { pos: b.into(), colour });
     };
     let s = scene.size;
-    // Floor grid, then the box edges over it.
+    // The floor grid, in short pieces, each fading toward the background with its
+    // distance from the middle.
+    let middle = Vec3::new(0.5 * s.x, 0.0, 0.5 * s.z);
+    let faded = |p: Vec3| {
+        let d = (p.distance(middle) - GRID_FADE.start) / (GRID_FADE.end - GRID_FADE.start);
+        let k = 1.0 - d.clamp(0.0, 1.0);
+        let bg = [BACKGROUND.r as f32, BACKGROUND.g as f32, BACKGROUND.b as f32];
+        [0, 1, 2].map(|c| bg[c] + (GRID[c] - bg[c]) * k * k).into_iter().chain([1.0]).collect::<Vec<_>>().try_into().unwrap_or(GRID)
+    };
     let (nx, nz) = ((s.x / GRID_STEP).round() as usize, (s.z / GRID_STEP).round() as usize);
+    let mut piece = |a: Vec3, b: Vec3| {
+        let mid = 0.5 * (a + b);
+        if mid.distance(middle) < GRID_FADE.end {
+            line(a, b, faded(mid));
+        }
+    };
     for i in 1..nx {
-        let x = i as f32 * GRID_STEP;
-        line(Vec3::new(x, 0.0, 0.0), Vec3::new(x, 0.0, s.z), GRID);
+        for k in 0..nz {
+            let x = i as f32 * GRID_STEP;
+            piece(Vec3::new(x, 0.0, k as f32 * GRID_STEP), Vec3::new(x, 0.0, (k + 1) as f32 * GRID_STEP));
+        }
     }
     for k in 1..nz {
-        let z = k as f32 * GRID_STEP;
-        line(Vec3::new(0.0, 0.0, z), Vec3::new(s.x, 0.0, z), GRID);
-    }
-    box_edges(Vec3::ZERO, s, EDGE, &mut line);
-    for vent in &scene.vents {
-        box_edges(vent.min, vent.max, VENT, &mut line);
+        for i in 0..nx {
+            let z = k as f32 * GRID_STEP;
+            piece(Vec3::new(i as f32 * GRID_STEP, 0.0, z), Vec3::new((i + 1) as f32 * GRID_STEP, 0.0, z));
+        }
     }
     for b in &scene.burners {
         // A ring in the burner's plane.
@@ -474,17 +489,6 @@ fn outline(scene: &Scene3d) -> Vec<Vertex> {
     }
     // Solids aren't lines: the raymarch shades them.
     v
-}
-
-fn box_edges(min: Vec3, max: Vec3, colour: [f32; 4], line: &mut impl FnMut(Vec3, Vec3, [f32; 4])) {
-    let corner = |i: u32| Vec3::new(if i & 1 == 0 { min.x } else { max.x }, if i & 2 == 0 { min.y } else { max.y }, if i & 4 == 0 { min.z } else { max.z });
-    for i in 0..8u32 {
-        for bit in [1, 2, 4] {
-            if i & bit == 0 {
-                line(corner(i), corner(i | bit), colour);
-            }
-        }
-    }
 }
 
 fn circle(centre: Vec3, u: Vec3, w: Vec3, colour: [f32; 4], line: &mut impl FnMut(Vec3, Vec3, [f32; 4])) {
@@ -501,13 +505,24 @@ fn circle(centre: Vec3, u: Vec3, w: Vec3, colour: [f32; 4], line: &mut impl FnMu
 mod tests {
     use super::*;
 
+    /// No box: only the floor grid, round the middle and fading out, and the burners.
     #[test]
-    fn outlines_have_whole_segments_and_twelve_box_edges() {
-        let scene = Scene3d::empty_box(Vec3::new(1.0, 1.5, 1.0));
+    fn outlines_are_a_fading_floor_and_the_burners() {
+        let scene = sim3d::scene::campfire();
         let v = outline(&scene);
         assert_eq!(v.len() % 2, 0);
-        let edges = v.iter().filter(|x| x.colour == EDGE).count() / 2;
-        assert_eq!(edges, 12);
+        let middle = Vec3::new(0.5 * scene.size.x, 0.0, 0.5 * scene.size.z);
+        let brightness = |c: [f32; 4]| c[0] + c[1] + c[2];
+        for pair in v.chunks(2).filter(|p| p[0].colour != BURNER) {
+            let (a, b) = (Vec3::from(pair[0].pos), Vec3::from(pair[1].pos));
+            assert!(a.y == 0.0 && b.y == 0.0, "a line off the floor");
+            let far = (0.5 * (a + b)).distance(middle);
+            assert!(far < GRID_FADE.end, "a line out at {far}");
+            if far > GRID_FADE.start + 0.1 {
+                assert!(brightness(pair[0].colour) < brightness(GRID), "no fade at {far}");
+            }
+        }
+        assert!(v.iter().any(|x| x.colour == BURNER));
         for p in sim3d::PRESETS {
             assert_eq!(outline(&(p.build)()).len() % 2, 0, "{}", p.name);
         }
@@ -528,7 +543,7 @@ mod tests {
             assert_eq!(m.shapes[2 * k][3], -1.0, "the chimney's solids are boxes");
             assert!(Vec3::from_slice(&m.shapes[2 * k + 1][..3]).cmpge(Vec3::from_slice(&m.shapes[2 * k][..3])).all(), "max below min");
         }
-        assert!((m.size[3] - STEP_CELLS * 1.5 / 160.0).abs() < 1e-6);
+        assert!((m.size[3] - STEP_CELLS * scene.size.y / 160.0).abs() < 1e-6);
         let twin = sim3d::scene::twin_burners();
         let none = march_uniforms(Mat4::IDENTITY, Vec3::ONE, [0.0; 4], &twin, None, &Palette::default());
         assert_eq!(none.counts[1], 0, "marched with no volume");

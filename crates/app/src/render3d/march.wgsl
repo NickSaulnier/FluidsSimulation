@@ -44,6 +44,18 @@ const SOLID: vec3f = vec3f(0.42, 0.44, 0.48);
 const FLAME_FAINT: f32 = 1.0;
 const FLAME_FULL: f32 = 3.0;
 
+/// Gas thins out over this far from the open sides and top, so the volume's edge
+/// never shows (m).
+const FADE: f32 = 0.35;
+
+/// How much of the gas at `p` shows: none at the open sides and the top, all of it
+/// this far in. (The floor is closed.)
+fn edge_fade(p: vec3f) -> f32 {
+    let s = m.size.xyz;
+    let e = min(min(min(p.x, s.x - p.x), min(p.z, s.z - p.z)), s.y - p.y);
+    return smoothstep(0.0, FADE, e);
+}
+
 /// The 2D fire's ramp (deep red, orange, yellow, near white), in linear light.
 fn flame_colour(t: f32) -> vec3f {
     let stops = array<vec3f, 4>(
@@ -167,10 +179,11 @@ fn fs(@builtin(position) pos: vec4f) -> Out {
             }
             let p = eye + dir * t;
             let v = textureSampleLevel(volume, linear, p / m.size.xyz, 0.0);
-            let s = v.r;
+            let fade = edge_fade(p);
+            let s = v.r * fade;
             var shows = 0.0;
             if glow_k > 0.0 {
-                let flame = clamp((v.g - FLAME_FAINT) / (FLAME_FULL - FLAME_FAINT), 0.0, 1.0);
+                let flame = fade * clamp((v.g - FLAME_FAINT) / (FLAME_FULL - FLAME_FAINT), 0.0, 1.0);
                 glow += through * flame_colour(flame) * (glow_k * flame * step);
                 // A full flame counts about as much as opaque smoke over 25 steps.
                 shows = through * 0.04 * flame;

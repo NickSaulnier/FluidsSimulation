@@ -122,15 +122,21 @@ pub fn campfire() -> Scene {
     campfire_in(DEFAULT_DOMAIN)
 }
 
-/// A wide, gentle burner on the floor with a vent across the top: the smoke-and-fire
-/// solver's flame rises and its smoke leaves through the vent. (Other solvers get a slow
-/// upwelling jet.)
+/// A wide, gentle burner on the floor in the open: the top and the sides (above a low
+/// sill) are open, through drains in the border just outside the window, so the
+/// smoke-and-fire solver's smoke rises out of the picture instead of pooling under a
+/// ceiling. (Other solvers get a slow upwelling jet, its water spilling out at the
+/// sides.)
 pub fn campfire_in(d: Vec2) -> Scene {
     let mut s = tank(d);
     let inner = s.solid.interior();
     // Slow and wide, so buoyancy rather than the jet shapes the flame.
     s.emitters.push(Emitter { pos: Vec2::new(0.5 * d.x, inner.min.y + 0.01), dir: Vec2::Y, speed: 0.3, width: 0.24 });
-    s.drains.push(Rect::new(Vec2::new(inner.min.x, inner.max.y - 0.06), inner.max));
+    // Each reaches a centimetre into the picture, so particles at the edge leave too.
+    let (reach, sill) = (0.01, inner.min.y + 0.15);
+    s.drains.push(Rect::new(Vec2::new(0.0, inner.max.y - reach), d));
+    s.drains.push(Rect::new(Vec2::new(0.0, sill), Vec2::new(inner.min.x + reach, d.y)));
+    s.drains.push(Rect::new(Vec2::new(inner.max.x - reach, sill), d));
     s
 }
 
@@ -181,5 +187,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The campfire's smoke leaves through its open top and sides instead of pooling
+    /// under a ceiling: after a while there's much less smoke up high than in the same
+    /// scene closed.
+    #[test]
+    fn campfire_smoke_leaves_through_the_open_edges() {
+        let solver = crate::SOLVERS.iter().position(|s| s.name == "Smoke & fire").expect("the smoke solver");
+        let campfire = PRESETS.iter().position(|p| p.name == "Campfire").expect("the campfire");
+        // A coarse grid, so the test stays quick.
+        struct Coarse;
+        impl crate::ParamVisitor for Coarse {
+            fn float(&mut self, _: &crate::FloatSpec, _: &mut f32) {}
+            fn int(&mut self, spec: &crate::IntSpec, value: &mut u32) {
+                if spec.key == "cells_y" {
+                    *value = 48;
+                }
+            }
+            fn toggle(&mut self, _: &crate::ToggleSpec, _: &mut bool) {}
+        }
+        let smoke_up_high = |open: bool| {
+            let mut world = crate::World::new(solver, campfire);
+            world.solver.visit_params(&mut Coarse);
+            if !open {
+                world.scene.drains.clear();
+            }
+            world.reset();
+            for _ in 0..5 * 60 {
+                world.advance(1.0 / 60.0, &crate::StepInput::default());
+            }
+            let index = world.solver.fields().iter().position(|f| f.key == "smoke").expect("a smoke field");
+            let mut values = Vec::new();
+            let layout = world.solver.fill_field(index, &mut values).expect("smoke");
+            let top = world.scene.solid.interior().max.y;
+            let mut sum = 0.0;
+            for j in 0..layout.ny {
+                let y = (j as f32 + 0.5) * layout.cell;
+                if y > top - 0.2 && y < top {
+                    sum += (0..layout.nx).map(|i| values[j * layout.nx + i]).filter(|v| v.is_finite()).sum::<f32>();
+                }
+            }
+            sum
+        };
+        let (open, closed) = (smoke_up_high(true), smoke_up_high(false));
+        assert!(closed > 0.0, "no smoke reached the top");
+        assert!(open < 0.5 * closed, "open {open} against closed {closed}");
     }
 }

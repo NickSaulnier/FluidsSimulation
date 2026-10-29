@@ -452,3 +452,33 @@ independent of the rest and could be done in either order.
     My scripts can't paint (posted mouse moves read as the cursor leaving the
     window), so painting, the preview and Ctrl+Z were checked by the tests and the
     headless render, not by hand.
+
+- **Phase D (done):** smoke in the open (§3.7).
+  - **3D** (`sim3d/src/scene.rs`):
+    - Every scene stands on a floor in the open: 2 × 2 × 2 m, vents along all four
+      sides and across the top (the solver already opened a wall wherever a vent lay
+      against it), the fire in the middle. The chimney became a hood with a flue pipe,
+      the smoke gathering under it, spilling round its edges and going up the pipe.
+    - 2 × 2 × 2 m rather than the plan's 3 × 2 × 3: measured on this GPU, the old box
+      took 3.6 ms a step (1.8 M cells); 3 × 2 × 3 at the same cost would need cells
+      twice as big. The default resolution went from 160 to 144 cells up (3 M cells,
+      about 5.5 ms a step), cells 1.5 times as big as before; the governor still
+      lowers it in full screen if frames fall behind.
+    - The view (`render3d`): no box or vent lines; the floor grid fades out round the
+      fire; the gas thins to nothing over the last 35 cm before the open sides and top,
+      so the volume's edge never shows; the camera frames the fire and its plume (1 ×
+      1.4 × 1 m), not the domain, so the plume rises out of the picture.
+  - **2D Smoke & fire:** the campfire's top and sides (above a low sill) are open:
+    its drains now lie in the border just outside the window (a drain there opens the
+    domain's always-solid border; painted walls stay solid), so smoke rises out of the
+    picture with no band where it vanishes. Stable fluids and LBM both honour it.
+  - Tests: every 3D scene open but for the floor; the hood and its flue; with a gust
+    blowing, the volume keeps about a third of the smoke it keeps with only its top
+    open (421 against 1135); the 2D campfire has far less smoke under its top than the
+    same scene closed; the floor grid fades and nothing else is drawn; the camera
+    frames the fire's region.
+  - Checked in the app (debug build): Fire on all four scenes and Smoke on the campfire
+    and chimney, 150 to 170 fps; the 2D campfire's smoke leaving through the top.
+  - A note on the test run: once, the sim3d GPU tests hung (a process waiting on the
+    GPU for 20 minutes, using no CPU) while another copy of the app was running; run
+    again, they passed in 8 s. Not reproduced since.

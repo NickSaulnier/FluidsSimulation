@@ -48,7 +48,8 @@ optimises the dependencies and the `sim` crate).
 | Fire (3D GPU), Smoke (3D GPU) | 3D grid fluids on the GPU, raymarched, with an orbiting camera |
 
 2D scenes: dam break, double dam break, tank with obstacle, fountain, Martin & Moyce
-column, wind tunnel, campfire. 3D scenes: campfire, torch, twin burners, chimney.
+column, wind tunnel, campfire. 3D scenes, in the open air (smoke rises out of the picture): campfire, torch, twin
+burners, chimney.
 
 The fluid fills the window edge to edge, the scene taking the window's shape, and
 bounces off its invisible edges. Gravity points any way, at any strength (in 3D, with a

@@ -295,7 +295,7 @@ fn a_centred_plume_is_symmetric() {
     let scene = scene::campfire();
     let mut s = solver(&gpu, &scene, at(48));
     run(&mut s, &gpu, &scene, 1.5);
-    let (n, _) = s.dims().unwrap();
+    let (n, h) = s.dims().unwrap();
     assert_eq!(n.x, n.z);
     let scal = s.read_scalars(&gpu);
     let smoke = |i, j, k| scal[index(n, i, j, k)][0];
@@ -309,8 +309,9 @@ fn a_centred_plume_is_symmetric() {
             }
         }
     }
-    let top: f32 = (0..n.z).flat_map(|k| (0..n.x).map(move |i| (i, k))).map(|(i, k)| smoke(i, n.y * 2 / 3, k)).sum();
-    assert!(top > 0.0, "the plume didn't reach two thirds of the way up");
+    let metre = (1.0 / h) as u32;
+    let top: f32 = (0..n.z).flat_map(|k| (0..n.x).map(move |i| (i, k))).map(|(i, k)| smoke(i, metre, k)).sum();
+    assert!(top > 0.0, "the plume didn't reach a metre up");
     assert!(swapped <= 0.01 * peak, "x/z swap differs by {swapped} (peak {peak})");
     assert!(mirrored <= 0.05 * peak, "x mirror differs by {mirrored} (peak {peak})");
 }
@@ -542,4 +543,34 @@ fn a_fire_burns_steadily_for_a_minute() {
         let rms = (s.read_velocity(&gpu).iter().map(|v| v * v).sum::<f32>() / scal.len() as f32).sqrt();
         assert!(rms < 1.0, "the air churns at {rms} m/s rms by {second} s");
     }
+}
+
+/// Open air: smoke leaves through the open sides and top. The plume pushed sideways (a
+/// steady gust) carries its smoke out, so much less stays in the volume than in the
+/// same scene with only the top open.
+#[test]
+fn smoke_leaves_through_the_open_sides() {
+    let Some(gpu) = gpu() else { return };
+    let gust = StepInput3d {
+        brushes: vec![crate::Brush3d { pos: Vec3::new(1.0, 0.6, 1.0), radius: 0.6, velocity: Vec3::new(1.5, 0.0, 0.0), spin: Vec3::ZERO, strength: 5.0 }],
+        ..StepInput3d::default()
+    };
+    let smoke_left = |open: bool| {
+        let mut scene = scene::campfire();
+        if !open {
+            // The top vent comes first: keep it, so only the sides differ.
+            scene.vents.truncate(1);
+        }
+        let mut s = solver(&gpu, &scene, at(48));
+        for _ in 0..4 * 60 {
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            s.step(&gpu, &mut encoder, 1.0 / 60.0, &scene, &gust);
+            gpu.queue.submit([encoder.finish()]);
+            s.submitted(&gpu);
+        }
+        s.read_scalars(&gpu).iter().map(|v| v[0]).sum::<f32>()
+    };
+    let (open, closed) = (smoke_left(true), smoke_left(false));
+    assert!(closed > 0.0, "no smoke at all");
+    assert!(open < 0.5 * closed, "open {open} against closed {closed}");
 }

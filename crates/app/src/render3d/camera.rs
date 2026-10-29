@@ -9,6 +9,8 @@ const ORBIT_PER_PX: f32 = 0.008;
 const MAX_PITCH: f32 = 1.4;
 const ZOOM_STEP: f32 = 0.9;
 const FOV_Y: f32 = 0.8; // radians, about 46°
+/// The part of an open domain the camera frames: the fire and its plume.
+const SHOWN: Vec3 = Vec3::new(1.0, 1.4, 1.0);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OrbitCamera {
@@ -19,10 +21,13 @@ pub struct OrbitCamera {
 }
 
 impl OrbitCamera {
-    /// A three-quarter view of a box of `size` (with its minimum corner at the origin),
-    /// far enough back to see all of it.
+    /// A three-quarter view of the fire and its plume in the middle of a domain of
+    /// `size` (with its minimum corner at the origin, the floor at y = 0): a region
+    /// `SHOWN` big at most, standing on the floor, far enough back to see all of it.
     pub fn framing(size: Vec3) -> Self {
-        Self { yaw: 0.6, pitch: 0.35, distance: 1.6 * size.length(), target: 0.5 * size }
+        let shown = size.min(SHOWN);
+        let target = Vec3::new(0.5 * size.x, 0.5 * shown.y, 0.5 * size.z);
+        Self { yaw: 0.6, pitch: 0.35, distance: 1.6 * shown.length(), target }
     }
 
     pub fn eye(&self) -> Vec3 {
@@ -96,15 +101,18 @@ mod tests {
         assert!((cam.eye().distance(cam.target) - cam.distance).abs() < 1e-4);
     }
 
+    /// In a big open domain the fire's region fills the view, standing on the floor
+    /// in the middle.
     #[test]
-    fn up_is_up_and_the_whole_box_fits() {
-        let size = Vec3::new(1.0, 1.5, 1.0);
+    fn up_is_up_and_the_fire_fits() {
+        let size = Vec3::new(2.0, 2.0, 2.0);
         let cam = OrbitCamera::framing(size);
         let m = cam.view_proj(1.0);
         assert!(clip(m, cam.target + Vec3::Y * 0.1).y > 0.0, "up should project up");
-        for x in [0.0, size.x] {
-            for y in [0.0, size.y] {
-                for z in [0.0, size.z] {
+        let lo = Vec3::new(0.5 * (size.x - SHOWN.x), 0.0, 0.5 * (size.z - SHOWN.z));
+        for x in [lo.x, lo.x + SHOWN.x] {
+            for y in [0.0, SHOWN.y] {
+                for z in [lo.z, lo.z + SHOWN.z] {
                     let c = clip(m, Vec3::new(x, y, z));
                     assert!(c.x.abs() <= 1.0 && c.y.abs() <= 1.0, "corner ({x},{y},{z}) off screen: {c}");
                 }

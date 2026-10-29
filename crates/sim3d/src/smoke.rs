@@ -111,7 +111,7 @@ impl SmokeParams {
     /// Burners release warm smoke.
     pub fn smoke() -> Self {
         Self {
-            cells_y: 160,
+            cells_y: 144,
             pressure_iters: 40,
             over_relax: 1.8,
             rise: 0.15,
