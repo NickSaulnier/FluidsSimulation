@@ -1,0 +1,27 @@
+[meta]
+name = "Ship of fire"
+tags = ["fluid", "fractal", "fire", "mirror"]
+energy = "energetic"
+
+[sim]
+solver = "Smoke & fire"
+scene = "Campfire"
+palette = "Lava"
+reactions = [
+    { trigger = "kick", effect = "jet", gain = 0.8 },
+    { trigger = "snare", effect = "morph", gain = 0.7 },
+    { trigger = "bass", effect = "breathe", gain = 0.4 },
+]
+
+[fractal]
+kind = "burning_ship"
+centre = [-1.762, -0.028]
+zoom = 25.0
+rotation = 3.1416
+tour = true
+bass_zoom = 0.25
+opacity = 0.85
+
+[composite]
+symmetry = "mirror_x"
+vignette = 0.3

@@ -1,0 +1,24 @@
+[meta]
+name = "Newton's star"
+tags = ["no fluid", "fractal", "dive"]
+energy = "calm"
+
+[sim]
+palette = "Ocean"
+reactions = [
+    { trigger = "kick", effect = "flash", gain = 0.5 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[feedback]
+trail = 0.3
+
+[fractal]
+kind = "newton"
+iterations = 80
+dive = -0.4
+bass_zoom = 0.3
+colour_speed = 0.08
+
+[composite]
+vignette = 0.45

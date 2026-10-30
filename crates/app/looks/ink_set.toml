@@ -1,0 +1,24 @@
+[meta]
+name = "Ink set"
+tags = ["fluid", "fractal", "dye"]
+energy = "calm"
+
+[sim]
+solver = "Stable fluids (GPU)"
+scene = "Double dam break"
+palette = "Ink"
+params = { buoyancy = 0.3, vorticity = 0.4 }
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 0.7 },
+    { trigger = "kick", effect = "morph", gain = 0.5 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[fractal]
+dive = 0.5
+bend = 0.4
+opacity = 0.9
+
+[composite]
+contrast = 1.1
+vignette = 0.35

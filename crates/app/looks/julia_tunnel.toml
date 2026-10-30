@@ -1,0 +1,22 @@
+[meta]
+name = "Julia tunnel"
+tags = ["no fluid", "fractal", "dive"]
+energy = "any"
+
+[sim]
+palette = "Aurora"
+reactions = [
+    { trigger = "kick", effect = "morph", gain = 0.6 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[fractal]
+kind = "julia"
+centre = [0.0, 0.0]
+julia = [-0.8, 0.156]
+wander = 0.8
+dive = 0.6
+bass_zoom = 0.15
+
+[composite]
+vignette = 0.4

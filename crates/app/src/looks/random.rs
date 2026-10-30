@@ -677,6 +677,12 @@ fn tame(look: &mut Look) {
     f.bands = f.bands.clamp(0.5, 5.0);
     f.brightness = f.brightness.clamp(0.5, 1.4);
     f.opacity = f.opacity.clamp(0.3, 1.0);
+    // A diving or wandering fractal with no fluid is new every frame: feedback, which
+    // carries the frames before, smears it into a blur (seen in the app). The dive is
+    // the tunnel.
+    if f.enabled && !fluid && (f.dive != 0.0 || f.wander != 0.0) {
+        fb.enabled = false;
+    }
     if f.enabled && fb.enabled {
         // A fractal's glow covers the canvas: brightest feedback piles it up into a pale
         // wash (even dimmed). And it reads only while each new frame is most of the
@@ -908,6 +914,7 @@ mod tests {
             if f.enabled {
                 assert!((-1.5..=1.5).contains(&f.dive) && (0.0..=0.8).contains(&f.bend) && (0.3..=1.0).contains(&f.opacity), "{}: {f:?}", look.name);
                 assert!(f.dive == 0.0 || !f.tour, "{}: dives and tours", look.name);
+                assert!(look.has_fluid() || (f.dive == 0.0 && f.wander == 0.0) || !fb.enabled, "{}: a moving fractal smeared by feedback", look.name);
                 if fb.enabled {
                     assert!(fb.mode == FeedbackMode::Smear && fb.trail <= 0.5 && (0.99..=1.02).contains(&fb.zoom) && fb.echo == 0.0, "{}: a fractal under {fb:?}", look.name);
                 }

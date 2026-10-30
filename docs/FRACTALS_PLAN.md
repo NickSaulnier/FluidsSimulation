@@ -1,6 +1,6 @@
 # Fractals Plan
 
-Status: **phases A to D and the dive done** (2026-10-30); decisions open (§4). Fractal visualizations as an option
+Status: **done** (2026-10-30): phases A to E and the dive; F (3D) not started, decisions open (§4); decisions open (§4). Fractal visualizations as an option
 in looks, grouped into phases. Each phase is committed on its own.
 
 ## 1. Goal
@@ -325,3 +325,26 @@ Suggested order: A to E in order (each builds on the one before); F only if chos
     PBF, the Tricorn over dye and over 3D fire, and the Mandelbrot set over 3D fire,
     all readable; alone, the Burning Ship and the Tricorn read but soft (hence the
     stiller zoom, after that batch). The Fractal group in the editor.
+- **Phase E, the looks (done):** four built-in looks, and a frame test on the GPU.
+  - **The looks:**
+    - *Julia tunnel*: no fluid; a Julia set wandering and diving in, kicked by Morph.
+    - *Ink set*: the Mandelbrot set diving into a branch point over GPU stable fluids
+      ink, bent by it.
+    - *Ship of fire*: the Burning Ship touring over the campfire, mirrored.
+    - *Newton's star*: Newton's six-armed star, travelling out for ever.
+  - **Julia tunnel** first had a light feedback (a third left after a second): diving
+    and wandering, its every frame new, it smeared into a green blur. Without feedback
+    it's crisp (the dive is the tunnel). The randomizer now does the same: no feedback
+    for a diving or wandering fractal without a fluid (a test). Newton's star keeps its
+    light trail: its dive streams outward along its own arms, so the trail draws them
+    out rather than blurring them.
+  - **Frame test** (on a GPU): every kind, whole and deep in a dive, lights part of the
+    canvas, none of it blown out or not a number (Newton's whole view is lit all over,
+    as every point finds a root: checked for its edges' contrast instead).
+  - **Checked in the app** (debug build, full screen): all four, stepping between
+    them: Julia tunnel 240 fps, Ink set 108 to 115, Ship of fire 123 (where the
+    governor lowered the fire's grid once, as it does for that scene), Newton's star
+    234 to 240. The first run showed other looks: only the tests had been rebuilt, so
+    the app was the old one.
+  - The README's look count was behind (32, 12 without fluid): now 46 and 15, and
+    fractals are in its list of what the visualizer does.

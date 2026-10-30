@@ -1117,6 +1117,53 @@ mod tests {
         assert!(a.is_some() && b.is_some() && a != b, "{first:?} ({a:?}) then {second:?} ({b:?})");
     }
 
+    /// Each kind as a look shows it (its whole set, and deep in a dive's loop, where the
+    /// colours' shift has to keep the background clear) lights part of the canvas: not
+    /// none of it, not all of it, nothing blown out or not a number. On a GPU.
+    #[test]
+    fn a_frame_is_neither_black_nor_blown_out() {
+        use crate::render::post::tests::half_float;
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let size = [160u32, 90];
+        let layer = FractalLayer::new(device);
+        let palette = crate::render::palette::PALETTES[0].1;
+        for kind in FractalKind::ALL {
+            let whole = FractalSettings { centre: spots(kind)[0].0, zoom: spots(kind)[0].1, ..on(kind) };
+            let mut motion = Motion::default();
+            let diving = FractalSettings { dive: 1.0, ..on(kind) };
+            let mut deep = diving;
+            for _ in 0..60 * 30 {
+                deep = motion.apply(&diving, &Music::QUIET, 1.0 / 60.0);
+            }
+            for (what, settings) in [("whole", whole), ("diving", deep)] {
+                let target = super::super::feedback::texture(device, "scene", size, SCENE_FORMAT);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                super::super::feedback::clear(&mut encoder, &target);
+                layer.draw(device, queue, &mut encoder, &target, [0.0, 0.0, size[0] as f32, size[1] as f32], &settings, &palette, None, 0);
+                queue.submit([encoder.finish()]);
+                let pixels = half_float::read(device, queue, target.texture(), size);
+                let light = |p: &[f32; 4]| p[0].max(p[1]).max(p[2]);
+                assert!(pixels.iter().all(|p| p.iter().all(|c| c.is_finite())), "{kind:?} {what}: not a number");
+                let lit = pixels.iter().filter(|p| light(p) > 0.03).count() as f32 / pixels.len() as f32;
+                let mut lights: Vec<f32> = pixels.iter().map(light).collect();
+                lights.sort_by(f32::total_cmp);
+                let (dim, bright) = (lights[lights.len() / 10], lights[lights.len() * 9 / 10]);
+                assert!(lights[lights.len() - 1] < 2.0, "{kind:?} {what}: blown out ({})", lights[lights.len() - 1]);
+                if kind == FractalKind::Newton && what == "whole" {
+                    // Every point finds a root, so the basins tile the plane: lit all
+                    // over, but their edges stand out.
+                    assert!(bright - dim > 0.2, "{kind:?} {what}: flat, {dim} to {bright}");
+                } else {
+                    assert!((0.05..0.97).contains(&lit) && bright > 0.1, "{kind:?} {what}: {lit} lit, the brightest tenth {bright}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn kinds_have_the_shaders_numbers() {
         // fractal.wgsl's MANDELBROT .. NEWTON.
