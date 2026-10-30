@@ -189,6 +189,7 @@ impl Settings {
                 bass_zoom: clamp(w.fractal.bass_zoom, 0.0, 1.0),
                 dive: clamp(w.fractal.dive, -3.0, 3.0),
                 bend: clamp(w.fractal.bend, 0.0, 2.0),
+                power: clamp(w.fractal.power, 2.0, 16.0),
                 ..w.fractal
             },
             ..*w

@@ -1,6 +1,6 @@
 # Fractals Plan
 
-Status: **done** (2026-10-30): phases A to E and the dive; F (3D) not started, decisions open (§4); decisions open (§4). Fractal visualizations as an option
+Status: **done** (2026-10-30): phases A to F and the dive; two decisions still open (§4: the fractal's dye, other kinds); decisions open (§4). Fractal visualizations as an option
 in looks, grouped into phases. Each phase is committed on its own.
 
 ## 1. Goal
@@ -348,3 +348,49 @@ Suggested order: A to E in order (each builds on the one before); F only if chos
     the app was the old one.
   - The README's look count was behind (32, 12 without fluid): now 46 and 15, and
     fractals are in its list of what the visualizer does.
+- **Phase F, 3D fractals (done):** the Mandelbulb and the Menger sponge, raymarched in
+  the same shader (`fractal.wgsl`'s `march`).
+  - **The kinds:** two more `FractalKind`s, `mandelbulb` and `menger`. A 3D kind's
+    camera orbits it (`rotation` and `spin` its angle, `zoom` its closeness; `centre`
+    isn't used), from 0.35 rad above its equator, with a 46° field of view. One sample a
+    pixel (a raymarch is too much work for four), and `iterations` is the steps along a
+    ray, so the load governor's cut applies.
+  - **Raymarching:** the Mandelbulb's distance estimate (power n, 10 iterations, an
+    orbit trap for its colour) and the Menger sponge's (Inigo Quilez's, measured from
+    its corner so the finest holes keep their precision), marched from a bounding
+    sphere (rays that miss it cost nothing), hit within half a pixel's width. Lit from
+    above the camera, darkened in crevices (the steps it took), a rim in the highlight;
+    near misses glow, far ones are clear, so a fluid shows round it.
+  - **With the music:** a Mandelbulb's `wander` swings its power 3 either side of its
+    own, the lobes growing and merging, kicked by Morph. The Mandelbulb doesn't dive
+    (it doesn't repeat itself as it's zoomed); its Dive control is hidden.
+  - **The sponge's dive:** the sponge shrunk to a third about its corner is its corner
+    cube, so the camera goes round a loop from 3 to 1 from the corner, a level of holes
+    deeper each time, the colours counting out from the corner less the dive's shift.
+    The first version dived into the sponge itself: its corner cube matches only
+    within itself, and the camera sees its neighbours, and through its holes the far
+    side, which the wider end of the loop finds empty, so at the wrap they'd pop in and
+    out (the first test only sampled inside the corner cube, so it passed). Now it dives
+    into the sponge grown outward from its corner (3, 9, 27, 81 times the size, each with
+    the last as its corner), which shrunk by a third is itself everywhere; its far parts
+    fade out at 12 to 25 camera distances, the same at every turn. The camera looks in
+    from within 0.5 rad of the diagonal, so never from inside, and aims a little into
+    the cube, so the faces fill the canvas.
+  - **In 3D looks** the fractal is now a backdrop: the scene is cleared to the 3D
+    background, the fractal drawn, and the 3D renderer keeps it (`keep`), drawing the
+    floor and the gas over it; a 3D kind turns with the look's camera. (Unless the
+    feedback's flow would wash it out: then it goes over the picture, as in 2D.)
+  - **Editor and the rest:** Power (the Mandelbulb), Wander (the Julia set and the
+    Mandelbulb), Dive (all but the Mandelbulb), Zoom and Turn for the 3D kinds' camera;
+    the `fractal_power` frame output; the randomizer picks the 3D kinds too (always
+    turning, and with no feedback when alone: a turning solid smears like any moving
+    fractal); `looks/README.md` and the README.
+  - **Looks:** *Sponge dive* (no fluid: the sponge's endless dive, in Mercury) and *Bulb
+    in smoke* (a Mandelbulb swinging its lobes behind the 3D smoke, the camera
+    orbiting).
+  - **Tests:** the grown sponge repeats itself at a third about its corner everywhere
+    within six of it (inside it and out); the diving camera always looks at the corner
+    from outside the cube; the GPU frame test covers the 3D kinds too.
+  - **Checked in the app** (debug build): Bulb in smoke at 109 to 139 fps (the smoke's
+    plume rising in front of the bulb), Sponge dive at 240. The glow round the solids
+    was too wide at first (a white haze round the sponge): narrowed.

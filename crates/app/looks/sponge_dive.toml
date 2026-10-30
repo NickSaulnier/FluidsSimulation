@@ -1,0 +1,21 @@
+[meta]
+name = "Sponge dive"
+tags = ["no fluid", "fractal", "3d", "dive"]
+energy = "any"
+
+[sim]
+palette = "Mercury"
+reactions = [
+    { trigger = "kick", effect = "morph", gain = 0.5 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[fractal]
+kind = "menger"
+dive = 0.5
+spin = 0.08
+iterations = 120
+bands = 1.0
+
+[composite]
+vignette = 0.45

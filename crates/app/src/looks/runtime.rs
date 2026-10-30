@@ -241,6 +241,7 @@ impl Runtime {
         fr.iterations = get("fractal_iter").round().clamp(1.0, crate::render::fractal::MAX_ITERATIONS as f32) as u32;
         fr.opacity = get("fractal_opacity").clamp(0.0, 1.0);
         fr.bend = get("fractal_bend").clamp(0.0, 4.0);
+        fr.power = get("fractal_power").clamp(2.0, 16.0);
         fr.julia = [get("julia_re").clamp(-4.0, 4.0), get("julia_im").clamp(-4.0, 4.0)];
         let mut c = *composite;
         c.segments = get("segments").round().clamp(2.0, 16.0) as u32;
@@ -290,6 +291,7 @@ fn outputs(feedback: &FeedbackSettings, waves: &WaveSettings, composite: &Compos
             "fractal_iter" => waves.fractal.iterations as f32,
             "fractal_opacity" => waves.fractal.opacity,
             "fractal_bend" => waves.fractal.bend,
+            "fractal_power" => waves.fractal.power,
             "julia_re" => waves.fractal.julia[0],
             "julia_im" => waves.fractal.julia[1],
             "gravity" => 0.0,

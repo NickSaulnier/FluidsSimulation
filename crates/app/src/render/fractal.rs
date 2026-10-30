@@ -35,10 +35,18 @@ pub enum FractalKind {
     /// Newton's method on z³ − 1: three basins, coloured by the root each pixel finds.
     #[serde(alias = "newton")]
     Newton,
+    /// 3D: the Mandelbrot set's cousin in spherical coordinates (raymarched), its lobes
+    /// set by `FractalSettings::power`.
+    #[serde(alias = "mandelbulb")]
+    Mandelbulb,
+    /// 3D: a cube with the middle of each face and the centre taken out, and the same
+    /// again in each of the twenty cubes left, for ever (raymarched).
+    #[serde(alias = "menger", alias = "menger_sponge")]
+    Menger,
 }
 
 impl FractalKind {
-    pub const ALL: [Self; 5] = [Self::Mandelbrot, Self::Julia, Self::BurningShip, Self::Tricorn, Self::Newton];
+    pub const ALL: [Self; 7] = [Self::Mandelbrot, Self::Julia, Self::BurningShip, Self::Tricorn, Self::Newton, Self::Mandelbulb, Self::Menger];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -47,7 +55,19 @@ impl FractalKind {
             Self::BurningShip => "Burning ship",
             Self::Tricorn => "Tricorn",
             Self::Newton => "Newton",
+            Self::Mandelbulb => "Mandelbulb",
+            Self::Menger => "Menger sponge",
         }
+    }
+
+    /// Whether it's a solid, raymarched in 3D (its camera orbits it).
+    pub fn is_3d(self) -> bool {
+        matches!(self, Self::Mandelbulb | Self::Menger)
+    }
+
+    /// Whether it can dive (the Mandelbulb doesn't repeat itself as it's zoomed).
+    pub fn dives(self) -> bool {
+        self != Self::Mandelbulb
     }
 
     /// The shader's number for it.
@@ -95,6 +115,9 @@ pub struct FractalSettings {
     /// at middling loudness; 0: stay put. It flies to a point where the picture repeats
     /// itself and loops there. See `Motion`.
     pub dive: f32,
+    /// The Mandelbulb's power: its lobes (8 is the classic one). A Mandelbulb's
+    /// `wander` swings it.
+    pub power: f32,
     /// Set by `Motion`, not a setting: iterations taken off the counts before colouring,
     /// so a dive's colours stay put as it goes deeper.
     #[serde(skip)]
@@ -120,6 +143,7 @@ impl FractalSettings {
         tour: false,
         bend: 0.0,
         dive: 0.0,
+        power: 8.0,
         shift: 0.0,
     };
 }
@@ -130,7 +154,7 @@ impl Default for FractalSettings {
     }
 }
 
-/// Must match `Fractal` in fractal.wgsl (128 bytes).
+/// Must match `Fractal` in fractal.wgsl (208 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -159,7 +183,30 @@ struct Uniforms {
     /// Samples a pixel: 4, or 1 when the frames can't keep up (`Quality`).
     samples: u32,
     _pad: f32,
+    /// The 3D kinds' camera: where it is, and its forward (w: the tangent of half the
+    /// field of view), right and up.
+    eye: [f32; 4],
+    forward: [f32; 4],
+    right: [f32; 4],
+    up: [f32; 4],
+    /// The 3D kinds' shape: x the Mandelbulb's power, y the point colours count out from
+    /// (xyz of `aim`), w unused.
+    aim: [f32; 4],
 }
+
+/// The 3D kinds' camera: its field of view (radians, up the canvas) and its height above
+/// the fractal's equator (radians), and how far back it sits at zoom 1 (the whole thing
+/// in view).
+const FOV_3D: f32 = 0.8;
+const PITCH_3D: f32 = 0.35;
+const DISTANCE_3D: f32 = 3.0;
+/// The Menger sponge's dive heads for its corner (1, 1, 1), looking in from within this
+/// angle of the diagonal (radians), so the camera never goes inside the cube.
+const MENGER_CONE: f32 = 0.5;
+/// And looks this far into the cube past the corner (a share of its distance), so the
+/// sponge fills the canvas rather than half of it staying the dark outside. It shrinks
+/// with the distance, so the loop stays seamless.
+const MENGER_LEAN: f32 = 0.6;
 
 /// How much of its detail the fractal keeps, when the frames can't keep up (lowered a
 /// step at a time by the app's governor; 0 is all of it).
@@ -244,6 +291,8 @@ impl FractalLayer {
     /// Draw the fractal onto `target` within `viewport` (pixels: x, y, width, height), if
     /// `settings` ask for it, bent by `bend`'s displacement (scene uv, the target's size)
     /// if there is one.
+    /// A 3D kind's camera turns with `camera`'s (yaw, pitch) too, when there is one (a
+    /// 3D look's).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
@@ -256,14 +305,16 @@ impl FractalLayer {
         palette: &Palette,
         bend: Option<&wgpu::TextureView>,
         quality_step: u32,
+        camera: Option<(f32, f32)>,
     ) {
         let [x, y, w, h] = viewport;
         if !settings.enabled || settings.opacity <= 0.0 || w < 1.0 || h < 1.0 {
             return;
         }
-        let mut uniforms = self.uniforms(settings, palette, w / h, h);
+        let mut uniforms = self.uniforms(settings, palette, w / h, h, camera);
         let (samples, share) = quality(quality_step);
-        uniforms.samples = samples;
+        // A raymarch is too much work to sample a pixel four times.
+        uniforms.samples = if settings.kind.is_3d() { 1 } else { samples };
         uniforms.iterations = ((uniforms.iterations as f32 * share) as u32).max(16.min(uniforms.iterations));
         if bend.is_some() {
             // Scene uv (y down) to the canvas's -1 to 1 (y up).
@@ -295,9 +346,11 @@ impl FractalLayer {
         pass.draw(0..3, 0..1);
     }
 
-    fn uniforms(&self, s: &FractalSettings, palette: &Palette, aspect: f32, height_px: f32) -> Uniforms {
+    fn uniforms(&self, s: &FractalSettings, palette: &Palette, aspect: f32, height_px: f32, camera: Option<(f32, f32)>) -> Uniforms {
         let half_height = 1.5 / view_zoom(s.zoom);
         let turn = s.rotation + self.turn;
+        let (eye, forward, right, up, aim) = camera_3d(s.kind, s.dive != 0.0, turn, view_zoom(s.zoom), camera);
+        let v4 = |v: glam::Vec3, w: f32| [v.x, v.y, v.z, w];
         Uniforms {
             palette: palette.linear(),
             centre: s.centre.map(|c| if c.is_finite() { c.clamp(-4.0, 4.0) } else { 0.0 }),
@@ -305,7 +358,8 @@ impl FractalLayer {
             julia: s.julia.map(|c| if c.is_finite() { c.clamp(-4.0, 4.0) } else { 0.0 }),
             half_height,
             aspect,
-            kind: s.kind.code(),
+            // A diving sponge is the sponge grown from its corner (fractal.wgsl's 7).
+            kind: if s.kind == FractalKind::Menger && s.dive != 0.0 { 7 } else { s.kind.code() },
             iterations: s.iterations.clamp(1, MAX_ITERATIONS),
             opacity: s.opacity.clamp(0.0, 1.0),
             brightness: s.brightness.max(0.0),
@@ -316,8 +370,40 @@ impl FractalLayer {
             bend: [0.0; 2],
             samples: 4,
             _pad: 0.0,
+            eye: v4(eye, 0.0),
+            forward: v4(forward, (0.5 * FOV_3D).tan()),
+            right: v4(right, 0.0),
+            up: v4(up, 0.0),
+            aim: [if s.power.is_finite() { s.power.clamp(2.0, 16.0) } else { 8.0 }, aim.x, aim.y, aim.z],
         }
     }
+}
+
+/// A 3D kind's camera at `turn` around it (radians, plus a 3D look's camera's yaw and
+/// pitch), `zoom` times closer than the whole: eye, forward, right, up, and the point it
+/// looks at. A diving Menger sponge's looks at its corner from within a cone about the
+/// diagonal; otherwise at the middle, from a little above.
+fn camera_3d(kind: FractalKind, diving: bool, turn: f32, zoom: f32, camera: Option<(f32, f32)>) -> (glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3) {
+    use glam::Vec3;
+    let (yaw, pitch) = camera.unwrap_or((0.0, 0.0));
+    let distance = DISTANCE_3D / zoom.max(1e-3);
+    let (aim, back, lean) = if kind == FractalKind::Menger && diving {
+        let diagonal = Vec3::ONE.normalize();
+        let across = Vec3::new(1.0, -1.0, 0.0).normalize();
+        let other = diagonal.cross(across);
+        let (s, c) = (turn + yaw).sin_cos();
+        let off = MENGER_CONE.sin() * (c * across + s * other);
+        (Vec3::ONE, (MENGER_CONE.cos() * diagonal + off).normalize(), -MENGER_LEAN * distance * diagonal)
+    } else {
+        let (sy, cy) = (turn + yaw).sin_cos();
+        let (sp, cp) = (PITCH_3D + pitch).clamp(-1.4, 1.4).sin_cos();
+        (Vec3::ZERO, Vec3::new(cp * sy, sp, cp * cy), Vec3::ZERO)
+    };
+    let eye = aim + distance * back;
+    let forward = (aim + lean - eye).normalize();
+    let right = forward.cross(Vec3::Y).normalize_or(Vec3::X);
+    let up = right.cross(forward);
+    (eye, forward, right, up, aim)
 }
 
 /// The places worth going on a tour of `kind`: centre and zoom (the first shows it whole).
@@ -327,7 +413,7 @@ pub fn spots(kind: FractalKind) -> &'static [([f32; 2], f32)] {
 
 /// Places worth going on a tour, per kind: centre and zoom (the first shows it whole).
 /// Each shows the set's edge (a test checks).
-const SPOTS: [&[([f32; 2], f32)]; 5] = [
+const SPOTS: [&[([f32; 2], f32)]; 7] = [
     // Mandelbrot: the whole, seahorse and elephant valleys, an antenna, a mini set on the
     // spike, and two deeper spirals.
     &[([-0.6, 0.0], 1.0), ([-0.7453, 0.1127], 40.0), ([0.2925, 0.0149], 50.0), ([-0.1592, 1.0317], 40.0), ([-1.7549, 0.0], 40.0), ([-0.7435, 0.1314], 200.0), ([-0.235125, 0.827215], 300.0)],
@@ -339,6 +425,9 @@ const SPOTS: [&[([f32; 2], f32)]; 5] = [
     &[([-0.3, 0.0], 0.9), ([-1.1, 0.0], 6.0), ([0.2, 0.55], 6.0), ([-1.32, 0.0], 20.0)],
     // Newton: the whole, and three of the places where the basins meet.
     &[([0.0, 0.0], 0.8), ([-0.5, 0.0], 3.0), ([0.25, 0.433], 3.0), ([-0.25, 0.0], 12.0)],
+    // The 3D kinds: whole, and two closer (the camera orbits; the centre isn't used).
+    &[([0.0, 0.0], 1.0), ([0.0, 0.0], 1.8), ([0.0, 0.0], 2.6)],
+    &[([0.0, 0.0], 1.0), ([0.0, 0.0], 1.6), ([0.0, 0.0], 2.4)],
 ];
 
 /// A Julia set's point on the edge of the Mandelbrot set's main cardioid at `angle`,
@@ -411,6 +500,10 @@ impl Cx {
 
 /// The smooth iteration count at `p` as fractal.wgsl finds it (in f64), or none inside.
 fn smooth_count(kind: FractalKind, p: Cx, julia: Cx, limit: u32) -> Option<f64> {
+    if kind.is_3d() {
+        // A solid: no count across the plane (a dive's colours count from 0).
+        return None;
+    }
     if kind == FractalKind::Newton {
         let roots = [Cx(1.0, 0.0), Cx(-0.5, 0.866_025_403_784_438_6), Cx(-0.5, -0.866_025_403_784_438_6)];
         let mut z = p;
@@ -462,7 +555,7 @@ struct DivePoint {
 /// A Misiurewicz point: where, steps to its cycle, the cycle's length, widest half-height.
 type Misiurewicz = ([f64; 2], u32, u32, f64);
 
-const DIVES: [&[Misiurewicz]; 5] = [
+const DIVES: [&[Misiurewicz]; 7] = [
     &[
         ([-0.564_097_854_9, 0.679_273_348_3], 2, 4, 0.01),
         ([0.470_426_028_3, 0.346_588_331_3], 4, 2, 0.02),
@@ -483,6 +576,9 @@ const DIVES: [&[Misiurewicz]; 5] = [
     &[([-1.543_689_012_692_076_4, 0.0], 3, 1, 0.005), ([-1.839_286_755_214_161, 0.0], 3, 2, 0.005)],
     // Newton: 0, where the three basins meet in a six-armed star (`dive_point`).
     &[],
+    // The Mandelbulb doesn't dive; the Menger sponge dives at its corner (`dive_point`).
+    &[],
+    &[],
 ];
 
 /// The dive's `index`th point for `kind` (a Julia set's from its constant `julia`).
@@ -496,6 +592,11 @@ fn dive_point(kind: FractalKind, index: usize, julia: Cx) -> DivePoint {
         // Newton's map is 2z/3 + 1/(3z²): ∞ is a repelling fixed point (multiplier 3/2),
         // and 0 maps to it through 1/(3z²), so near 0 the picture repeats every √1.5.
         FractalKind::Newton => DivePoint { at: Cx(0.0, 0.0), lambda: Cx(1.5f64.sqrt(), 0.0), period: 1.0, half: 0.04 },
+        // The sponge near its corner is itself shrunk to a third about the corner: the
+        // camera (`camera_3d`) goes round a loop from the whole distance to a third of
+        // it, a level of holes deeper each time. (The centre isn't used.) The Mandelbulb
+        // doesn't dive: this is never asked for it.
+        FractalKind::Menger | FractalKind::Mandelbulb => DivePoint { at: Cx(0.0, 0.0), lambda: Cx(3.0, 0.0), period: 1.0, half: 1.5 },
         _ => {
             let points = DIVES[kind.code() as usize];
             let (at, pre, period, half) = points[index % points.len()];
@@ -664,6 +765,8 @@ const MORPH_PUNCH: f32 = 0.25;
 /// How far out from the edge the Julia point sits, and how far the bass moves it.
 const EDGE_OUT: f32 = 0.01;
 const EDGE_BASS: f32 = 0.02;
+/// How far a Mandelbulb's power swings either side of its own as it wanders.
+const POWER_SWING: f32 = 3.0;
 /// Moving to the next spot on a tour: the glide's time constant, seconds.
 const GLIDE_S: f32 = 0.6;
 
@@ -715,7 +818,7 @@ impl Motion {
             self.sections = None;
         }
 
-        if s.dive != 0.0 && s.dive.is_finite() {
+        if s.dive != 0.0 && s.dive.is_finite() && s.kind.dives() {
             // A dive moves the view itself (a tour moves it on to another point).
             (self.target, self.at) = (None, None);
             if new_section && s.kind == FractalKind::Julia {
@@ -753,12 +856,19 @@ impl Motion {
         }
     }
 
-    /// A Julia set's point along the edge, faster with the music and kicked by Morph.
+    /// A Julia set's point along the edge, or a Mandelbulb's power swinging, faster with
+    /// the music and kicked by Morph.
     fn julia_point(&mut self, s: &mut FractalSettings, settings: &FractalSettings, bass: f32, level: f32, morph: f32, dt: f32) {
-        if s.kind == FractalKind::Julia && (s.wander != 0.0 || morph > 0.0 || self.angle.is_some()) {
-            let angle = self.angle.get_or_insert_with(|| nearest_edge(settings.julia));
+        let shapes = matches!(s.kind, FractalKind::Julia | FractalKind::Mandelbulb);
+        if shapes && (s.wander != 0.0 || morph > 0.0 || self.angle.is_some()) {
+            let start = if s.kind == FractalKind::Julia { nearest_edge(settings.julia) } else { 0.0 };
+            let angle = self.angle.get_or_insert(start);
             *angle = (*angle + (s.wander * LAP * (0.3 + 0.7 * level) + MORPH_LEAP * morph) * dt.max(0.0)).rem_euclid(TAU);
-            s.julia = cardioid_edge(*angle, EDGE_OUT + EDGE_BASS * (bass - 1.0).clamp(-0.5, 1.0));
+            if s.kind == FractalKind::Julia {
+                s.julia = cardioid_edge(*angle, EDGE_OUT + EDGE_BASS * (bass - 1.0).clamp(-0.5, 1.0));
+            } else {
+                s.power = settings.power + POWER_SWING * angle.sin();
+            }
         }
     }
 
@@ -858,7 +968,7 @@ mod tests {
 
     #[test]
     fn the_uniforms_match_the_shader() {
-        assert_eq!(size_of::<Uniforms>(), 128);
+        assert_eq!(size_of::<Uniforms>(), 208);
     }
 
     /// What fractal.wgsl's `escape` and `newton` find at `p`: (escaped, or the root
@@ -899,7 +1009,7 @@ mod tests {
     /// meetings, and not only the set.
     #[test]
     fn the_tour_goes_where_there_is_something_to_see() {
-        for kind in FractalKind::ALL.into_iter().filter(|&k| k != FractalKind::Julia) {
+        for kind in FractalKind::ALL.into_iter().filter(|&k| k != FractalKind::Julia && !k.is_3d()) {
             for &(centre, zoom) in SPOTS[kind.code() as usize] {
                 let half = 1.5 / zoom;
                 let mut found = Vec::new();
@@ -997,7 +1107,8 @@ mod tests {
     #[test]
     fn every_dive_loops_without_a_seam() {
         let mut points: Vec<(FractalKind, DivePoint, Cx)> = Vec::new();
-        for kind in FractalKind::ALL {
+        // (The 3D kinds' loop is checked on the sponge itself, below.)
+        for kind in FractalKind::ALL.into_iter().filter(|k| !k.is_3d()) {
             let juliae = [Cx(-0.8, 0.156), Cx(-0.4, 0.6), Cx(0.285, 0.01)];
             for k in 0..dive_points(kind) {
                 for &j in if kind == FractalKind::Julia { &juliae[..] } else { &juliae[..1] } {
@@ -1063,7 +1174,7 @@ mod tests {
     /// only where the picture repeats itself (by exactly its loop), forever.
     #[test]
     fn a_dive_travels_in_forever() {
-        for kind in FractalKind::ALL {
+        for kind in FractalKind::ALL.into_iter().filter(|k| k.dives()) {
             for dive in [1.0f32, -1.0] {
                 let s = FractalSettings { dive, ..on(kind) };
                 let frames = dive_frames(&s, 90.0);
@@ -1143,7 +1254,7 @@ mod tests {
                 let target = super::super::feedback::texture(device, "scene", size, SCENE_FORMAT);
                 let mut encoder = device.create_command_encoder(&Default::default());
                 super::super::feedback::clear(&mut encoder, &target);
-                layer.draw(device, queue, &mut encoder, &target, [0.0, 0.0, size[0] as f32, size[1] as f32], &settings, &palette, None, 0);
+                layer.draw(device, queue, &mut encoder, &target, [0.0, 0.0, size[0] as f32, size[1] as f32], &settings, &palette, None, 0, None);
                 queue.submit([encoder.finish()]);
                 let pixels = half_float::read(device, queue, target.texture(), size);
                 let light = |p: &[f32; 4]| p[0].max(p[1]).max(p[2]);
@@ -1164,10 +1275,61 @@ mod tests {
         }
     }
 
+    /// fractal.wgsl's Menger sponge distance, `levels` of holes deep, at `q` back from
+    /// its corner.
+    fn menger(q: glam::Vec3, levels: u32) -> f32 {
+        let b = (glam::Vec3::ONE - q).abs() - glam::Vec3::ONE;
+        let mut d = b.max(glam::Vec3::ZERO).length() + b.max_element().min(0.0);
+        let mut s = 1.0;
+        for _ in 0..levels {
+            let a = (1.0 - q * s).rem_euclid(glam::Vec3::splat(2.0)) - 1.0;
+            s *= 3.0;
+            let r = (1.0 - 3.0 * a.abs()).abs();
+            let c = (r.x.max(r.y).min(r.y.max(r.z)).min(r.z.max(r.x)) - 1.0) / s;
+            d = d.max(c);
+        }
+        d
+    }
+
+    /// fractal.wgsl's sponge grown from its corner, at `p`, grown `grown` times.
+    fn grown(p: glam::Vec3, grown: u32) -> f32 {
+        let k = 3f32.powi(grown as i32);
+        k * menger((glam::Vec3::ONE - p) / k, 9 + grown)
+    }
+
+    /// The sponge grown from its corner is itself a third the size about the corner,
+    /// everywhere (outside the corner's own cube too: what the dive's camera sees around
+    /// it and through its holes), so a Menger dive loops: every point's distance, shrunk
+    /// toward the corner by a third, is a third.
+    #[test]
+    fn the_sponge_repeats_itself_at_its_corner() {
+        let corner = glam::Vec3::ONE;
+        let mut rng = utils::rng::SplitMix64::new(5);
+        let mut worst = 0.0f32;
+        for _ in 0..4000 {
+            // All round the corner, out to six (twice the dive's farthest camera).
+            let p = corner + glam::Vec3::new(rng.signed(), rng.signed(), rng.signed()) * 6.0;
+            let shrunk = corner + (p - corner) / 3.0;
+            // One more growth on the larger, so both have the same levels at each place.
+            worst = worst.max((3.0 * grown(shrunk, 4) - grown(p, 5)).abs());
+        }
+        assert!(worst < 1e-3, "{worst}");
+        // A diving sponge's camera always looks at the corner from outside the cube.
+        for k in 0..64 {
+            let (eye, forward, ..) = camera_3d(FractalKind::Menger, true, k as f32 * TAU / 64.0, 2.0, None);
+            assert!(eye.max_element() > 1.0 && (eye - corner).length() > 1.4 && forward.dot(corner - eye) > 0.0, "{eye} {forward}");
+        }
+        // The plain sponge's corner region is the grown one's.
+        for _ in 0..500 {
+            let p = corner - glam::Vec3::new(rng.next_f32(), rng.next_f32(), rng.next_f32()) * 2.0;
+            assert!((grown(p, 4) - menger(corner - p, 13)).abs() < 1e-4 || menger(corner - p, 13) > 0.0);
+        }
+    }
+
     #[test]
     fn kinds_have_the_shaders_numbers() {
         // fractal.wgsl's MANDELBROT .. NEWTON.
         let codes: Vec<u32> = FractalKind::ALL.iter().map(|k| k.code()).collect();
-        assert_eq!(codes, [0, 1, 2, 3, 4]);
+        assert_eq!(codes, [0, 1, 2, 3, 4, 5, 6]);
     }
 }

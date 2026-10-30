@@ -213,10 +213,18 @@ fn fractal(ui: &mut egui::Ui, fractal: &mut FractalSettings) {
         slider(ui, "Julia real", "The constant c: its shape.", &mut fractal.julia[0], -2.0..=2.0);
         slider(ui, "Julia imaginary", "", &mut fractal.julia[1], -2.0..=2.0);
     }
+    if fractal.kind == FractalKind::Mandelbulb {
+        slider(ui, "Power", "Its lobes: 8 is the classic Mandelbulb.", &mut fractal.power, 2.0..=16.0);
+    }
     // How it moves.
-    slider(ui, "Dive", "Travel endlessly into the fractal (negative: out of it): zoom doublings a second, faster when the music is loud. It flies to a place where the picture repeats itself and loops there.", &mut fractal.dive, -3.0..=3.0);
+    if fractal.kind.dives() {
+        slider(ui, "Dive", "Travel endlessly into the fractal (negative: out of it): zoom doublings a second, faster when the music is loud. It flies to a place where the picture repeats itself and loops there.", &mut fractal.dive, -3.0..=3.0);
+    }
     if fractal.kind == FractalKind::Julia {
         slider(ui, "Wander", "The Julia point travels along the Mandelbrot set's edge: about laps a minute at full loudness.", &mut fractal.wander, -4.0..=4.0);
+    }
+    if fractal.kind == FractalKind::Mandelbulb {
+        slider(ui, "Wander", "The power swings either side of its own (by 3), faster when loud: the lobes grow and merge.", &mut fractal.wander, -4.0..=4.0);
     }
     widgets::toggle(ui, &mut fractal.tour, "Tour", "Move to another place at each new section of the song (diving, to another place to dive; a Julia set changes shape).");
     slider(ui, "Bass zoom", "How much the zoom follows the bass.", &mut fractal.bass_zoom, 0.0..=1.0);
@@ -224,14 +232,21 @@ fn fractal(ui: &mut egui::Ui, fractal: &mut FractalSettings) {
     slider(ui, "Spin", "Radians per second.", &mut fractal.spin, -1.0..=1.0);
     // Where.
     let start = if fractal.dive != 0.0 { " (where a dive starts from)" } else { "" };
-    row(ui, "Zoom", &format!("1: the whole set{start}."), |ui| {
-        ui.add(egui::Slider::new(&mut fractal.zoom, 0.2..=MAX_ZOOM).logarithmic(true));
-    });
-    slider(ui, "Across", &format!("The point at the middle of the canvas{start}."), &mut fractal.centre[0], -2.5..=2.5);
-    slider(ui, "Up", "", &mut fractal.centre[1], -2.0..=2.0);
-    slider(ui, "Turn", "Radians.", &mut fractal.rotation, -3.15..=3.15);
+    if fractal.kind.is_3d() {
+        row(ui, "Zoom", "How close the camera comes: 1 shows it whole.", |ui| {
+            ui.add(egui::Slider::new(&mut fractal.zoom, 0.3..=20.0).logarithmic(true));
+        });
+        slider(ui, "Turn", "The camera's angle around it, radians (Spin turns it).", &mut fractal.rotation, -3.15..=3.15);
+    } else {
+        row(ui, "Zoom", &format!("1: the whole set{start}."), |ui| {
+            ui.add(egui::Slider::new(&mut fractal.zoom, 0.2..=MAX_ZOOM).logarithmic(true));
+        });
+        slider(ui, "Across", &format!("The point at the middle of the canvas{start}."), &mut fractal.centre[0], -2.5..=2.5);
+        slider(ui, "Up", "", &mut fractal.centre[1], -2.0..=2.0);
+        slider(ui, "Turn", "Radians.", &mut fractal.rotation, -3.15..=3.15);
+    }
     if widgets::fold_header(ui, "Fractal colours", "") {
-        row(ui, "Detail", "Iterations: more shows finer filaments when zoomed in, and costs more.", |ui| {
+        row(ui, "Detail", "Iterations (for a 3D kind, steps along each ray): more shows finer detail, and costs more.", |ui| {
             ui.add(egui::Slider::new(&mut fractal.iterations, 16..=MAX_ITERATIONS).logarithmic(true));
         });
         slider(ui, "Bands", "How many times the palette repeats toward the edge.", &mut fractal.bands, 0.0..=8.0);

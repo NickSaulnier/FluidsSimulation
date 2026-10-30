@@ -369,8 +369,15 @@ const FRACTAL_OVER_3D: f32 = 0.12;
 
 /// The fractals a random look draws, and how often (Julia sets, which change shape as
 /// they go, most).
-const FRACTAL_KINDS: [(FractalKind, f32); 5] =
-    [(FractalKind::Mandelbrot, 2.0), (FractalKind::Julia, 3.0), (FractalKind::BurningShip, 1.0), (FractalKind::Tricorn, 1.0), (FractalKind::Newton, 1.0)];
+const FRACTAL_KINDS: [(FractalKind, f32); 7] = [
+    (FractalKind::Mandelbrot, 2.0),
+    (FractalKind::Julia, 3.0),
+    (FractalKind::BurningShip, 1.0),
+    (FractalKind::Tricorn, 1.0),
+    (FractalKind::Newton, 1.0),
+    (FractalKind::Mandelbulb, 1.0),
+    (FractalKind::Menger, 1.0),
+];
 
 /// A fractal for a look over a fluid of `kind` (none: the fractal is most of the
 /// picture). It moves one of three ways: diving (mostly in), touring the sections, or
@@ -388,7 +395,13 @@ fn random_fractal(d: &mut Dice, kind: Kind) -> FractalSettings {
         centre,
         zoom,
         rotation: d.signed(0.0, std::f32::consts::PI),
-        iterations: if fractal_kind == FractalKind::Newton { d.range(40.0, 100.0) } else { d.range(120.0, 300.0) } as u32,
+        // (For a 3D kind, the steps along each ray.)
+        iterations: match fractal_kind {
+            FractalKind::Newton => d.range(40.0, 100.0),
+            k if k.is_3d() => d.range(100.0, 160.0),
+            _ => d.range(120.0, 300.0),
+        } as u32,
+        power: d.range(5.0, 10.0),
         julia: fractal::cardioid_edge(d.range(0.0, std::f32::consts::TAU), 0.01),
         opacity: if alone { d.range(0.85, 1.0) } else { d.range(0.7, 0.95) },
         brightness: d.range(0.8, 1.3),
@@ -400,11 +413,15 @@ fn random_fractal(d: &mut Dice, kind: Kind) -> FractalSettings {
         ..FractalSettings::OFF
     };
     match d.index(3) {
-        0 => f.dive = if d.chance(0.8) { d.range(0.3, 1.2) } else { -d.range(0.3, 0.8) },
+        0 if fractal_kind.dives() => f.dive = if d.chance(0.8) { d.range(0.3, 1.2) } else { -d.range(0.3, 0.8) },
         1 => f.tour = true,
         _ => f.spin = d.signed(0.02, 0.15),
     }
-    if fractal_kind == FractalKind::Julia && d.chance(0.8) {
+    // A 3D kind is seen turning (its camera orbits it).
+    if fractal_kind.is_3d() && f.spin == 0.0 {
+        f.spin = d.signed(0.05, 0.2);
+    }
+    if matches!(fractal_kind, FractalKind::Julia | FractalKind::Mandelbulb) && d.chance(0.8) {
         f.wander = d.range(0.3, 1.5);
     }
     f.rounded()
@@ -677,10 +694,11 @@ fn tame(look: &mut Look) {
     f.bands = f.bands.clamp(0.5, 5.0);
     f.brightness = f.brightness.clamp(0.5, 1.4);
     f.opacity = f.opacity.clamp(0.3, 1.0);
-    // A diving or wandering fractal with no fluid is new every frame: feedback, which
-    // carries the frames before, smears it into a blur (seen in the app). The dive is
-    // the tunnel.
-    if f.enabled && !fluid && (f.dive != 0.0 || f.wander != 0.0) {
+    f.power = f.power.clamp(3.0, 12.0);
+    // A diving or wandering fractal with no fluid (or a 3D one, its camera always
+    // orbiting) is new every frame: feedback, which carries the frames before, smears it
+    // into a blur (seen in the app). The dive is the tunnel.
+    if f.enabled && !fluid && (f.dive != 0.0 || f.wander != 0.0 || f.kind.is_3d()) {
         fb.enabled = false;
     }
     if f.enabled && fb.enabled {
@@ -837,6 +855,7 @@ impl Rounded for FractalSettings {
             bass_zoom: round(self.bass_zoom),
             bend: round(self.bend),
             dive: round(self.dive),
+            power: round(self.power),
             ..self
         }
     }
@@ -914,7 +933,7 @@ mod tests {
             if f.enabled {
                 assert!((-1.5..=1.5).contains(&f.dive) && (0.0..=0.8).contains(&f.bend) && (0.3..=1.0).contains(&f.opacity), "{}: {f:?}", look.name);
                 assert!(f.dive == 0.0 || !f.tour, "{}: dives and tours", look.name);
-                assert!(look.has_fluid() || (f.dive == 0.0 && f.wander == 0.0) || !fb.enabled, "{}: a moving fractal smeared by feedback", look.name);
+                assert!(look.has_fluid() || (f.dive == 0.0 && f.wander == 0.0 && !f.kind.is_3d()) || !fb.enabled, "{}: a moving fractal smeared by feedback", look.name);
                 if fb.enabled {
                     assert!(fb.mode == FeedbackMode::Smear && fb.trail <= 0.5 && (0.99..=1.02).contains(&fb.zoom) && fb.echo == 0.0, "{}: a fractal under {fb:?}", look.name);
                 }

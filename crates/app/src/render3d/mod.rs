@@ -33,6 +33,20 @@ const GRID_FADE: std::ops::Range<f32> = 0.35..0.9;
 const CIRCLE_SEGMENTS: usize = 40;
 /// The colour around and behind the domain, matching the 2D view's letterbox.
 const BACKGROUND: wgpu::Color = wgpu::Color { r: 0.012, g: 0.014, b: 0.022, a: 1.0 };
+
+/// Clear `target` to the 3D scene's background (for a backdrop drawn before `render`).
+pub fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("3d background"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(BACKGROUND), store: wgpu::StoreOp::Store },
+        })],
+        ..Default::default()
+    });
+}
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Smoke extinction per unit of smoke (the burners' output), 1/m.
 const EXTINCTION: f32 = 20.0;
@@ -297,7 +311,8 @@ impl Renderer3d {
     /// `volume` from `camera` into the `viewport` (physical pixels: x, y, width,
     /// height), the canvas left by the UI. The smoke takes its colours from `palette`.
     /// The gas's screen-space flow goes into `flow` (same size). `show_lines`: draw the
-    /// floor grid, box and markers.
+    /// floor grid, box and markers. `keep`: draw over what the target holds (a backdrop,
+    /// over `clear`'s background) rather than clearing it.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -313,6 +328,7 @@ impl Renderer3d {
         volume: Option<Volume<'_>>,
         palette: &Palette,
         show_lines: bool,
+        keep: bool,
     ) {
         let [x, y, w, h] = viewport;
         let view_proj = camera.view_proj(w / h.max(1.0));
@@ -361,7 +377,7 @@ impl Renderer3d {
                     view: target,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(BACKGROUND), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations { load: if keep { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(BACKGROUND) }, store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth,

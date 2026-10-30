@@ -80,13 +80,14 @@ resolution in full screen if the simulation falls behind real time.
   drift, wobble, echo, and trails that follow the fluid's own flow), waves and shapes
   drawn from the sound, and a composite (kaleidoscope and mirrors, hue, saturation,
   contrast, palette mapping, invert, chromatic aberration, vignette, grain).
-- **Fractals:** Mandelbrot, Julia, Burning Ship, Tricorn and Newton, in the look's
-  colours, over the fluid or alone. They move with the music: a Julia set's shape
-  wanders, the zoom pulses with the bass, a tour moves on at each new section, and a
-  dive travels endlessly into the fractal (or out), looping where the picture repeats
-  itself. The fluid's flow can bend them.
+- **Fractals:** Mandelbrot, Julia, Burning Ship, Tricorn and Newton, and in 3D the
+  Mandelbulb and the Menger sponge (raymarched, behind the gas in 3D looks), in the
+  look's colours, over the fluid or alone. They move with the music: a Julia set's shape
+  wanders (a Mandelbulb's lobes), the zoom pulses with the bass, a tour moves on at each
+  new section, and a dive travels endlessly into the fractal (or out), looping where the
+  picture repeats itself. The fluid's flow can bend them.
 - **Looks:** a look bundles a fluid (or none), colours, the picture's settings,
-  reactions and equations. There are 46 built in, 15 of them without fluid. Each is a
+  reactions and equations. There are 48 built in, 16 of them without fluid. Each is a
   TOML file (format in [crates/app/looks/README.md](crates/app/looks/README.md)); your
   own go in `%APPDATA%\fluid-toy\looks` and reload when saved. "Save as" writes the
   current settings as a look.

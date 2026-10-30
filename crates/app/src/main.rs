@@ -1359,6 +1359,12 @@ impl State {
         let fluid = self.no_fluid.is_none();
         let fractal_after = waves.fractal.enabled && feedback.enabled && feedback.flow > 0.0 && fluid;
         let flow = self.feedback.flow_target(&self.gpu.device, scene_size);
+        // In 3D the fractal is the backdrop, behind the gas (unless the flow would wash it).
+        let backdrop = self.world3d.is_some() && waves.fractal.enabled && !fractal_after;
+        if backdrop {
+            render3d::clear(&mut encoder, &scene);
+            self.draw_fractal(&mut encoder, &scene, scale);
+        }
         if let Some(world) = &self.world3d {
             let viewport = self.viewport_3d().map(|v| v * scale);
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
@@ -1378,6 +1384,7 @@ impl State {
                 volume,
                 &self.palette_now,
                 lines,
+                backdrop,
             );
             self.field_range = None;
         } else if self.no_fluid.is_some() {
@@ -1403,7 +1410,7 @@ impl State {
             } else {
                 self.bend.reset();
             }
-            if !fractal_after {
+            if !fractal_after && !backdrop {
                 self.draw_fractal(&mut encoder, &scene, scale);
             }
         } else {
@@ -1556,11 +1563,13 @@ impl State {
         self.feedback.draw_flow_2d(&self.gpu.device, &self.gpu.queue, encoder, size, view, grid);
     }
 
-    /// The look's fractal onto `target` (the scene, at `scale` of the window's size).
+    /// The look's fractal onto `target` (the scene, at `scale` of the window's size). A
+    /// 3D fractal in a 3D look turns with the look's camera.
     fn draw_fractal(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, scale: f32) {
         let viewport = self.viewport_3d().map(|v| v * scale);
         let fractal = &self.look_frame.waves.fractal;
-        self.fractal.draw(&self.gpu.device, &self.gpu.queue, encoder, target, viewport, fractal, &self.palette_now, self.bend.displacement(), self.fractal_quality);
+        let camera = self.world3d.as_ref().map(|_| (self.camera.yaw, self.camera.pitch - OrbitCamera::framing(glam::Vec3::ONE).pitch));
+        self.fractal.draw(&self.gpu.device, &self.gpu.queue, encoder, target, viewport, fractal, &self.palette_now, self.bend.displacement(), self.fractal_quality, camera);
     }
 
     /// The 2D scene into `target`, `size` pixels, `scale` of the window's.

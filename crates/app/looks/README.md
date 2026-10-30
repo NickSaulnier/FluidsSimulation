@@ -157,7 +157,11 @@ fluid. It's opaque near the set's edge and clear far outside and inside, so the 
 shows through.
 
 - `kind`: `mandelbrot`, `julia`, `burning_ship`, `tricorn` or `newton` (Newton's method on
-  z³ − 1, coloured by the root each point finds).
+  z³ − 1, coloured by the root each point finds); or, in 3D, raymarched solids:
+  `mandelbulb` (`power` sets its lobes, 8 the classic one) or `menger` (the Menger
+  sponge). A 3D kind's camera orbits it: `rotation` and `spin` turn it, `zoom` brings it
+  closer (`centre` isn't used), and `iterations` is the steps along each ray. In a 3D
+  look it's the backdrop, behind the gas, turning with the look's camera.
 - Where: `centre` (`[x, y]`, the point of the plane in the middle), `zoom` (1: the
   picture is 3 units high; up to 100000, as far as the shader's precision goes),
   `rotation` (radians), `spin` (radians per second).
@@ -166,7 +170,8 @@ shows through.
   many times the palette repeats toward the edge), `colour_speed` (palette cycles per
   second), `opacity`, `brightness` (above 1 glows).
 - With the music: `wander` (a Julia set's point travels along the Mandelbrot set's edge,
-  about laps a minute at full loudness, starting from the edge nearest `julia`),
+  about laps a minute at full loudness, starting from the edge nearest `julia`; a
+  Mandelbulb's power swings 3 either side of `power`),
   `bass_zoom` (0 to 1: the zoom follows the bass), `tour = true` (at each new section,
   move to another place worth seeing; a Julia set changes shape).
 - `bend`: how far the fluid's flow carries the picture (1: with the fluid, 0: not at
@@ -177,9 +182,10 @@ shows through.
   second (from 0.4 times that in silence to 1.6 times when loud, and up to 4 times on a
   `morph` kick). It flies from `centre` and `zoom` to the nearest point where the
   picture repeats itself (a Julia set's tip, Newton's star at 0, one of nine for the
-  Mandelbrot set and two each for the Burning Ship and Tricorn), then loops there
-  forever, the colours keeping their place. With `tour`, each new section flies on to
-  another point.
+  Mandelbrot set and two each for the Burning Ship and Tricorn; the Menger sponge's
+  corner, the sponge grown outward from it), then loops there forever, the colours
+  keeping their place. With `tour`, each new section flies on to another point. The
+  Mandelbulb doesn't dive (it doesn't repeat itself as it's zoomed).
 
 ## `[composite]`
 
@@ -258,7 +264,7 @@ Per frame only:
 - `shape1_radius`, `shape1_x`, `shape1_y`, `shape1_spin`, `shape1_fill` (and `shape2_`);
 - `art_size`, `art_opacity`, `art_x`, `art_y`, `art_spin` (the cover);
 - `fractal_x`, `fractal_y`, `fractal_zoom`, `fractal_rot`, `fractal_iter`,
-  `fractal_opacity`, `fractal_bend`, `julia_re`, `julia_im` (the fractal, after its own movement with
+  `fractal_opacity`, `fractal_bend`, `fractal_power`, `julia_re`, `julia_im` (the fractal, after its own movement with
   the music: `fractal_zoom = fractal_zoom * (1 + 0.5 * kick)`);
 - `gravity` (degrees anticlockwise from straight down, any angle), `gravity_strength`
   (a multiple: 1 as set, up to 5), `intensity` (the reactions' strength, a multiple: 1

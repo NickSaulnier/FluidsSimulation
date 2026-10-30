@@ -1,0 +1,25 @@
+[meta]
+name = "Bulb in smoke"
+tags = ["fluid", "3d", "fractal", "smoke"]
+energy = "calm"
+
+[sim]
+solver = "Smoke (3D GPU)"
+scene = "Campfire 3D"
+palette = "Ink"
+orbit = 0.1
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 0.6 },
+    { trigger = "kick", effect = "morph", gain = 0.6 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[fractal]
+kind = "mandelbulb"
+wander = 0.6
+zoom = 1.2
+iterations = 120
+opacity = 0.9
+
+[composite]
+vignette = 0.35
