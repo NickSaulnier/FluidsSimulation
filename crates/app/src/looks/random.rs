@@ -9,11 +9,15 @@
 //! (pressure iterations, resolution, CFL) are never touched, so a random look runs as
 //! fast and as stably as a built-in. Reactions come from sets that suit the solver, and
 //! equations, sometimes, from a small library of snippets with random constants.
+//!
+//! Some looks get a fractal (`random_fractal`): alone with the feedback, or over a
+//! fluid, fainter, often bent by its flow; diving, touring or wandering with the music.
 
 use super::{Code, CodeSource, Energy, Look, Source, compile_code};
 use crate::audio::reactions::{Effect, Reaction, Trigger};
 use crate::render::composite::{CompositeSettings, Symmetry};
 use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
+use crate::render::fractal::{self, FractalKind, FractalSettings};
 use crate::render::palette::{PALETTES, Palette};
 use crate::render::waves::{ShapeSettings, WaveMode, WaveSettings};
 use utils::rng::SplitMix64;
@@ -228,10 +232,26 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
     let mut params: Vec<(String, f32)> = physics(solver).iter().map(|&(key, lo, hi, log)| (key.to_string(), round(if log { d.log_range(lo, hi) } else { d.range(lo, hi) }))).collect();
     params.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let feedback = random_feedback(d, fluid);
-    let waves = random_waves(d, fluid, matches!(kind, Kind::Particles | Kind::Dye | Kind::Water));
+    let mut feedback = random_feedback(d, fluid);
+    let mut waves = random_waves(d, fluid, matches!(kind, Kind::Particles | Kind::Dye | Kind::Water));
     let composite = random_composite(d, fluid);
-    let reactions = random_reactions(d, kind, solver);
+    let mut reactions = random_reactions(d, kind, solver);
+    if d.chance(if !fluid { FRACTAL_ALONE } else if three_d { FRACTAL_OVER_3D } else { FRACTAL_OVER }) {
+        waves.fractal = random_fractal(d, kind);
+        // Without fluid the fractal is enough to draw: the waves, and the feedback, stay
+        // only sometimes.
+        if !fluid && d.chance(0.6) {
+            waves.mode = WaveMode::Off;
+            waves.shapes = [ShapeSettings::OFF; 2];
+        }
+        if !fluid && d.chance(0.4) {
+            feedback.enabled = false;
+        }
+        if d.chance(0.5) {
+            let trigger = d.pick(&[Trigger::Kick, Trigger::Snare]);
+            reactions.push(Reaction::new(trigger, Effect::Morph, round(d.range(0.4, 0.9)), true));
+        }
+    }
     let code = random_code(d, kind, solver, feedback.enabled);
     let mut look = Look {
         name: name.to_string(),
@@ -288,6 +308,17 @@ pub fn vary(look: &Look, rng: &mut SplitMix64, name: &str) -> Look {
         nudge(&mut s.spin);
         nudge(&mut s.bass_pulse);
     }
+    let f = &mut w.fractal;
+    if f.enabled {
+        nudge(&mut f.dive);
+        nudge(&mut f.wander);
+        nudge(&mut f.spin);
+        nudge(&mut f.bass_zoom);
+        nudge(&mut f.bend);
+        nudge(&mut f.colour_speed);
+        nudge(&mut f.bands);
+        nudge(&mut f.brightness);
+    }
     let c = &mut v.composite;
     nudge(&mut c.symmetry_spin);
     nudge(&mut c.hue_speed);
@@ -319,7 +350,7 @@ pub fn vary(look: &Look, rng: &mut SplitMix64, name: &str) -> Look {
             _ => v.palette = random_palette(d),
         }
     }
-    if !v.has_fluid() {
+    if !v.has_fluid() && !v.waves.fractal.enabled {
         // Without fluid the picture is only what's drawn: keep something drawn.
         v.feedback.enabled = true;
         if !v.waves.any() {
@@ -328,6 +359,55 @@ pub fn vary(look: &Look, rng: &mut SplitMix64, name: &str) -> Look {
     }
     tame(&mut v);
     v
+}
+
+/// How often a random look has a fractal: with no fluid (then it's often the whole
+/// picture), over a 2D fluid, over a 3D one.
+const FRACTAL_ALONE: f32 = 0.45;
+const FRACTAL_OVER: f32 = 0.2;
+const FRACTAL_OVER_3D: f32 = 0.12;
+
+/// The fractals a random look draws, and how often (Julia sets, which change shape as
+/// they go, most).
+const FRACTAL_KINDS: [(FractalKind, f32); 5] =
+    [(FractalKind::Mandelbrot, 2.0), (FractalKind::Julia, 3.0), (FractalKind::BurningShip, 1.0), (FractalKind::Tricorn, 1.0), (FractalKind::Newton, 1.0)];
+
+/// A fractal for a look over a fluid of `kind` (none: the fractal is most of the
+/// picture). It moves one of three ways: diving (mostly in), touring the sections, or
+/// staying put and turning; a Julia set's point wanders too, mostly.
+fn random_fractal(d: &mut Dice, kind: Kind) -> FractalSettings {
+    let fractal_kind = FRACTAL_KINDS[d.weighted(&FRACTAL_KINDS.map(|k| k.1))].0;
+    // Often the whole set, so it starts out as itself: over a fluid mostly, as a
+    // close-up's fine filaments are lost in it.
+    let alone = kind == Kind::None;
+    let spots = fractal::spots(fractal_kind);
+    let (centre, zoom) = if d.chance(if alone { 0.5 } else { 0.8 }) { spots[0] } else { d.pick(spots) };
+    let mut f = FractalSettings {
+        enabled: true,
+        kind: fractal_kind,
+        centre,
+        zoom,
+        rotation: d.signed(0.0, std::f32::consts::PI),
+        iterations: if fractal_kind == FractalKind::Newton { d.range(40.0, 100.0) } else { d.range(120.0, 300.0) } as u32,
+        julia: fractal::cardioid_edge(d.range(0.0, std::f32::consts::TAU), 0.01),
+        opacity: if alone { d.range(0.85, 1.0) } else { d.range(0.7, 0.95) },
+        brightness: d.range(0.8, 1.3),
+        bands: d.range(1.0, 4.0),
+        colour_speed: d.signed(0.02, 0.15),
+        bass_zoom: if d.chance(0.4) { d.range(0.1, 0.4) } else { 0.0 },
+        // The fluid pushing it about, over a 2D fluid (whose flow is drawn in 2D).
+        bend: if matches!(kind, Kind::Particles | Kind::Dye | Kind::Water | Kind::Fire2d) && d.chance(0.5) { d.range(0.2, 0.6) } else { 0.0 },
+        ..FractalSettings::OFF
+    };
+    match d.index(3) {
+        0 => f.dive = if d.chance(0.8) { d.range(0.3, 1.2) } else { -d.range(0.3, 0.8) },
+        1 => f.tour = true,
+        _ => f.spin = d.signed(0.02, 0.15),
+    }
+    if fractal_kind == FractalKind::Julia && d.chance(0.8) {
+        f.wander = d.range(0.3, 1.5);
+    }
+    f.rounded()
 }
 
 /// The wave modes a random look draws.
@@ -587,6 +667,29 @@ fn tame(look: &mut Look) {
         s.spin = s.spin.clamp(-1.0, 1.0);
         s.bass_pulse = s.bass_pulse.clamp(0.0, 0.6);
     }
+    let f = &mut w.fractal;
+    f.dive = f.dive.clamp(-1.5, 1.5);
+    f.wander = f.wander.clamp(0.0, 2.0);
+    f.spin = f.spin.clamp(-0.2, 0.2);
+    f.bass_zoom = f.bass_zoom.clamp(0.0, 0.5);
+    f.bend = f.bend.clamp(0.0, 0.8);
+    f.colour_speed = f.colour_speed.clamp(-0.2, 0.2);
+    f.bands = f.bands.clamp(0.5, 5.0);
+    f.brightness = f.brightness.clamp(0.5, 1.4);
+    f.opacity = f.opacity.clamp(0.3, 1.0);
+    if f.enabled && fb.enabled {
+        // A fractal's glow covers the canvas: brightest feedback piles it up into a pale
+        // wash (even dimmed). And it reads only while each new frame is most of the
+        // picture: a long trail, zoom, turn or echo blurs it to mush (both seen in the
+        // app). So a short smear, nearly still.
+        fb.mode = FeedbackMode::Smear;
+        fb.trail = fb.trail.min(0.5);
+        fb.zoom = fb.zoom.clamp(0.99, 1.02);
+        fb.rotation = fb.rotation.clamp(-0.1, 0.1);
+        fb.echo = 0.0;
+        fb.drift = [0.0; 2];
+        fb.bass_zoom = fb.bass_zoom.min(0.15);
+    }
     if fb.enabled && fb.mode == FeedbackMode::Brightest {
         // A strong zoom piles bright waves up into white: dim waves, a shorter trail.
         if fb.zoom > 1.35 {
@@ -615,6 +718,11 @@ fn tame(look: &mut Look) {
     }
     let brightest = fb.enabled && fb.mode == FeedbackMode::Brightest;
     let c = &mut look.composite;
+    // A kaleidoscope folds a fractal into a pattern no one could read (seen in the app);
+    // a mirror keeps it.
+    if look.waves.fractal.enabled && c.symmetry == Symmetry::Kaleidoscope {
+        c.symmetry = Symmetry::None;
+    }
     if brightest {
         c.exposure = c.exposure.min(1.05);
         if bright_palette {
@@ -643,7 +751,9 @@ fn tame(look: &mut Look) {
 /// Calm, energetic or either, from how hard the look moves.
 fn energy(look: &Look) -> Energy {
     let fb = &look.feedback;
-    let motion = if fb.enabled { 2.0 * (fb.zoom - 1.0).abs() + fb.rotation.abs() + fb.bass_zoom } else { 0.0 };
+    let f = &look.waves.fractal;
+    let fractal = if f.enabled { 0.3 * f.dive.abs() + 0.2 * f.wander + f.bass_zoom } else { 0.0 };
+    let motion = fractal + if fb.enabled { 2.0 * (fb.zoom - 1.0).abs() + fb.rotation.abs() + fb.bass_zoom } else { 0.0 };
     let hits: f32 = look.reactions.iter().filter(|r| matches!(r.trigger, Trigger::Kick | Trigger::Snare | Trigger::Beat)).map(|r| r.gain).sum();
     match motion + 0.3 * hits {
         x if x > 0.9 => Energy::Energetic,
@@ -699,6 +809,28 @@ impl Rounded for WaveSettings {
             brightness: round(self.brightness),
             push: round(self.push),
             shapes: self.shapes.map(shape),
+            fractal: self.fractal.rounded(),
+            ..self
+        }
+    }
+}
+
+impl Rounded for FractalSettings {
+    fn rounded(self) -> Self {
+        Self {
+            centre: self.centre.map(|c| (c * 1e6).round() / 1e6),
+            zoom: round(self.zoom),
+            rotation: round(self.rotation),
+            spin: round(self.spin),
+            julia: self.julia.map(|c| (c * 1e6).round() / 1e6),
+            opacity: round(self.opacity),
+            brightness: round(self.brightness),
+            bands: round(self.bands),
+            colour_speed: round(self.colour_speed),
+            wander: round(self.wander),
+            bass_zoom: round(self.bass_zoom),
+            bend: round(self.bend),
+            dive: round(self.dive),
             ..self
         }
     }
@@ -770,7 +902,18 @@ mod tests {
             }
             assert!(!look.reactions.is_empty() && look.reactions.iter().all(|r| (0.1..=1.5).contains(&r.gain)));
             if !look.has_fluid() {
-                assert!(fb.enabled && w.any(), "{}: nothing drawn", look.name);
+                assert!(w.fractal.enabled || (fb.enabled && w.any()), "{}: nothing drawn", look.name);
+            }
+            let f = &w.fractal;
+            if f.enabled {
+                assert!((-1.5..=1.5).contains(&f.dive) && (0.0..=0.8).contains(&f.bend) && (0.3..=1.0).contains(&f.opacity), "{}: {f:?}", look.name);
+                assert!(f.dive == 0.0 || !f.tour, "{}: dives and tours", look.name);
+                if fb.enabled {
+                    assert!(fb.mode == FeedbackMode::Smear && fb.trail <= 0.5 && (0.99..=1.02).contains(&fb.zoom) && fb.echo == 0.0, "{}: a fractal under {fb:?}", look.name);
+                }
+                assert!(c.symmetry != Symmetry::Kaleidoscope, "{}: a fractal in a kaleidoscope", look.name);
+                // Its starting place is one worth seeing.
+                assert!(fractal::spots(f.kind).iter().any(|s| s.0 == f.centre || (s.0[0] - f.centre[0]).abs() < 1e-5), "{}: {:?}", look.name, f.centre);
             }
             assert_eq!(look.solver_3d().is_some(), look.orbit > 0.0, "{}", look.name);
         }
@@ -781,6 +924,14 @@ mod tests {
         for mode in WAVES {
             assert!(all.iter().any(|l| l.waves.mode == mode), "never {mode:?}");
         }
+        // Fractals: every kind, alone and over a fluid, diving in and out, touring, bent.
+        let fractals: Vec<&FractalSettings> = all.iter().map(|l| &l.waves.fractal).filter(|f| f.enabled).collect();
+        for (kind, _) in FRACTAL_KINDS {
+            assert!(fractals.iter().any(|f| f.kind == kind), "never a {kind:?}");
+        }
+        assert!(all.iter().any(|l| l.waves.fractal.enabled && l.has_fluid()) && all.iter().any(|l| l.waves.fractal.enabled && !l.has_fluid()));
+        assert!(fractals.iter().any(|f| f.dive > 0.0) && fractals.iter().any(|f| f.dive < 0.0) && fractals.iter().any(|f| f.tour) && fractals.iter().any(|f| f.bend > 0.0));
+        assert!(all.iter().any(|l| l.reactions.iter().any(|r| r.effect == Effect::Morph)));
         assert!(all.iter().any(|l| l.code.frame.is_some()) && all.iter().any(|l| !l.code.pixel.is_empty()) && all.iter().any(|l| l.code.frame.is_none()));
         let energies = [Energy::Calm, Energy::Energetic, Energy::Any];
         assert!(energies.iter().all(|e| all.iter().any(|l| l.energy == *e)), "energies not all used");

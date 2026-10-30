@@ -150,8 +150,11 @@ bass), `brightness` (above 1 glows).
 ## `[fractal]`
 
 An escape-time fractal in the palette's colours, drawn into the picture before the
-feedback, so the warp carries it (present: on). It's opaque near the set's edge and clear
-far outside and inside, so the fluid shows through.
+feedback, so the warp carries it (present: on). Over a fluid whose flow carries the
+feedback (`flow` above 0), it's drawn over the feedback's picture instead: the flow would
+wash anything standing still into the fluid within a second; `bend` moves it with the
+fluid. It's opaque near the set's edge and clear far outside and inside, so the fluid
+shows through.
 
 - `kind`: `mandelbrot`, `julia`, `burning_ship`, `tricorn` or `newton` (Newton's method on
   z³ − 1, coloured by the root each point finds).

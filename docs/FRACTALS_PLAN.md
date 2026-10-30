@@ -1,6 +1,6 @@
 # Fractals Plan
 
-Status: **phases A, B, C and the dive done** (2026-10-29); decisions open (§4). Fractal visualizations as an option
+Status: **phases A to D and the dive done** (2026-10-30); decisions open (§4). Fractal visualizations as an option
 in looks, grouped into phases. Each phase is committed on its own.
 
 ## 1. Goal
@@ -268,3 +268,60 @@ Suggested order: A to E in order (each builds on the one before); F only if chos
     its pace times the spring's time, leaves the still half alone, springs back at the
     spring's rate when the flow stops, and saturates under a gale; both shaders
     validate (naga). The test readback now handles signs and two-channel textures.
+- **Phase D, the randomizer, the editor and the load (done):**
+  - **Random fractals** (`looks::random::random_fractal`): 45 % of looks without a fluid
+    get one (the waves then stay only sometimes, and the feedback is optional: the
+    fractal is enough to draw), 20 % over a 2D fluid, 12 % over a 3D one. Julia sets
+    most often, then the Mandelbrot set, then the rest. It starts at one of the kind's
+    tour spots (the whole set half the time alone, 80 % over a fluid, whose close-ups'
+    fine filaments it hides), and moves one of three ways: diving (mostly in), touring,
+    or still and turning; a Julia set's point wanders too, mostly. Over a 2D fluid it's
+    often bent by the flow. Half get a Morph reaction on the kick or snare. Variations
+    nudge its numbers.
+  - **The tame rules, from what the app showed:**
+    - Under brightest feedback a fractal's glow, which covers the canvas, piled up
+      into a pale wash, even dimmed: a fractal now always takes smear feedback.
+    - Even smeared, a long trail, a feedback zoom, turn, echo or drift blurred it to
+      mush, since the new frame is under 1 % of each: with a fractal the trail is at
+      most 0.5, the zoom 0.99 to 1.02, little turn, no echo or drift.
+    - A kaleidoscope folds a fractal past reading: none with a fractal (mirrors stay).
+    - Its opacity over a fluid is 0.7 to 0.95 (0.5 was lost in it).
+  - **Over a flowing fluid, the fractal goes over the feedback** (`main.rs`, `render`):
+    random fractals over fluids didn't show at all, and the cause was the feedback's
+    flow. The fluid's dye is redrawn where the flow carried its history, so it stays
+    sharp; a fractal standing still has its history carried off a different way every
+    frame, and dissolved into the fluid in about a second (a look's shapes too). So
+    with a fluid and the feedback's flow above 0, the fractal is drawn over the
+    feedback's picture, under the walls; the bend is what moves it with the fluid.
+    Without a fluid, or without flow, it's still drawn into the feedback, which swirls
+    it.
+  - **Load:** a second governor watches the frames while a fractal is on, in the
+    visualizer: slower than 50 fps (or than the frame-rate cap, if that's lower; a
+    capped rate isn't falling behind) for 3 s, and the fractal drops a step: one sample
+    a pixel instead of four, then 70 % of the iterations a step, down to a third. Each
+    look starts at full detail. Not seen in the app (nothing fell that slow); its parts
+    are tested.
+  - **Editor:** the fractal has its own group under the View tab: the kind (and the
+    Julia point), then how it moves (Dive, Wander, Tour, Bass zoom, Bend, Spin), then
+    where (Zoom, Across, Up, Turn: where a dive starts from, when diving), with the
+    colours and detail folded away.
+  - **The tests that hung** (twice before, and twice in this phase's runs): opening GPU
+    devices from many threads at once deadlocks (wgpu 30 on Windows). It started in
+    the GPU stable fluids phase, when the app's tests began building worlds with the
+    GPU solvers, each of which opened a device, so many tests opened one at the same
+    moment; 16 threads opening devices hung in the second round. `GpuContext::new` now
+    opens one device per process and shares it (wgpu's handles are made to be shared:
+    16 threads using one ran 480 maps clean in half a second). The app's tests have
+    run in their usual minute every time since (three runs, and the workspace), and
+    sim3d's GPU tests went from over a minute, waiting on devices, to one second. In
+    the app, the GPU solvers now share one device rather than each opening their own.
+  - **Tests:** random fractals stay in range and are tamed (smear, short trail, still
+    zoom, no echo or kaleidoscope), start somewhere worth seeing, and come in every
+    kind, alone and over a fluid, diving both ways, touring and bent, with Morph
+    reactions; a capped frame rate doesn't count as falling behind.
+  - **Checked in the app** (debug build): twelve random looks from the key, then three
+    batches of eight random fractal looks saved from the randomizer, after each round
+    of rules: the last batch shows the Mandelbrot set over ink, a Julia set bent over
+    PBF, the Tricorn over dye and over 3D fire, and the Mandelbrot set over 3D fire,
+    all readable; alone, the Burning Ship and the Tricorn read but soft (hence the
+    stiller zoom, after that batch). The Fractal group in the editor.

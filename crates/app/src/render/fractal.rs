@@ -156,7 +156,23 @@ struct Uniforms {
     shift: f32,
     /// The displacement's uv (scene) to the canvas's -1 to 1 (and y up); 0 with no bend.
     bend: [f32; 2],
-    _pad: [f32; 2],
+    /// Samples a pixel: 4, or 1 when the frames can't keep up (`Quality`).
+    samples: u32,
+    _pad: f32,
+}
+
+/// How much of its detail the fractal keeps, when the frames can't keep up (lowered a
+/// step at a time by the app's governor; 0 is all of it).
+pub const QUALITY_STEPS: u32 = 4;
+
+/// The samples a pixel and the share of the iterations at quality step `step`: first
+/// one sample in place of four (a quarter of the work), then 70 % of the iterations a
+/// step, down to a third.
+pub fn quality(step: u32) -> (u32, f32) {
+    match step {
+        0 => (4, 1.0),
+        s => (1, 0.7f32.powi(s as i32 - 1).max(0.34)),
+    }
 }
 
 pub struct FractalLayer {
@@ -239,12 +255,16 @@ impl FractalLayer {
         settings: &FractalSettings,
         palette: &Palette,
         bend: Option<&wgpu::TextureView>,
+        quality_step: u32,
     ) {
         let [x, y, w, h] = viewport;
         if !settings.enabled || settings.opacity <= 0.0 || w < 1.0 || h < 1.0 {
             return;
         }
         let mut uniforms = self.uniforms(settings, palette, w / h, h);
+        let (samples, share) = quality(quality_step);
+        uniforms.samples = samples;
+        uniforms.iterations = ((uniforms.iterations as f32 * share) as u32).max(16.min(uniforms.iterations));
         if bend.is_some() {
             // Scene uv (y down) to the canvas's -1 to 1 (y up).
             let size = target.texture().size();
@@ -294,9 +314,15 @@ impl FractalLayer {
             pixel: 2.0 / height_px,
             shift: if s.shift.is_finite() { s.shift.max(0.0) } else { 0.0 },
             bend: [0.0; 2],
-            _pad: [0.0; 2],
+            samples: 4,
+            _pad: 0.0,
         }
     }
+}
+
+/// The places worth going on a tour of `kind`: centre and zoom (the first shows it whole).
+pub fn spots(kind: FractalKind) -> &'static [([f32; 2], f32)] {
+    SPOTS[kind.code() as usize]
 }
 
 /// Places worth going on a tour, per kind: centre and zoom (the first shows it whole).

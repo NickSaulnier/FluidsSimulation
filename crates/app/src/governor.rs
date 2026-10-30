@@ -27,6 +27,14 @@ pub fn frame_slowness(real_dt: f32) -> f32 {
     (1.0 - SLOWEST_3D_FRAME_S / real_dt.max(1e-6)).max(0.0)
 }
 
+/// The same, judged against the frame-rate cap (`cap` fps, 0 for none) when that's
+/// slower than 50 fps, so a capped frame rate doesn't count as falling behind.
+pub fn frame_slowness_capped(real_dt: f32, cap: u32) -> f32 {
+    let slowest = if cap > 0 { SLOWEST_3D_FRAME_S.max(1.0 / cap as f32) } else { SLOWEST_3D_FRAME_S };
+    // A little slack: a capped frame is never exactly on time.
+    (1.0 - 1.05 * slowest / real_dt.max(1e-6)).max(0.0)
+}
+
 #[derive(Default)]
 pub struct Governor {
     slow_for: f32,
@@ -104,6 +112,16 @@ mod tests {
             assert_eq!(run(&mut g, 0.3, 2.0), 0);
             assert_eq!(run(&mut g, 0.0, 0.5), 0);
         }
+    }
+
+    #[test]
+    fn a_capped_frame_rate_isnt_falling_behind() {
+        assert_eq!(frame_slowness_capped(1.0 / 30.0, 30), 0.0);
+        assert_eq!(frame_slowness_capped(1.0 / 60.0, 0), 0.0);
+        assert!(frame_slowness_capped(1.0 / 20.0, 30) > 0.25);
+        assert!(frame_slowness_capped(1.0 / 30.0, 0) > 0.3);
+        // A cap above 50 fps is judged against 50.
+        assert_eq!(frame_slowness_capped(1.0 / 55.0, 144), 0.0);
     }
 
     #[test]

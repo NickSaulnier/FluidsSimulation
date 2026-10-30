@@ -25,7 +25,9 @@ struct Fractal {
     shift: f32,
     // The displacement's uv (scene, y down) to the canvas's -1 to 1 (y up); 0: unbent.
     bend: vec2f,
-    _pad: vec2f,
+    // Samples a pixel: 4, or 1 when the frames can't keep up.
+    samples: u32,
+    _pad: f32,
 };
 
 @group(0) @binding(0) var<uniform> F: Fractal;
@@ -158,6 +160,9 @@ fn fs(i: VOut) -> @location(0) vec4f {
     // Four samples on a rotated grid, a pixel apart in all: smooth filaments, and less
     // shimmer for the feedback to smear.
     let offsets = array<vec2f, 4>(vec2f(0.125, 0.375), vec2f(-0.375, 0.125), vec2f(-0.125, -0.375), vec2f(0.375, -0.125));
+    if F.samples < 4u {
+        return sample(origin);
+    }
     var sum = vec4f(0.0);
     for (var k = 0u; k < 4u; k++) {
         sum += sample(origin + offsets[k] * vec2f(1.0 / F.aspect, 1.0) * F.pixel);

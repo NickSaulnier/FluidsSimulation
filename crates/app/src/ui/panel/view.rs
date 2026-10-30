@@ -4,7 +4,7 @@
 use crate::render::Palette;
 use crate::render::composite::{CompositeSettings, Symmetry};
 use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
-use crate::render::fractal::{FractalKind, MAX_ITERATIONS, MAX_ZOOM};
+use crate::render::fractal::{FractalKind, FractalSettings, MAX_ITERATIONS, MAX_ZOOM};
 use crate::render::waves::{WaveMode, WaveSettings};
 use crate::render::palette::{GROUPS, named};
 use crate::ui::Frame;
@@ -48,6 +48,7 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     widgets::group(ui, "Interface", |ui| interface(ui, f.state));
     widgets::group(ui, "Feedback", |ui| feedback(ui, &mut f.state.feedback));
     widgets::group(ui, "Waves", |ui| waves(ui, &mut f.state.waves));
+    widgets::group(ui, "Fractal", |ui| fractal(ui, &mut f.state.waves.fractal));
     widgets::group(ui, "Composite", |ui| composite(ui, &mut f.state.composite));
     if !in_3d {
         widgets::group(ui, "Overlay", |ui| overlay(ui, f));
@@ -187,34 +188,49 @@ fn waves(ui: &mut egui::Ui, s: &mut WaveSettings) {
         slider(ui, "Bass pulse", "", &mut art.bass_pulse, 0.0..=1.0);
         slider(ui, "Light", "Above 1 glows.", &mut art.brightness, 0.0..=4.0);
     }
-    let fractal = &mut s.fractal;
+}
+
+/// The fractal: what it is, how it moves with the music and the fluid, where it starts,
+/// and (folded) its colours and detail.
+fn fractal(ui: &mut egui::Ui, fractal: &mut FractalSettings) {
+    let slider = |ui: &mut egui::Ui, label: &str, help: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>| {
+        row(ui, label, help, |ui| {
+            widgets::eased_slider(ui, value, range);
+        });
+    };
     widgets::toggle(ui, &mut fractal.enabled, "Fractal", "An escape-time fractal in the fluid's colours, drawn into the picture so the feedback carries it.");
-    if fractal.enabled {
-        row(ui, "Kind", "", |ui| {
-            egui::ComboBox::from_id_salt("fractal_kind").selected_text(fractal.kind.label()).width(150.0).show_ui(ui, |ui| {
-                for kind in FractalKind::ALL {
-                    ui.selectable_value(&mut fractal.kind, kind, kind.label());
-                }
-            });
+    if !fractal.enabled {
+        return;
+    }
+    row(ui, "Kind", "", |ui| {
+        egui::ComboBox::from_id_salt("fractal_kind").selected_text(fractal.kind.label()).width(150.0).show_ui(ui, |ui| {
+            for kind in FractalKind::ALL {
+                ui.selectable_value(&mut fractal.kind, kind, kind.label());
+            }
         });
-        row(ui, "Zoom", "", |ui| {
-            ui.add(egui::Slider::new(&mut fractal.zoom, 0.2..=MAX_ZOOM).logarithmic(true));
-        });
-        slider(ui, "Across", "The point at the middle of the canvas.", &mut fractal.centre[0], -2.5..=2.5);
-        slider(ui, "Up", "", &mut fractal.centre[1], -2.0..=2.0);
-        if fractal.kind == FractalKind::Julia {
-            slider(ui, "Julia real", "The constant c: its shape.", &mut fractal.julia[0], -2.0..=2.0);
-            slider(ui, "Julia imaginary", "", &mut fractal.julia[1], -2.0..=2.0);
-        }
-        slider(ui, "Turn", "Radians.", &mut fractal.rotation, -3.15..=3.15);
-        slider(ui, "Spin", "Radians per second.", &mut fractal.spin, -1.0..=1.0);
-        if fractal.kind == FractalKind::Julia {
-            slider(ui, "Wander", "The Julia point travels along the Mandelbrot set's edge: about laps a minute at full loudness.", &mut fractal.wander, -4.0..=4.0);
-        }
-        slider(ui, "Dive", "Travel endlessly into the fractal (negative: out of it): zoom doublings a second, faster when the music is loud. It flies to a place where the picture repeats itself and loops there.", &mut fractal.dive, -3.0..=3.0);
-        slider(ui, "Bass zoom", "How much the zoom follows the bass.", &mut fractal.bass_zoom, 0.0..=1.0);
-        slider(ui, "Bend", "How far the fluid's flow carries the fractal (1: with the fluid). It springs back when the fluid stills.", &mut fractal.bend, 0.0..=2.0);
-        widgets::toggle(ui, &mut fractal.tour, "Tour", "Move to another spot at each new section of the song (a Julia set changes shape).");
+    });
+    if fractal.kind == FractalKind::Julia {
+        slider(ui, "Julia real", "The constant c: its shape.", &mut fractal.julia[0], -2.0..=2.0);
+        slider(ui, "Julia imaginary", "", &mut fractal.julia[1], -2.0..=2.0);
+    }
+    // How it moves.
+    slider(ui, "Dive", "Travel endlessly into the fractal (negative: out of it): zoom doublings a second, faster when the music is loud. It flies to a place where the picture repeats itself and loops there.", &mut fractal.dive, -3.0..=3.0);
+    if fractal.kind == FractalKind::Julia {
+        slider(ui, "Wander", "The Julia point travels along the Mandelbrot set's edge: about laps a minute at full loudness.", &mut fractal.wander, -4.0..=4.0);
+    }
+    widgets::toggle(ui, &mut fractal.tour, "Tour", "Move to another place at each new section of the song (diving, to another place to dive; a Julia set changes shape).");
+    slider(ui, "Bass zoom", "How much the zoom follows the bass.", &mut fractal.bass_zoom, 0.0..=1.0);
+    slider(ui, "Bend", "How far the fluid's flow carries the fractal (1: with the fluid). It springs back when the fluid stills.", &mut fractal.bend, 0.0..=2.0);
+    slider(ui, "Spin", "Radians per second.", &mut fractal.spin, -1.0..=1.0);
+    // Where.
+    let start = if fractal.dive != 0.0 { " (where a dive starts from)" } else { "" };
+    row(ui, "Zoom", &format!("1: the whole set{start}."), |ui| {
+        ui.add(egui::Slider::new(&mut fractal.zoom, 0.2..=MAX_ZOOM).logarithmic(true));
+    });
+    slider(ui, "Across", &format!("The point at the middle of the canvas{start}."), &mut fractal.centre[0], -2.5..=2.5);
+    slider(ui, "Up", "", &mut fractal.centre[1], -2.0..=2.0);
+    slider(ui, "Turn", "Radians.", &mut fractal.rotation, -3.15..=3.15);
+    if widgets::fold_header(ui, "Fractal colours", "") {
         row(ui, "Detail", "Iterations: more shows finer filaments when zoomed in, and costs more.", |ui| {
             ui.add(egui::Slider::new(&mut fractal.iterations, 16..=MAX_ITERATIONS).logarithmic(true));
         });

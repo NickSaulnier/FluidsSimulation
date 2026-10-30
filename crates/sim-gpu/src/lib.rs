@@ -9,6 +9,7 @@ pub mod stable;
 
 use anyhow::Context;
 use sim::SolverEntry;
+use std::sync::OnceLock;
 
 pub use pbf::GpuPbf;
 pub use stable::GpuStable;
@@ -20,6 +21,7 @@ pub static SOLVERS: &[SolverEntry] =
 /// the 2D GPU solver, which reads its particles back for drawing), or the renderer's own
 /// (`shared`), so a solver's GPU data can be drawn without leaving the GPU (the 3D
 /// solvers).
+#[derive(Clone)]
 pub struct GpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -32,7 +34,16 @@ impl GpuContext {
         Self { device, queue, adapter }
     }
 
+    /// The process's headless device: opened the first time, and shared after (the
+    /// handles are clones). Opening devices from several threads at once deadlocks (wgpu
+    /// 30 on Windows: the app's tests hung that way, many opening one each in parallel),
+    /// and one device serves every solver and test as well as many would.
     pub fn new() -> anyhow::Result<Self> {
+        static SHARED: OnceLock<Result<GpuContext, String>> = OnceLock::new();
+        SHARED.get_or_init(|| Self::open().map_err(|e| format!("{e:#}"))).clone().map_err(anyhow::Error::msg)
+    }
+
+    fn open() -> anyhow::Result<Self> {
         pollster::block_on(async {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
             let adapter = instance

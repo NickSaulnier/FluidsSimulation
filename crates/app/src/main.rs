@@ -158,6 +158,10 @@ struct State {
     /// no feedback wanting it every frame, the flow is drawn at most `BEND_FLOW_HZ`).
     bend: render::bend::BendLayer,
     bend_flow_age: f32,
+    /// Watching the frames while a fractal is on, and how far its detail has been
+    /// lowered to keep up (`render::fractal::quality`; back to full with each look).
+    fractal_governor: governor::Governor,
+    fractal_quality: u32,
     /// The fractal's own movement with the music, and the Morph reaction's last kick.
     fractal_motion: render::fractal::Motion,
     fractal_morph: f32,
@@ -395,6 +399,8 @@ impl State {
             fractal,
             bend,
             bend_flow_age: f32::INFINITY,
+            fractal_governor: governor::Governor::default(),
+            fractal_quality: 0,
             fractal_motion: render::fractal::Motion::default(),
             fractal_morph: 0.0,
             cover: None,
@@ -471,6 +477,7 @@ impl State {
             self.window.set_window_level(if on_top { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
             if presenting != self.presented.0 {
                 self.governor.reset();
+                (self.fractal_governor, self.fractal_quality) = (governor::Governor::default(), 0);
                 if presenting {
                     self.ui.reveal();
                 }
@@ -506,6 +513,16 @@ impl State {
                 log::info!("{message}");
                 self.ui.show_notice(message);
             }
+        }
+        // A fractal costs frames, not simulated time: judged by the frames themselves.
+        let fractal = self.look_frame.waves.fractal.enabled && self.fractal_quality < render::fractal::QUALITY_STEPS;
+        if !fractal {
+            self.fractal_governor.reset();
+        } else if presenting && !self.ui.paused && self.fractal_governor.update(governor::frame_slowness_capped(real_dt, self.ui.screen.fps_cap), real_dt) {
+            self.fractal_quality += 1;
+            let message = "Lowered the fractal's detail to keep up".to_string();
+            log::info!("{message} (step {})", self.fractal_quality);
+            self.ui.show_notice(message);
         }
     }
 
@@ -793,6 +810,8 @@ impl State {
     /// otherwise the new look's warp starts from the old picture, as a blend should.
     fn apply_look(&mut self, index: usize, fresh: bool) {
         let Some(look) = self.ui.looks.looks.get(index).cloned() else { return };
+        // A new look's fractal starts at full detail.
+        (self.fractal_governor, self.fractal_quality) = (governor::Governor::default(), 0);
         // Put back any parameters the last look's reactions were modulating.
         self.modulate_params(&[], &[]);
         if fresh {
@@ -1334,6 +1353,11 @@ impl State {
         let waves = self.look_frame.waves;
         // The fluid bends the fractal through the flow, which the feedback draws too.
         let bending = waves.fractal.enabled && waves.fractal.bend > 0.0;
+        // Feedback that the fluid's flow carries washes anything standing still into the
+        // fluid within a second (the new frame is under 1 % of each): over a fluid, then,
+        // the fractal goes over the feedback's picture, crisp (the bend moves it instead).
+        let fluid = self.no_fluid.is_none();
+        let fractal_after = waves.fractal.enabled && feedback.enabled && feedback.flow > 0.0 && fluid;
         let flow = self.feedback.flow_target(&self.gpu.device, scene_size);
         if let Some(world) = &self.world3d {
             let viewport = self.viewport_3d().map(|v| v * scale);
@@ -1373,14 +1397,15 @@ impl State {
             }
         }
         if waves.fractal.enabled {
-            let viewport = self.viewport_3d().map(|v| v * scale);
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
-            if bending && self.no_fluid.is_none() {
+            if bending && fluid {
                 self.bend.update(device, queue, &mut encoder, &flow, scene_size, waves.fractal.bend, self.frame_dt);
             } else {
                 self.bend.reset();
             }
-            self.fractal.draw(device, queue, &mut encoder, &scene, viewport, &waves.fractal, &self.palette_now, self.bend.displacement());
+            if !fractal_after {
+                self.draw_fractal(&mut encoder, &scene, scale);
+            }
         } else {
             self.bend.reset();
         }
@@ -1405,11 +1430,17 @@ impl State {
             let (device, queue) = (&self.gpu.device, &self.gpu.queue);
             let (shared, pixel) = (&self.look_frame.shared, &self.look_pixel);
             let picture = self.feedback.run(device, queue, &mut encoder, &scene, scene_size, &feedback, shared, pixel, self.frame_dt);
-            if self.world3d.is_none() && self.no_fluid.is_none() {
-                // The walls over the feedback's picture, not into it, so they stay
-                // sharp: on a copy (the scene texture is free again by now).
+            let walls = self.world3d.is_none() && fluid;
+            if walls || fractal_after {
+                // The fractal and the walls over the feedback's picture, not into it, so
+                // they stay sharp: on a copy (the scene texture is free again by now).
                 encoder.copy_texture_to_texture(picture.texture().as_image_copy(), scene.texture().as_image_copy(), scene.texture().size());
-                self.renderer.draw_walls(&mut encoder, &scene);
+                if fractal_after {
+                    self.draw_fractal(&mut encoder, &scene, scale);
+                }
+                if walls {
+                    self.renderer.draw_walls(&mut encoder, &scene);
+                }
                 scene.clone()
             } else {
                 picture
@@ -1523,6 +1554,13 @@ impl State {
         };
         let grid = layout.map(|l| (self.velocity.as_slice(), l));
         self.feedback.draw_flow_2d(&self.gpu.device, &self.gpu.queue, encoder, size, view, grid);
+    }
+
+    /// The look's fractal onto `target` (the scene, at `scale` of the window's size).
+    fn draw_fractal(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, scale: f32) {
+        let viewport = self.viewport_3d().map(|v| v * scale);
+        let fractal = &self.look_frame.waves.fractal;
+        self.fractal.draw(&self.gpu.device, &self.gpu.queue, encoder, target, viewport, fractal, &self.palette_now, self.bend.displacement(), self.fractal_quality);
     }
 
     /// The 2D scene into `target`, `size` pixels, `scale` of the window's.
