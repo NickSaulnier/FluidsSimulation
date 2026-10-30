@@ -88,6 +88,9 @@ pub struct FractalSettings {
     pub bass_zoom: f32,
     /// Move to another spot at each new section of the song.
     pub tour: bool,
+    /// How far the fluid's flow carries the picture (1: with the fluid; 0: not at all),
+    /// springing back when it stills. See `bend`.
+    pub bend: f32,
     /// Travel endlessly into the fractal (negative: out of it), zoom doublings a second
     /// at middling loudness; 0: stay put. It flies to a point where the picture repeats
     /// itself and loops there. See `Motion`.
@@ -115,6 +118,7 @@ impl FractalSettings {
         wander: 0.0,
         bass_zoom: 0.0,
         tour: false,
+        bend: 0.0,
         dive: 0.0,
         shift: 0.0,
     };
@@ -126,7 +130,7 @@ impl Default for FractalSettings {
     }
 }
 
-/// Must match `Fractal` in fractal.wgsl (112 bytes).
+/// Must match `Fractal` in fractal.wgsl (128 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -150,12 +154,17 @@ struct Uniforms {
     pixel: f32,
     /// Iterations taken off the counts before colouring (`FractalSettings::shift`).
     shift: f32,
+    /// The displacement's uv (scene) to the canvas's -1 to 1 (and y up); 0 with no bend.
+    bend: [f32; 2],
+    _pad: [f32; 2],
 }
 
 pub struct FractalLayer {
     pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
-    group: wgpu::BindGroup,
+    /// No displacement, for when the fluid doesn't bend it.
+    still: wgpu::TextureView,
     /// The spin and the colour cycle, added up.
     turn: f32,
     phase: f32,
@@ -166,12 +175,20 @@ impl FractalLayer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("fractal.wgsl"), source: wgpu::ShaderSource::Wgsl(include_str!("fractal.wgsl").into()) });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fractal"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(size_of::<Uniforms>() as u64) },
-                count: None,
-            }],
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(size_of::<Uniforms>() as u64) },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+            ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fractal"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         // Premultiplied alpha: the fractal over the scene.
@@ -198,12 +215,8 @@ impl FractalLayer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fractal"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() }],
-        });
-        Self { pipeline, uniforms, group, turn: 0.0, phase: 0.0 }
+        let still = super::feedback::texture(device, "fractal still", [1, 1], super::feedback::FLOW_FORMAT);
+        Self { pipeline, layout, uniforms, still, turn: 0.0, phase: 0.0 }
     }
 
     /// Advance the spin and the colour cycle by `dt` seconds (call every frame).
@@ -213,14 +226,39 @@ impl FractalLayer {
     }
 
     /// Draw the fractal onto `target` within `viewport` (pixels: x, y, width, height), if
-    /// `settings` ask for it.
+    /// `settings` ask for it, bent by `bend`'s displacement (scene uv, the target's size)
+    /// if there is one.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, viewport: [f32; 4], settings: &FractalSettings, palette: &Palette) {
+    pub fn draw(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: [f32; 4],
+        settings: &FractalSettings,
+        palette: &Palette,
+        bend: Option<&wgpu::TextureView>,
+    ) {
         let [x, y, w, h] = viewport;
         if !settings.enabled || settings.opacity <= 0.0 || w < 1.0 || h < 1.0 {
             return;
         }
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&self.uniforms(settings, palette, w / h, h)));
+        let mut uniforms = self.uniforms(settings, palette, w / h, h);
+        if bend.is_some() {
+            // Scene uv (y down) to the canvas's -1 to 1 (y up).
+            let size = target.texture().size();
+            uniforms.bend = [2.0 * size.width as f32 / w, -2.0 * size.height as f32 / h];
+        }
+        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fractal"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(bend.unwrap_or(&self.still)) },
+            ],
+        });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("fractal"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -233,7 +271,7 @@ impl FractalLayer {
         });
         pass.set_viewport(x, y, w, h, 0.0, 1.0);
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.group, &[]);
+        pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
     }
 
@@ -255,6 +293,8 @@ impl FractalLayer {
             phase: self.phase,
             pixel: 2.0 / height_px,
             shift: if s.shift.is_finite() { s.shift.max(0.0) } else { 0.0 },
+            bend: [0.0; 2],
+            _pad: [0.0; 2],
         }
     }
 }
@@ -778,9 +818,21 @@ mod tests {
         assert_eq!(view_zoom(4.0), 4.0);
     }
 
+    /// Both shaders parse and validate (the app would fail to start otherwise).
+    #[test]
+    fn the_shaders_validate() {
+        use wgpu::naga;
+        for (name, source) in [("fractal.wgsl", include_str!("fractal.wgsl")), ("bend.wgsl", include_str!("bend.wgsl"))] {
+            let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+        }
+    }
+
     #[test]
     fn the_uniforms_match_the_shader() {
-        assert_eq!(size_of::<Uniforms>(), 112);
+        assert_eq!(size_of::<Uniforms>(), 128);
     }
 
     /// What fractal.wgsl's `escape` and `newton` find at `p`: (escaped, or the root

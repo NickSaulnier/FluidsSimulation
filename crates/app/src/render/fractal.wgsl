@@ -23,9 +23,14 @@ struct Fractal {
     pixel: f32,
     // Iterations taken off the counts before colouring (a dive's depth).
     shift: f32,
+    // The displacement's uv (scene, y down) to the canvas's -1 to 1 (y up); 0: unbent.
+    bend: vec2f,
+    _pad: vec2f,
 };
 
 @group(0) @binding(0) var<uniform> F: Fractal;
+// How far the fluid has carried the picture at each pixel of the scene (uv), see bend.rs.
+@group(0) @binding(1) var displacement: texture_2d<f32>;
 
 const MANDELBROT: u32 = 0u;
 const JULIA: u32 = 1u;
@@ -147,12 +152,15 @@ fn sample(ndc: vec2f) -> vec4f {
 
 @fragment
 fn fs(i: VOut) -> @location(0) vec4f {
+    // Where the picture here came from, had the fluid carried it.
+    let texel = min(vec2u(i.pos.xy), textureDimensions(displacement) - 1u);
+    let origin = i.ndc - textureLoad(displacement, texel, 0).xy * F.bend;
     // Four samples on a rotated grid, a pixel apart in all: smooth filaments, and less
     // shimmer for the feedback to smear.
     let offsets = array<vec2f, 4>(vec2f(0.125, 0.375), vec2f(-0.375, 0.125), vec2f(-0.125, -0.375), vec2f(0.375, -0.125));
     var sum = vec4f(0.0);
     for (var k = 0u; k < 4u; k++) {
-        sum += sample(i.ndc + offsets[k] * vec2f(1.0 / F.aspect, 1.0) * F.pixel);
+        sum += sample(origin + offsets[k] * vec2f(1.0 / F.aspect, 1.0) * F.pixel);
     }
     return sum * 0.25;
 }

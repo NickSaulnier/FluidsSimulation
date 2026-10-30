@@ -600,7 +600,7 @@ pub(crate) mod tests {
         }
 
         /// f32 to f16 for the normal positive values the test uses.
-        fn to_f16(v: f32) -> u16 {
+        pub fn to_f16(v: f32) -> u16 {
             let bits = v.to_bits();
             let exp = ((bits >> 23) & 0xff) as i32 - 127 + 15;
             if v == 0.0 || exp <= 0 {
@@ -610,16 +610,23 @@ pub(crate) mod tests {
         }
 
         fn from_f16(h: u16) -> f32 {
+            let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
             let exp = ((h >> 10) & 0x1f) as i32;
             let mantissa = (h & 0x3ff) as f32 / 1024.0;
             if exp == 0 {
-                return mantissa * 2f32.powi(-14);
+                return sign * mantissa * 2f32.powi(-14);
             }
-            (1.0 + mantissa) * 2f32.powi(exp - 15)
+            sign * (1.0 + mantissa) * 2f32.powi(exp - 15)
         }
 
         pub fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, size: [u32; 2]) -> Vec<[f32; 4]> {
-            let row = (size[0] * 8).next_multiple_of(256);
+            read_channels(device, queue, texture, size, 4).chunks(4).map(|c| [c[0], c[1], c[2], c[3]]).collect()
+        }
+
+        /// A half-float texture of `channels` channels, read back row by row.
+        pub fn read_channels(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, size: [u32; 2], channels: u32) -> Vec<f32> {
+            let texel = 2 * channels;
+            let row = (size[0] * texel).next_multiple_of(256);
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("readback"),
                 size: u64::from(row * size[1]),
@@ -642,8 +649,8 @@ pub(crate) mod tests {
             let mut out = Vec::new();
             for y in 0..size[1] {
                 let start = (y * row) as usize;
-                let halves: &[u16] = bytemuck::cast_slice(&data[start..start + (size[0] * 8) as usize]);
-                out.extend(halves.chunks(4).map(|c| [from_f16(c[0]), from_f16(c[1]), from_f16(c[2]), from_f16(c[3])]));
+                let halves: &[u16] = bytemuck::cast_slice(&data[start..start + (size[0] * texel) as usize]);
+                out.extend(halves.iter().map(|&h| from_f16(h)));
             }
             out
         }

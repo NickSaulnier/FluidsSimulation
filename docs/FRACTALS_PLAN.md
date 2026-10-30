@@ -1,6 +1,6 @@
 # Fractals Plan
 
-Status: **phases A, B and the dive done** (2026-10-29); decisions open (§4). Fractal visualizations as an option
+Status: **phases A, B, C and the dive done** (2026-10-29); decisions open (§4). Fractal visualizations as an option
 in looks, grouped into phases. Each phase is committed on its own.
 
 ## 1. Goal
@@ -238,3 +238,33 @@ Suggested order: A to E in order (each builds on the one before); F only if chos
     (its point is a tip), hence the lean. The wraps themselves weren't caught on
     screen (stills 3 s apart); the seam test covers them. The Burning Ship's and
     Tricorn's axis loops are the plainest of the dives.
+- **Phase C, the fluid bending the fractal (done):** `render/bend.rs` and `bend.wgsl`,
+  and `bend` in `[fractal]`. The fractal releasing dye (§3.3's optional part) isn't
+  done: that's still an open decision (§4).
+  - **How:** a displacement texture at the scene's size (Rg16Float, uv like the flow),
+    twice over (this frame's from last frame's). Each frame every pixel takes the
+    displacement carried in from upstream (semi-Lagrangian, through the flow) plus the
+    flow's push, eased back toward none; the fractal pass reads it at its pixel and
+    draws the picture from where the fluid would have carried it. A plain offset by
+    the velocity would have snapped back the moment the flow stopped; this drags the
+    picture and lets it settle.
+  - **The flow** is the feedback's (uv per second): the solver's velocity grid, or
+    particles splatted onto one, in 2D; the raymarch's in 3D. With no feedback it's now
+    drawn for the bend too, at most 30 times a second (`BEND_FLOW_HZ`): getting the
+    velocity costs a GPU readback or a particle splat, and the bend eases anyway.
+  - **Tuning, in the app:** at first the displacement remembered 1.5 s and reached a
+    third of the screen, and the ink's turbulence kneaded the Mandelbrot set into
+    marble, past recognising. Now it springs back over 0.6 s and reaches at most 0.12
+    of the screen. Over FLIP the splatted flow is noisy and shredded the Julia set, with
+    streaks in the air above the water: the bend now averages the flow over a small
+    disc (9 taps, 0.015 of the screen), and the Julia set rides the waves whole.
+  - **Cost** (debug build, full screen): the Mandelbrot set over GPU stable fluids ink
+    116 fps unbent, 99 bent; at first, drawing the flow every frame, 81. Over FLIP no
+    clear difference (the solver's own cost swamps it).
+  - **Editor and docs:** a Bend slider (0 to 2), the `fractal_bend` frame output, and
+    `bend` in `looks/README.md` (0.3 to 0.5 keeps it recognisable under a lively fluid;
+    1 goes with the fluid).
+  - **Tests:** on a GPU, a steady flow over half the scene drags the picture toward
+    its pace times the spring's time, leaves the still half alone, springs back at the
+    spring's rate when the flow stops, and saturates under a gale; both shaders
+    validate (naga). The test readback now handles signs and two-channel textures.

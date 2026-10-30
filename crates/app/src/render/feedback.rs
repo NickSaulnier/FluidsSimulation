@@ -464,7 +464,7 @@ impl FeedbackLayer {
     }
 }
 
-fn texture(device: &wgpu::Device, label: &str, size: [u32; 2], format: wgpu::TextureFormat) -> wgpu::TextureView {
+pub(super) fn texture(device: &wgpu::Device, label: &str, size: [u32; 2], format: wgpu::TextureFormat) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
@@ -482,7 +482,7 @@ fn texture(device: &wgpu::Device, label: &str, size: [u32; 2], format: wgpu::Tex
         .create_view(&Default::default())
 }
 
-fn fullscreen_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, source: &str, entry: &str, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+pub(super) fn fullscreen_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, source: &str, entry: &str, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(entry), source: wgpu::ShaderSource::Wgsl(source.into()) });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(entry), bind_group_layouts: &[Some(layout)], immediate_size: 0 });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -498,7 +498,7 @@ fn fullscreen_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, so
     })
 }
 
-fn fullscreen(encoder: &mut wgpu::CommandEncoder, label: &str, target: &wgpu::TextureView, pipeline: &wgpu::RenderPipeline, group: &wgpu::BindGroup) {
+pub(super) fn fullscreen(encoder: &mut wgpu::CommandEncoder, label: &str, target: &wgpu::TextureView, pipeline: &wgpu::RenderPipeline, group: &wgpu::BindGroup) {
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {

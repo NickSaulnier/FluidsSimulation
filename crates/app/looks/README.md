@@ -166,6 +166,10 @@ far outside and inside, so the fluid shows through.
   about laps a minute at full loudness, starting from the edge nearest `julia`),
   `bass_zoom` (0 to 1: the zoom follows the bass), `tour = true` (at each new section,
   move to another place worth seeing; a Julia set changes shape).
+- `bend`: how far the fluid's flow carries the picture (1: with the fluid, 0: not at
+  all; up to 2). Swirls twist it and jets stretch it, and it springs back within about
+  a second when the fluid stills. At 1 a lively fluid can knead it past recognising;
+  0.3 to 0.5 keeps it the fractal, pushed about. Nothing without a fluid.
 - `dive`: travel endlessly into the fractal (negative: out of it), in zoom doublings a
   second (from 0.4 times that in silence to 1.6 times when loud, and up to 4 times on a
   `morph` kick). It flies from `centre` and `zoom` to the nearest point where the
@@ -251,7 +255,7 @@ Per frame only:
 - `shape1_radius`, `shape1_x`, `shape1_y`, `shape1_spin`, `shape1_fill` (and `shape2_`);
 - `art_size`, `art_opacity`, `art_x`, `art_y`, `art_spin` (the cover);
 - `fractal_x`, `fractal_y`, `fractal_zoom`, `fractal_rot`, `fractal_iter`,
-  `fractal_opacity`, `julia_re`, `julia_im` (the fractal, after its own movement with
+  `fractal_opacity`, `fractal_bend`, `julia_re`, `julia_im` (the fractal, after its own movement with
   the music: `fractal_zoom = fractal_zoom * (1 + 0.5 * kick)`);
 - `gravity` (degrees anticlockwise from straight down, any angle), `gravity_strength`
   (a multiple: 1 as set, up to 5), `intensity` (the reactions' strength, a multiple: 1

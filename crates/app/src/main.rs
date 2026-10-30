@@ -69,6 +69,8 @@ const TILT_STEP_DEG: f32 = 5.0;
 const STRENGTH_STEP: f32 = 0.5;
 /// A look's thumbnail is taken this long after it starts.
 const THUMBNAIL_AFTER_S: f32 = 8.0;
+/// How often the fluid's flow is drawn when only the fractal's bend wants it.
+const BEND_FLOW_HZ: f32 = 30.0;
 /// How often the director, mixing in random looks, makes one instead of its own pick,
 /// and how many tries it takes at one that suits the music's energy.
 const RANDOM_SHARE: f32 = 0.25;
@@ -152,6 +154,10 @@ struct State {
     media: audio::media::Media,
     art: render::art::ArtLayer,
     fractal: render::fractal::FractalLayer,
+    /// The fluid bending the fractal, and the time since its flow was last drawn (with
+    /// no feedback wanting it every frame, the flow is drawn at most `BEND_FLOW_HZ`).
+    bend: render::bend::BendLayer,
+    bend_flow_age: f32,
     /// The fractal's own movement with the music, and the Morph reaction's last kick.
     fractal_motion: render::fractal::Motion,
     fractal_morph: f32,
@@ -312,6 +318,7 @@ impl State {
         let waves = render::waves::WavesLayer::new(&gpu.device);
         let art = render::art::ArtLayer::new(&gpu.device);
         let fractal = render::fractal::FractalLayer::new(&gpu.device);
+        let bend = render::bend::BendLayer::new(&gpu.device);
 
         let egui_ctx = egui::Context::default();
         ui::theme::apply(&egui_ctx);
@@ -386,6 +393,8 @@ impl State {
             media: audio::media::Media::start(),
             art,
             fractal,
+            bend,
+            bend_flow_age: f32::INFINITY,
             fractal_motion: render::fractal::Motion::default(),
             fractal_morph: 0.0,
             cover: None,
@@ -1323,6 +1332,8 @@ impl State {
         mark(&self.timer, &mut encoder, Stage::Scene);
         let feedback = self.look_frame.feedback;
         let waves = self.look_frame.waves;
+        // The fluid bends the fractal through the flow, which the feedback draws too.
+        let bending = waves.fractal.enabled && waves.fractal.bend > 0.0;
         let flow = self.feedback.flow_target(&self.gpu.device, scene_size);
         if let Some(world) = &self.world3d {
             let viewport = self.viewport_3d().map(|v| v * scale);
@@ -1353,13 +1364,25 @@ impl State {
             self.field_range = None;
         } else {
             self.render_2d(&mut encoder, &scene, view, scene_size, scale);
-            if feedback.enabled {
+            // Getting the fluid's velocity costs (a readback, or a splat of the
+            // particles): for the bend alone, which eases it anyway, not every frame.
+            self.bend_flow_age += self.frame_dt;
+            if feedback.enabled || (bending && self.bend_flow_age >= 1.0 / BEND_FLOW_HZ) {
+                self.bend_flow_age = 0.0;
                 self.draw_flow_2d(&mut encoder, view, scene_size);
             }
         }
         if waves.fractal.enabled {
             let viewport = self.viewport_3d().map(|v| v * scale);
-            self.fractal.draw(&self.gpu.queue, &mut encoder, &scene, viewport, &waves.fractal, &self.palette_now);
+            let (device, queue) = (&self.gpu.device, &self.gpu.queue);
+            if bending && self.no_fluid.is_none() {
+                self.bend.update(device, queue, &mut encoder, &flow, scene_size, waves.fractal.bend, self.frame_dt);
+            } else {
+                self.bend.reset();
+            }
+            self.fractal.draw(device, queue, &mut encoder, &scene, viewport, &waves.fractal, &self.palette_now, self.bend.displacement());
+        } else {
+            self.bend.reset();
         }
         if waves.art.enabled && self.art.has_cover() {
             let viewport = self.viewport_3d().map(|v| v * scale);

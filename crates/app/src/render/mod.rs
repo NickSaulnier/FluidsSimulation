@@ -3,6 +3,7 @@
 //! screen.
 
 pub mod art;
+pub mod bend;
 pub mod colormap;
 pub mod composite;
 mod liquid;
