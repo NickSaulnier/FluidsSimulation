@@ -218,6 +218,7 @@ The design notes and progress, phase by phase, are in `docs/`:
 [PLAN.md](docs/PLAN.md) (the fluid toy), [3D_PLAN.md](docs/3D_PLAN.md),
 [UI_REDESIGN.md](docs/UI_REDESIGN.md), [VISUALIZER_PLAN.md](docs/VISUALIZER_PLAN.md),
 [ANALYZER_PLAN.md](docs/ANALYZER_PLAN.md), [MILKDROP_PLAN.md](docs/MILKDROP_PLAN.md),
-[IMPROVEMENTS_PLAN.md](docs/IMPROVEMENTS_PLAN.md), [FRACTALS_PLAN.md](docs/FRACTALS_PLAN.md)
-and [VISUALS_PLAN.md](docs/VISUALS_PLAN.md) (pictures that follow the music better).
+[IMPROVEMENTS_PLAN.md](docs/IMPROVEMENTS_PLAN.md), [FRACTALS_PLAN.md](docs/FRACTALS_PLAN.md),
+[VISUALS_PLAN.md](docs/VISUALS_PLAN.md) (pictures that follow the music better) and
+[FIDELITY_PLAN.md](docs/FIDELITY_PLAN.md) (a sharper, cleaner picture; planned).
 Not done (the optional extras left for later): Spout, MIDI and OSC.
