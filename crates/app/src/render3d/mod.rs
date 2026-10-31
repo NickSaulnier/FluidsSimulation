@@ -5,6 +5,14 @@
 //!
 //! The lines write depth, and the raymarch stops at it: a line in front of the smoke
 //! stays sharp, one behind is seen through it.
+//!
+//! The smoke's shadowing comes from a light volume (`light.wgsl`): a compute pass each
+//! frame marches from every cell of a grid at half the volume's resolution toward the
+//! light, through the smoke and solids, so smoke shadows itself and the solids shadow
+//! it, however far apart. The march's frames are gathered (`history.wgsl`): each frame's
+//! rays start at new depths, and the frame is blended into the ones before, moved with
+//! the camera (through each pixel's visible gas or solid) and clamped to its
+//! neighbourhood, so the grain of the starts averages out.
 
 mod camera;
 
@@ -50,12 +58,16 @@ pub fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Smoke extinction per unit of smoke (the burners' output), 1/m.
 const EXTINCTION: f32 = 20.0;
-/// The shadow probe's: stronger, since two taps can't see everything in the way and
-/// thin smoke should still show its form.
+/// The light volume's: stronger than the view's, so thin smoke still shows its form.
 const SHADOW_EXTINCTION: f32 = 120.0;
-/// March step and shadow probe distance, in cells.
+/// March step, in cells.
 const STEP_CELLS: f32 = 0.75;
-const PROBE_CELLS: f32 = 6.0;
+/// The light volume's cells: this many of the volume's each way.
+const LIGHT_CELLS: u32 = 2;
+/// How much of each frame goes into the gathered march.
+const HISTORY_WEIGHT: f32 = 0.2;
+/// The gathered march's textures' format.
+const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Toward the light: above, to the side and a little to the front.
 const LIGHT: Vec3 = Vec3::new(0.6, 0.8, 0.3);
 const MAX_SHAPES: usize = 32;
@@ -78,6 +90,50 @@ struct MarchUniforms {
     shapes: [[f32; 4]; 2 * MAX_SHAPES],
 }
 
+/// Must match `Light` in light.wgsl (48 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct LightUniforms {
+    size: [f32; 4],
+    light: [f32; 4],
+    cells: [u32; 4],
+}
+
+/// Must match `Resolve` in history.wgsl (96 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ResolveUniforms {
+    prev_view_proj: [[f32; 4]; 4],
+    viewport: [f32; 4],
+    weight: f32,
+    _pad: [f32; 3],
+}
+
+/// The march gathered across frames, at the target's size: this frame's march and
+/// where its visible gas is, and the gathered picture (the latest of two).
+struct Layers {
+    size: [u32; 2],
+    layer: wgpu::TextureView,
+    position: wgpu::TextureView,
+    frames: [wgpu::TextureView; 2],
+    latest: usize,
+}
+
+fn layer_texture(device: &wgpu::Device, label: &str, size: [u32; 2]) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: LAYER_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
+
 pub struct Renderer3d {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
@@ -91,6 +147,20 @@ pub struct Renderer3d {
     depth: Option<(wgpu::TextureView, [u32; 2])>,
     /// Stands in for the volume when the solver has none.
     empty_volume: wgpu::TextureView,
+    light_pipeline: wgpu::ComputePipeline,
+    light_layout: wgpu::BindGroupLayout,
+    light_uniforms: wgpu::Buffer,
+    /// The light volume and its cells.
+    light_volume: Option<(wgpu::TextureView, glam::UVec3)>,
+    resolve_pipeline: wgpu::RenderPipeline,
+    over_pipeline: wgpu::RenderPipeline,
+    history_layout: wgpu::BindGroupLayout,
+    resolve_uniforms: wgpu::Buffer,
+    layers: Option<Layers>,
+    /// The last frame's view and projection and viewport, if there's a gathered march
+    /// to carry on; and the frame count, for the rays' starts.
+    last_view: Option<(Mat4, [f32; 4])>,
+    frame: u32,
 }
 
 impl Renderer3d {
@@ -220,6 +290,16 @@ impl Renderer3d {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let march_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -241,14 +321,8 @@ impl Renderer3d {
                 module: &march_shader,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState { color: over, alpha: wgpu::BlendComponent::OVER }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(FLOW_FORMAT.into()),
-                ],
+                // This frame's march, as it is (gathered and drawn over the target after).
+                targets: &[Some(LAYER_FORMAT.into()), Some(FLOW_FORMAT.into()), Some(LAYER_FORMAT.into())],
             }),
             primitive: Default::default(),
             depth_stencil: None,
@@ -274,6 +348,88 @@ impl Renderer3d {
                 view_formats: &[],
             })
             .create_view(&Default::default());
+        // The light volume.
+        let light_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("light.wgsl"), source: wgpu::ShaderSource::Wgsl(include_str!("light.wgsl").into()) });
+        let compute = wgpu::ShaderStages::COMPUTE;
+        let light_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("light volume"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: compute,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(size_of::<LightUniforms>() as u64) },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: compute,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: compute, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: compute,
+                    ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D3 },
+                    count: None,
+                },
+            ],
+        });
+        let light_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("light volume"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("light volume"), bind_group_layouts: &[Some(&light_layout)], immediate_size: 0 })),
+            module: &light_shader,
+            entry_point: Some("light"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let buffer = |label, size: usize| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: size as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let light_uniforms = buffer("light volume uniforms", size_of::<LightUniforms>());
+
+        // Gathering the march's frames.
+        let history_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("history.wgsl"), source: wgpu::ShaderSource::Wgsl(include_str!("history.wgsl").into()) });
+        let texture_2d = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: fragment,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        };
+        let history_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("march history"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(size_of::<ResolveUniforms>() as u64) },
+                    count: None,
+                },
+                texture_2d(1),
+                texture_2d(2),
+                texture_2d(3),
+                wgpu::BindGroupLayoutEntry { binding: 4, visibility: fragment, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let history_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("march history"), bind_group_layouts: &[Some(&history_layout)], immediate_size: 0 });
+        let fullscreen = |label, entry, target: wgpu::ColorTargetState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&history_pipeline_layout),
+                vertex: wgpu::VertexState { module: &history_shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                fragment: Some(wgpu::FragmentState { module: &history_shader, entry_point: Some(entry), compilation_options: Default::default(), targets: &[Some(target)] }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let resolve_pipeline = fullscreen("march resolve", "fs_resolve", LAYER_FORMAT.into());
+        let over_pipeline = fullscreen(
+            "march over",
+            "fs_over",
+            wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState { color: over, alpha: wgpu::BlendComponent::OVER }), write_mask: wgpu::ColorWrites::ALL },
+        );
+        let resolve_uniforms = buffer("march resolve uniforms", size_of::<ResolveUniforms>());
         Self {
             pipeline,
             uniforms,
@@ -285,7 +441,40 @@ impl Renderer3d {
             sampler,
             depth: None,
             empty_volume,
+            light_pipeline,
+            light_layout,
+            light_uniforms,
+            light_volume: None,
+            resolve_pipeline,
+            over_pipeline,
+            history_layout,
+            resolve_uniforms,
+            layers: None,
+            last_view: None,
+            frame: 0,
         }
+    }
+
+    /// The light volume for `volume` (its cells), made at half its resolution if it
+    /// isn't already.
+    fn light_view(&mut self, device: &wgpu::Device, cells: glam::UVec3) -> (wgpu::TextureView, glam::UVec3) {
+        let light_cells = (cells / LIGHT_CELLS).max(glam::UVec3::ONE);
+        if self.light_volume.as_ref().is_none_or(|(_, c)| *c != light_cells) {
+            let view = device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("light volume"),
+                    size: wgpu::Extent3d { width: light_cells.x, height: light_cells.y, depth_or_array_layers: light_cells.z },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D3,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default());
+            self.light_volume = Some((view, light_cells));
+        }
+        self.light_volume.clone().expect("just made")
     }
 
     fn depth_view(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
@@ -333,9 +522,43 @@ impl Renderer3d {
         let [x, y, w, h] = viewport;
         let view_proj = camera.view_proj(w / h.max(1.0));
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&view_proj));
-        let march = march_uniforms(view_proj, camera.eye(), viewport, scene, volume.as_ref().map(|v| (v.cells, v.fire)), palette);
+        self.frame = self.frame.wrapping_add(1);
+        let mut march = march_uniforms(view_proj, camera.eye(), viewport, scene, volume.as_ref().map(|v| (v.cells, v.fire)), palette);
+        march.counts[2] = self.frame % 64;
         queue.write_buffer(&self.march_uniforms, 0, bytemuck::bytes_of(&march));
         let depth = self.depth_view(device, target_size);
+        // The light volume: how much light reaches each place, through the smoke.
+        let light_volume = volume.as_ref().map(|v| {
+            let (view, cells) = self.light_view(device, v.cells);
+            let uniforms = LightUniforms {
+                size: scene.size.extend(scene.size.y / cells.y as f32).to_array(),
+                light: LIGHT.normalize().extend(SHADOW_EXTINCTION).to_array(),
+                cells: [cells.x, cells.y, cells.z, 0],
+            };
+            queue.write_buffer(&self.light_uniforms, 0, bytemuck::bytes_of(&uniforms));
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("light volume"),
+                layout: &self.light_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.light_uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(v.view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&view) },
+                ],
+            });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("light volume"), timestamp_writes: None });
+            pass.set_pipeline(&self.light_pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(cells.x.div_ceil(4), cells.y.div_ceil(4), cells.z.div_ceil(4));
+            view
+        });
+        // The march's own textures, and whether last frame's gathered march carries on.
+        if self.layers.as_ref().is_none_or(|l| l.size != target_size) {
+            let texture = |label| layer_texture(device, label, target_size);
+            self.layers = Some(Layers { size: target_size, layer: texture("march"), position: texture("march position"), frames: [texture("march history"), texture("march history")], latest: 0 });
+            self.last_view = None;
+        }
+        let carry_on = self.last_view.filter(|(_, v)| *v == viewport && volume.is_some()).map(|(m, _)| m);
         let march_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("march"),
             layout: &self.march_layout,
@@ -351,6 +574,7 @@ impl Renderer3d {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(volume.as_ref().map_or(&self.empty_volume, |v| v.velocity)),
                 },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(light_volume.as_ref().unwrap_or(&self.empty_volume)) },
             ],
         });
         let lines = outline(scene);
@@ -399,28 +623,75 @@ impl Renderer3d {
                 pass.draw(0..*count, 0..1);
             }
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("3d volume"),
-            color_attachments: &[
-                Some(wgpu::RenderPassColorAttachment {
+        let layers = self.layers.as_mut().expect("made above");
+        let attachment = |view, clear| {
+            Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store } })
+        };
+        {
+            // Nothing marched lets all the light through.
+            let clear_layer = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("3d volume"),
+                color_attachments: &[attachment(&layers.layer, clear_layer), attachment(flow, wgpu::Color::TRANSPARENT), attachment(&layers.position, wgpu::Color::TRANSPARENT)],
+                ..Default::default()
+            });
+            pass.set_viewport(x, y, w, h, 0.0, 1.0);
+            pass.set_pipeline(&self.march);
+            pass.set_bind_group(0, &march_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        let resolve = ResolveUniforms {
+            prev_view_proj: carry_on.unwrap_or(view_proj).to_cols_array_2d(),
+            viewport,
+            weight: if carry_on.is_some() { HISTORY_WEIGHT } else { 1.0 },
+            _pad: [0.0; 3],
+        };
+        queue.write_buffer(&self.resolve_uniforms, 0, bytemuck::bytes_of(&resolve));
+        let (old, new) = (layers.latest, 1 - layers.latest);
+        let bind = |history: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("march history"),
+                layout: &self.history_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.resolve_uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&layers.layer) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&layers.position) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(history) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            })
+        };
+        {
+            let group = bind(&layers.frames[old]);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("march resolve"),
+                color_attachments: &[attachment(&layers.frames[new], wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })],
+                ..Default::default()
+            });
+            pass.set_viewport(x, y, w, h, 0.0, 1.0);
+            pass.set_pipeline(&self.resolve_pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        {
+            let group = bind(&layers.frames[new]);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("march over"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                }),
-                Some(wgpu::RenderPassColorAttachment {
-                    view: flow,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-                }),
-            ],
-            ..Default::default()
-        });
-        pass.set_viewport(x, y, w, h, 0.0, 1.0);
-        pass.set_pipeline(&self.march);
-        pass.set_bind_group(0, &march_group, &[]);
-        pass.draw(0..3, 0..1);
+                })],
+                ..Default::default()
+            });
+            pass.set_viewport(x, y, w, h, 0.0, 1.0);
+            pass.set_pipeline(&self.over_pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        layers.latest = new;
+        self.last_view = Some((view_proj, viewport));
     }
 }
 
@@ -455,8 +726,8 @@ fn march_uniforms(view_proj: Mat4, eye: Vec3, viewport: [f32; 4], scene: &Scene3
         size: scene.size.extend(STEP_CELLS * cell).to_array(),
         viewport,
         lit: lit.extend(EXTINCTION).to_array(),
-        shade: shade.extend(PROBE_CELLS * cell).to_array(),
-        light: LIGHT.normalize().extend(SHADOW_EXTINCTION).to_array(),
+        shade: shade.extend(0.0).to_array(),
+        light: LIGHT.normalize().extend(0.0).to_array(),
         counts: [solids.len() as u32, u32::from(cells.is_some()), 0, 0],
         shapes,
     }
@@ -520,6 +791,23 @@ fn circle(centre: Vec3, u: Vec3, w: Vec3, colour: [f32; 4], line: &mut impl FnMu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_uniforms_match_the_shaders() {
+        assert_eq!((size_of::<LightUniforms>(), size_of::<ResolveUniforms>()), (48, 96));
+    }
+
+    /// The raymarch's, the light volume's and the gathering's shaders validate.
+    #[test]
+    fn the_shaders_validate() {
+        use wgpu::naga;
+        for (name, source) in [("march.wgsl", include_str!("march.wgsl")), ("light.wgsl", include_str!("light.wgsl")), ("history.wgsl", include_str!("history.wgsl"))] {
+            let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+        }
+    }
 
     /// No box: only the floor grid, round the middle and fading out, and the burners.
     #[test]

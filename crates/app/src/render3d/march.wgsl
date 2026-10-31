@@ -1,8 +1,11 @@
 // The gas volume, raymarched front to back over the lines already drawn, with the
 // scene's solids shaded where the rays hit them. Smoke absorbs and scatters light; hot
-// gas glows (fire). Output is premultiplied: colour added over the target, alpha the
-// light that still comes through from behind. A second output is the screen-space flow
-// for the feedback layer: the visible gas's velocity, as uv per second.
+// gas glows (fire); the light reaching the smoke comes from the light volume (light.wgsl),
+// so smoke shadows itself. Output is premultiplied: colour, alpha the light that still
+// comes through from behind (gathered across frames and drawn over the target, see
+// history.wgsl). A second output is the screen-space flow for the feedback layer: the
+// visible gas's velocity, as uv per second; a third where the visible gas (or solid) is,
+// for moving the gathered frames with the camera.
 
 struct March {
     inv_view_proj: mat4x4f,
@@ -15,11 +18,12 @@ struct March {
     viewport: vec4f,
     // rgb: smoke facing the light (linear); w: extinction per unit smoke (1/m).
     lit: vec4f,
-    // rgb: smoke in its own shadow; w: how far the shadow probe looks (m).
+    // rgb: smoke in its own shadow; w unused.
     shade: vec4f,
-    // xyz: toward the light; w: extinction per unit smoke for the shadow probe (1/m).
+    // xyz: toward the light; w unused (the light volume has the shadowing).
     light: vec4f,
-    // x: solid shapes in `shapes`; y: 1 if there's a volume to march.
+    // x: solid shapes in `shapes`; y: 1 if there's a volume to march; z: the frame (the
+    // rays' start depths move each frame, for the frames gathered to average).
     counts: vec4u,
     // Two per shape: a sphere is (centre, radius) then unused, a box (min, -1) then
     // (max, 0).
@@ -32,10 +36,13 @@ struct March {
 @group(0) @binding(3) var depth: texture_depth_2d;
 // The gas velocity (m/s), on the volume's grid.
 @group(0) @binding(4) var velocity: texture_3d<f32>;
+// How much light reaches each place (light.wgsl), on a coarser grid over the domain.
+@group(0) @binding(5) var light_volume: texture_3d<f32>;
 
 struct Out {
     @location(0) colour: vec4f,
     @location(1) flow: vec4f,
+    @location(2) position: vec4f,
 };
 
 const SOLID: vec3f = vec3f(0.42, 0.44, 0.48);
@@ -106,20 +113,18 @@ fn box_normal(o: vec3f, d: vec3f, lo: vec3f, hi: vec3f, t: f32) -> vec3f {
     return vec3f(0.0, 0.0, sign(q.z));
 }
 
-/// A hash of the pixel, so neighbouring rays start at different depths (no banding).
+/// A hash of the pixel, so neighbouring rays start at different depths (no banding),
+/// and of the frame, so each pixel's start moves and the gathered frames average the
+/// grain away.
 fn jitter(px: vec2f) -> f32 {
-    return fract(52.9829189 * fract(dot(px, vec2f(0.06711056, 0.00583715))));
+    let q = px + 5.588238 * f32(m.counts.z);
+    return fract(52.9829189 * fract(dot(q, vec2f(0.06711056, 0.00583715))));
 }
 
 fn smoke_at(p: vec3f) -> f32 {
     return textureSampleLevel(volume, linear, p / m.size.xyz, 0.0).r;
 }
 
-/// What blocks the light at `p`: smoke, and solids (as very thick smoke).
-fn occluder_at(p: vec3f) -> f32 {
-    let v = textureSampleLevel(volume, linear, p / m.size.xyz, 0.0);
-    return v.r + 20.0 * v.b;
-}
 
 @fragment
 fn fs(@builtin(position) pos: vec4f) -> Out {
@@ -170,7 +175,6 @@ fn fs(@builtin(position) pos: vec4f) -> Out {
     if m.counts.y == 1u && span.x < span.y {
         let step = m.size.w;
         let sigma_k = m.lit.w;
-        let probe = m.shade.w;
         let stop = min(span.y, end);
         var t = max(span.x, 0.0) + step * jitter(pos.xy);
         loop {
@@ -190,10 +194,8 @@ fn fs(@builtin(position) pos: vec4f) -> Out {
             }
             if s > 1e-4 {
                 let alpha = 1.0 - exp(-s * sigma_k * step);
-                // Smoke and solids between here and the light, from two taps: a cheap
-                // stand-in for real shadowing.
-                let depth_to_light = probe * (occluder_at(p + m.light.xyz * probe) + 2.0 * occluder_at(p + m.light.xyz * 3.0 * probe));
-                let lit = exp(-m.light.w * depth_to_light);
+                // The light that gets here past the smoke and solids toward it.
+                let lit = textureSampleLevel(light_volume, linear, p / m.size.xyz, 0.0).r;
                 colour += through * alpha * mix(m.shade.rgb, m.lit.rgb, lit);
                 shows += through * alpha;
                 through *= 1.0 - alpha;
@@ -206,12 +208,19 @@ fn fs(@builtin(position) pos: vec4f) -> Out {
             t += step;
         }
     }
+    var out: Out;
+    out.position = vec4f(0.0);
+    if seen > 1e-4 {
+        out.position = vec4f(seen_at / seen, min(seen, 1.0));
+    }
     if any(normal != vec3f(0.0)) {
         let diffuse = max(dot(normal, m.light.xyz), 0.0);
         colour += through * SOLID * (0.25 + 0.75 * diffuse);
+        if seen <= 1e-4 {
+            out.position = vec4f(eye + dir * end, 1.0);
+        }
         through = 0.0;
     }
-    var out: Out;
     // Flames are brighter than white: the composite blooms them and rolls them off.
     out.colour = vec4f(colour + glow, through);
     out.flow = vec4f(0.0);

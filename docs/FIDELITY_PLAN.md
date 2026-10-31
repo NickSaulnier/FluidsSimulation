@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **phases A to F done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
+Status: **phases A to G done** (2026-10-31); the optional H and I left; decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -401,3 +401,37 @@ fidelity reel audited, against the run before, and its frame time measured.
     particles as discs, not the liquid surface.
   - **Checked:** 250 app tests (new: the liquid's and the field overlay's shaders
     validate) and clippy pass; the liquid looks and the probes audited (no errors).
+- **Phase G, 3D volumes (done):** `render3d/mod.rs`, `render3d/light.wgsl`,
+  `render3d/history.wgsl`, `render3d/march.wgsl`.
+  - **The light volume:** a compute pass each frame, on a grid at half the volume's
+    resolution: from each cell, a march toward the light (a light cell a step, up to 160)
+    through the smoke (faded at the open sides, as the march draws it) and the solids (as
+    very thick smoke), its transmittance stored (`Rgba16Float`, filterable). The raymarch
+    reads it for each smoke sample's light in place of the two taps a short way toward
+    the light. Extinction 120 per unit smoke (60 tried first: the cloud's underside
+    came out barely darker than its top).
+  - **What it shows:** solids shadow the smoke however far below them (in the chimney,
+    the column under the plate is now in its shadow, a deep blue, where the probe lit
+    it bright); a cloud is lit on top and greyer beneath; a smoke column has rounded lit
+    and shaded sides; the streaky texture the probe gave a column is gone.
+  - **The frames gathered:** the march writes its own layer (colour, the light let
+    through), the flow as before, and where each pixel's visible gas is (its seen
+    position, or the solid it hits); the rays' start depths now move each frame. The
+    resolve blends 20 % of the frame into the gathered march, moved through the last
+    frame's camera to where each pixel's gas was (the orbit is known), clamped to the
+    3 × 3 neighbourhood's range; a pixel that moved off the canvas, or was behind the
+    last camera, takes this frame alone. The result is drawn over the target with the
+    same blend the march used. A new size, viewport or no volume starts afresh.
+  - **Measured** (two probes without feedback, Phase F's renderer against this one):
+    the frame rates as before (campfire 177 → 178, chimney 162 → 175); on the reel,
+    Smoke dance's sharpness 0.21 → 0.14 (the starts' grain averaged out), Bonfire 3D's
+    0.09 → 0.08; shimmer still nil; no ghosting in the orbiting audit frames.
+  - **Left out:** the flame lighting the smoke around it (it would need the flames'
+    light in a volume of its own), and the check of the flame's colour against a
+    blackbody ramp (it already follows one, and the tone curve of phase B keeps its hue).
+  - **Found on the way:** a `vec3f` pad in a WGSL uniform aligns to 16 bytes (the
+    struct came out 112 bytes against the Rust side's 96, a pipeline validation error);
+    three `f32` pads instead, and tests that the sizes match and the shaders validate.
+  - **Checked:** 252 app tests (new: the march's, light volume's and gathering's
+    shaders validate, and their uniforms' sizes match) and clippy pass; the probes and
+    the reel audited (no errors).
