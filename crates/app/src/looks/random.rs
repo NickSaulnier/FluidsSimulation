@@ -31,25 +31,26 @@ type Range = (&'static str, f32, f32, bool);
 
 /// The physical parameters a random look sets, by solver (each inside its control's
 /// range; a test checks).
+/// Both 2D fire solvers' (they share the fire's parameters).
+const FIRE_2D: &[Range] = &[
+    ("buoyancy", -0.2, 0.2, false),
+    ("vorticity", 0.1, 0.8, false),
+    ("dissipation", 0.05, 0.3, false),
+    ("burn_rate", 1.5, 6.0, true),
+    ("heat", 3.0, 12.0, true),
+    ("cooling", 1.2, 4.0, true),
+    ("soot", 0.1, 0.8, false),
+    ("rise", 0.06, 0.25, false),
+    ("burner", 0.6, 1.8, true),
+];
+
 pub const PHYSICS: &[(&str, &[Range])] = &[
     ("FLIP", &[("flip_ratio", 0.7, 0.99, false)]),
     ("PBF", &[("viscosity", 0.0, 0.05, false), ("tensile_k", 0.005, 0.03, false)]),
     ("Stable fluids (dye)", &[("buoyancy", -0.4, 0.5, false), ("vorticity", 0.05, 0.9, false), ("dissipation", 0.0, 0.1, false)]),
     ("Stable fluids (GPU)", &[("buoyancy", -0.4, 0.5, false), ("vorticity", 0.05, 0.9, false), ("dissipation", 0.0, 0.1, false)]),
-    (
-        "Smoke & fire",
-        &[
-            ("buoyancy", -0.2, 0.2, false),
-            ("vorticity", 0.1, 0.8, false),
-            ("dissipation", 0.05, 0.3, false),
-            ("burn_rate", 1.5, 6.0, true),
-            ("heat", 3.0, 12.0, true),
-            ("cooling", 1.2, 4.0, true),
-            ("soot", 0.1, 0.8, false),
-            ("rise", 0.06, 0.25, false),
-            ("burner", 0.6, 1.8, true),
-        ],
-    ),
+    ("Smoke & fire", FIRE_2D),
+    ("Smoke & fire (GPU)", FIRE_2D),
     ("Lattice Boltzmann (dye)", &[("tau", 0.51, 0.56, false), ("buoyancy", -0.3, 0.6, false)]),
     ("Shallow water", &[("depth", 0.015, 0.06, true), ("damping", 0.15, 0.8, false)]),
     ("MPM jelly", &[("stiffness", 15.0, 60.0, true), ("poisson", 0.15, 0.4, false)]),
@@ -98,7 +99,8 @@ const FLUIDS: &[(&str, &[&str], f32)] = &[
     ("PBF", &["Dam break", "Double dam break", "Tank with obstacle"], 1.0),
     ("Stable fluids (dye)", &["Dam break", "Double dam break", "Tank with obstacle", "Five bands", "Tempo vortex", "Two jets"], 2.0),
     ("Stable fluids (GPU)", &["Dam break", "Double dam break", "Tank with obstacle", "Wind tunnel", "Five bands", "Tempo vortex", "Two jets"], 1.5),
-    ("Smoke & fire", &["Campfire", "Five bands"], 1.5),
+    // The GPU's, at three times the resolution: the CPU's stays for simulating by hand.
+    ("Smoke & fire (GPU)", &["Campfire", "Five bands"], 1.5),
     ("Lattice Boltzmann (dye)", &["Wind tunnel"], 1.0),
     ("Shallow water", &["Pond", "Breakwater", "Dam break", "Tank with obstacle", "Wind tunnel", "Rain"], 1.5),
     ("Fire (3D GPU)", &["Campfire 3D", "Torch", "Twin burners", "Chimney"], 1.5),
@@ -121,7 +123,7 @@ fn kind(solver: &str) -> Kind {
     match solver {
         "" => Kind::None,
         "FLIP" | "PBF" | "PBF (GPU)" | "MPM jelly" | "MPM snow" | "MPM sand" => Kind::Particles,
-        "Smoke & fire" => Kind::Fire2d,
+        "Smoke & fire" | "Smoke & fire (GPU)" => Kind::Fire2d,
         "Fire (3D GPU)" => Kind::Fire3d,
         "Smoke (3D GPU)" => Kind::Smoke3d,
         "Shallow water" => Kind::Water,

@@ -13,10 +13,18 @@
 //! The pressure solve is plain red-black SOR, warm-started from the last substep: at
 //! this resolution it doesn't fully converge, which leaves the flow slightly
 //! compressible but never unstable (the CPU solver's multigrid has no GPU port yet).
+//!
+//! Smoke & fire (GPU) is the same solver in fire mode (`GpuStable::smoke_and_fire`), as
+//! the CPU's Smoke & fire is its stable solver's (`sim::solvers::fire`): the dye is the
+//! smoke, and fuel and temperature go with it, carried, burned, cooled and diffused on
+//! the GPU. A preset's fluid blocks are solid fuel, lit along their bottom; emitters are
+//! burners. The fire's parameters are the CPU solver's (`FireParams`), and so are their
+//! names.
 
 use crate::GpuContext;
 use bytemuck::{Pod, Zeroable};
 use sim::grid::Grid2;
+use sim::solvers::fire::{self, FireParams};
 use sim::solvers::{opens_border, resample_solids};
 use sim::{FieldInfo, FieldKind, FieldLayout, FloatSpec, Init, IntSpec, Metric, ParamVisitor, ParticleView, Scene, Solver, Stats, StepInput, Vec2};
 use std::cell::Cell;
@@ -103,13 +111,36 @@ const FIELDS: &[FieldInfo] = &[
     FieldInfo { key: "dye", label: "Dye", unit: "", kind: FieldKind::Concentration },
     FieldInfo { key: "speed", label: "Speed", unit: "m/s", kind: FieldKind::NonNegative },
 ];
+/// Fire mode's: the fire (flame, smoke and fuel per cell, as the CPU's), the smoke
+/// alone, the speed.
+const FIRE_FIELDS: &[FieldInfo] = &[
+    FieldInfo { key: "fire", label: "Fire", unit: "", kind: FieldKind::Fire },
+    FieldInfo { key: "smoke", label: "Smoke", unit: "", kind: FieldKind::Concentration },
+    FieldInfo { key: "speed", label: "Speed", unit: "m/s", kind: FieldKind::NonNegative },
+];
+const SMOKE_HEAVINESS: FloatSpec = FloatSpec {
+    key: "buoyancy",
+    label: "Smoke heaviness",
+    range: -1.0..=1.0,
+    log: false,
+    restart: false,
+    help: "Positive: cold smoke sinks. Negative: it keeps rising after the heat has gone.",
+};
+const SMOKE_FADE: FloatSpec = FloatSpec {
+    key: "dissipation",
+    label: "Smoke fade (1/s)",
+    range: 0.0..=1.0,
+    log: false,
+    restart: false,
+    help: "Fraction of the smoke that thins away per second.",
+};
 
 /// Cell kinds, as stable.wgsl has them.
 const FLUID: u32 = 0;
 const SOLID: u32 = 1;
 const DRAIN: u32 = 2;
 
-/// Must match `Params` in stable.wgsl (64 bytes).
+/// Must match `Params` in stable.wgsl (128 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Params {
@@ -125,6 +156,21 @@ struct Params {
     omega: f32,
     n_brushes: u32,
     _pad: [u32; 3],
+    fire: u32,
+    step: u32,
+    _pad2: [u32; 2],
+    ignition: f32,
+    burn_rate: f32,
+    heat: f32,
+    cooling: f32,
+    soot: f32,
+    rise: f32,
+    diffusion: f32,
+    burner: f32,
+    solid_burn: f32,
+    embers_out: f32,
+    flicker: f32,
+    _pad3: f32,
 }
 
 struct Pipelines {
@@ -143,6 +189,10 @@ struct Pipelines {
     advect_forward: wgpu::ComputePipeline,
     advect_correct: wgpu::ComputePipeline,
     commit_dye: wgpu::ComputePipeline,
+    react: wgpu::ComputePipeline,
+    diffuse: wgpu::ComputePipeline,
+    commit_heat: wgpu::ComputePipeline,
+    compact_fire: wgpu::ComputePipeline,
 }
 
 /// The grids on the GPU, sized for `nx` × `ny` cells.
@@ -153,6 +203,8 @@ struct Buffers {
     dyes: wgpu::Buffer,
     flags: wgpu::Buffer,
     geom: wgpu::Buffer,
+    /// Fire mode's fuel and temperature (a stand-in otherwise).
+    fires: wgpu::Buffer,
     max_speed: wgpu::Buffer,
     /// Mappable: the dye then the fastest speed; the velocity.
     dye_readback: wgpu::Buffer,
@@ -162,6 +214,8 @@ struct Buffers {
 
 pub struct GpuStable {
     pub params: GpuStableParams,
+    /// Fire mode, with the fire's parameters.
+    pub fire: Option<FireParams>,
     gpu: GpuContext,
     layout: wgpu::BindGroupLayout,
     pipelines: Pipelines,
@@ -187,6 +241,18 @@ pub fn make() -> Box<dyn Solver> {
         Err(e) => {
             log::warn!("GPU stable fluids unavailable ({e:#}); falling back to the CPU solver");
             Box::new(sim::solvers::StableFluids::default())
+        }
+    }
+}
+
+/// Registry constructor: GPU smoke and fire if an adapter is available, otherwise the
+/// CPU's.
+pub fn make_fire() -> Box<dyn Solver> {
+    match GpuContext::new() {
+        Ok(gpu) => Box::new(GpuStable::smoke_and_fire(gpu)),
+        Err(e) => {
+            log::warn!("GPU smoke and fire unavailable ({e:#}); falling back to the CPU solver");
+            Box::new(sim::solvers::StableFluids::smoke_and_fire())
         }
     }
 }
@@ -217,6 +283,7 @@ impl GpuStable {
         entries.extend((1..=5).map(|b| storage(b, false)));
         entries.push(storage(6, true));
         entries.push(storage(7, false));
+        entries.push(storage(8, false));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("stable"), entries: &entries });
         let pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("stable"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
@@ -246,6 +313,10 @@ impl GpuStable {
             advect_forward: pipeline("advect_forward", &[]),
             advect_correct: pipeline("advect_correct", &[]),
             commit_dye: pipeline("commit_dye", &[]),
+            react: pipeline("react", &[]),
+            diffuse: pipeline("diffuse", &[]),
+            commit_heat: pipeline("commit_heat", &[]),
+            compact_fire: pipeline("compact_fire", &[]),
         };
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stable params"),
@@ -255,6 +326,7 @@ impl GpuStable {
         });
         Self {
             params,
+            fire: None,
             gpu,
             layout,
             pipelines,
@@ -269,6 +341,19 @@ impl GpuStable {
             steps: 0,
             stats: Stats::default(),
         }
+    }
+
+    /// Fire mode, with the CPU's smoke-and-fire settings (livelier swirls, smoke that
+    /// thins out) at this solver's resolution; and twice the travel a substep and half
+    /// the pressure sweeps (hot gas runs at several metres a second, which at this
+    /// resolution took ten substeps a frame, more than a frame's time; advection is
+    /// stable at any step; the flame and smoke came out the same with 80 sweeps as with
+    /// 300, and the tests pass at 40).
+    pub fn smoke_and_fire(gpu: GpuContext) -> Self {
+        let params = GpuStableParams { buoyancy: 0.05, dissipation: 0.15, vorticity: 0.35, cfl: 6.0, pressure_iters: 40, ..GpuStableParams::default() };
+        let mut s = Self::new(gpu, params);
+        s.fire = Some(FireParams::default());
+        s
     }
 
     /// Velocity floats: u then v.
@@ -291,8 +376,10 @@ impl GpuStable {
         let flags = buffer("flags", cells * 8, rw);
         let geom = buffer("geom", GEOM_CAPACITY * 16, rw);
         let max_speed = buffer("max_speed", 4, rw);
+        let fires = buffer("fires", if self.fire.is_some() { cells * 32 } else { 16 }, rw);
         let readable = wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST;
-        let dye_readback = buffer("dye readback", cells * 4 + 4, readable);
+        // The dye, and in fire mode the packed flame and fuel; the fastest speed.
+        let dye_readback = buffer("dye readback", cells * 8 + 4, readable);
         let vel_readback = buffer("vel readback", vel_bytes, readable);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stable"),
@@ -306,9 +393,10 @@ impl GpuStable {
                 wgpu::BindGroupEntry { binding: 5, resource: flags.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: geom.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: max_speed.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: fires.as_entire_binding() },
             ],
         });
-        self.buffers = Some(Buffers { vel, vel_tmp, dyes, flags, geom, max_speed, dye_readback, vel_readback, bind_group });
+        self.buffers = Some(Buffers { vel, vel_tmp, dyes, flags, geom, fires, max_speed, dye_readback, vel_readback, bind_group });
     }
 
     /// The scene's walls (the border always, but where a drain opens it) and drains, by
@@ -382,17 +470,29 @@ impl GpuStable {
         data
     }
 
-    /// The dye, per cell (and the fastest speed of the last substep, kept for its size).
+    /// The dye (in fire mode, the smoke), per cell (and the fastest speed of the last
+    /// substep, kept for its size).
     fn read_dye(&self) -> Vec<f32> {
+        self.read_compact(1).0
+    }
+
+    /// The compact copies `per_cell` long (the dye; in fire mode also the packed flame
+    /// and fuel): the dye, and the flame and fuel unpacked (empty for 1).
+    fn read_compact(&self, per_cell: usize) -> (Vec<f32>, Vec<[f32; 2]>) {
         let b = self.buffers.as_ref().expect("buffers");
         let cells = self.nx * self.ny;
-        let data = self.read_back(&b.vel_tmp, &b.dye_readback, (cells * 4) as u64, Some((&b.max_speed, 4)));
+        let data = self.read_back(&b.vel_tmp, &b.dye_readback, (per_cell * cells * 4) as u64, Some((&b.max_speed, 4)));
         let floats: &[f32] = bytemuck::cast_slice(&data);
-        let speed = floats[cells];
+        let speed = floats[per_cell * cells];
         if speed.is_finite() {
             self.speed.set(speed);
         }
-        floats[..cells].to_vec()
+        let packed = if per_cell > 1 {
+            floats[cells..2 * cells].iter().map(|f| { let bits = f.to_bits(); [half(bits & 0xffff), half(bits >> 16)] }).collect()
+        } else {
+            Vec::new()
+        };
+        (floats[..cells].to_vec(), packed)
     }
 
     /// The velocity at cell centres (zero in walls).
@@ -424,9 +524,33 @@ impl GpuStable {
     }
 }
 
+/// A half-precision float's bits as an f32 (WGSL's `pack2x16float`, unpacked).
+fn half(bits: u32) -> f32 {
+    let (sign, exponent, mantissa) = ((bits >> 15) & 1, (bits >> 10) & 0x1f, bits & 0x3ff);
+    let magnitude = match exponent {
+        0 => mantissa as f32 * 2f32.powi(-24),
+        0x1f => if mantissa == 0 { f32::INFINITY } else { f32::NAN },
+        e => (1.0 + mantissa as f32 / 1024.0) * 2f32.powi(e as i32 - 15),
+    };
+    if sign == 1 { -magnitude } else { magnitude }
+}
+
+/// A value as a half's bits (for the reset's compact copy; WGSL packs them on the GPU).
+fn half_bits(v: f32) -> u32 {
+    if v <= 0.0 {
+        return 0;
+    }
+    let bits = v.to_bits();
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    if exponent <= 0 {
+        return 0;
+    }
+    ((exponent.min(30) as u32) << 10) | ((bits >> 13) & 0x3ff)
+}
+
 impl Solver for GpuStable {
     fn name(&self) -> &'static str {
-        "Stable fluids (GPU)"
+        if self.fire.is_some() { "Smoke & fire (GPU)" } else { "Stable fluids (GPU)" }
     }
 
     fn reset(&mut self, scene: &Scene, init: Init<'_>) {
@@ -459,11 +583,30 @@ impl Solver for GpuStable {
                 }
             }
         }
+        // Fire mode: what would have been dye is solid fuel, lit by a spark along its
+        // bottom (as the CPU's); there's no smoke yet.
+        let mut fires = Vec::new();
+        if let Some(fire) = &self.fire {
+            let floor = scene.solid.interior().min.y;
+            fires = vec![[0.0f32; 4]; 2 * nx * ny];
+            for (k, solid) in dye.iter_mut().enumerate() {
+                let y = ((k / nx) as f32 + 0.5) * h;
+                let lit = y < floor + 3.0 * h && *solid > 0.1;
+                fires[2 * k] = [0.0, if lit { fire.burner } else { 0.0 }, *solid, 0.0];
+                *solid = 0.0;
+            }
+        }
         // The dye into place, and its compact copy, so it reads back before any step.
         let packed: Vec<[f32; 4]> = dye.iter().map(|&d| [d, d, d, 0.0]).collect();
         let b = self.buffers.as_ref().expect("buffers");
         self.gpu.queue.write_buffer(&b.dyes, 0, bytemuck::cast_slice(&packed));
         self.gpu.queue.write_buffer(&b.vel_tmp, 0, bytemuck::cast_slice(&dye));
+        if !fires.is_empty() {
+            self.gpu.queue.write_buffer(&b.fires, 0, bytemuck::cast_slice(&fires));
+            // The flame and fuel's compact copy: none lit to draw yet, the fuel in place.
+            let fuel: Vec<u32> = fires.chunks(2).map(|f| half_bits(f[0][2].min(1.0)) << 16).collect();
+            self.gpu.queue.write_buffer(&b.vel_tmp, (nx * ny * 4) as u64, bytemuck::cast_slice(&fuel));
+        }
         self.speed.set(0.0);
         self.steps = 0;
         self.stats = Stats::default();
@@ -478,6 +621,7 @@ impl Solver for GpuStable {
         let t0 = Instant::now();
         self.update_base_flags(scene);
         let (n_emitters, n_brushes) = self.upload_geometry(scene, input);
+        let fire = self.fire.clone().unwrap_or_default();
         let params = Params {
             n: [self.nx as u32, self.ny as u32],
             nu: ((self.nx + 1) * self.ny) as u32,
@@ -491,6 +635,21 @@ impl Solver for GpuStable {
             omega: self.params.over_relax,
             n_brushes,
             _pad: [0; 3],
+            fire: u32::from(self.fire.is_some()),
+            step: self.steps as u32,
+            _pad2: [0; 2],
+            ignition: fire.ignition,
+            burn_rate: fire.burn_rate,
+            heat: fire.heat,
+            cooling: fire.cooling,
+            soot: fire.soot,
+            rise: fire.rise,
+            diffusion: fire.diffusion,
+            burner: fire.burner,
+            solid_burn: fire::SOLID_BURN,
+            embers_out: fire::EMBERS_OUT,
+            flicker: fire::FLICKER,
+            _pad3: 0.0,
         };
         let queue = &self.gpu.queue;
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&params));
@@ -531,6 +690,14 @@ impl Solver for GpuStable {
             run(&p.advect_forward);
             run(&p.advect_correct);
             run(&p.commit_dye);
+            if self.fire.is_some() {
+                run(&p.react);
+                if fire.diffusion > 0.0 {
+                    run(&p.diffuse);
+                    run(&p.commit_heat);
+                }
+                run(&p.compact_fire);
+            }
         }
         queue.submit([encoder.finish()]);
         self.steps += 1;
@@ -540,12 +707,26 @@ impl Solver for GpuStable {
 
     fn visit_params(&mut self, v: &mut dyn ParamVisitor) {
         let p = &mut self.params;
-        v.section("Dye");
-        v.float(&BUOYANCY, &mut p.buoyancy);
-        v.float(&DISSIPATION, &mut p.dissipation);
-        v.float(&VORTICITY, &mut p.vorticity);
+        match &mut self.fire {
+            Some(fire) => {
+                fire.visit(v);
+                v.section("Smoke");
+                v.float(&SMOKE_HEAVINESS, &mut p.buoyancy);
+                v.float(&SMOKE_FADE, &mut p.dissipation);
+                v.float(&VORTICITY, &mut p.vorticity);
+            }
+            None => {
+                v.section("Dye");
+                v.float(&BUOYANCY, &mut p.buoyancy);
+                v.float(&DISSIPATION, &mut p.dissipation);
+                v.float(&VORTICITY, &mut p.vorticity);
+            }
+        }
         v.section("Resolution");
         v.int(&CELLS_Y, &mut p.cells_y);
+        if let Some(fire) = &mut self.fire {
+            fire.visit_advanced(v);
+        }
         v.advanced_section("Solver");
         v.int(&PRESSURE_ITERS, &mut p.pressure_iters);
         v.float(&OVER_RELAX, &mut p.over_relax);
@@ -557,16 +738,25 @@ impl Solver for GpuStable {
     }
 
     fn fields(&self) -> &'static [FieldInfo] {
-        FIELDS
+        if self.fire.is_some() { FIRE_FIELDS } else { FIELDS }
     }
 
     fn fill_field(&self, index: usize, out: &mut Vec<f32>) -> Option<FieldLayout> {
-        let info = FIELDS.get(index)?;
+        let info = self.fields().get(index)?;
         self.buffers.as_ref()?;
         let layout = FieldLayout { nx: self.nx, ny: self.ny, origin: Vec2::ZERO, cell: self.h };
         out.clear();
+        if info.kind == FieldKind::Fire {
+            // Three values per cell: flame brightness, smoke, fuel (NaN in walls).
+            let (smoke, packed) = self.read_compact(2);
+            out.reserve(3 * smoke.len());
+            for ((s, [flame, fuel]), &flag) in smoke.iter().zip(&packed).zip(&self.base_flags) {
+                out.extend(if flag == SOLID { [f32::NAN; 3] } else { [*flame, *s, *fuel] });
+            }
+            return Some(layout);
+        }
         match info.key {
-            "dye" => out.extend(self.read_dye()),
+            "dye" | "smoke" => out.extend(self.read_dye()),
             _ => out.extend(self.read_velocity().iter().map(|v| v.length())),
         }
         for (v, &flag) in out.iter_mut().zip(&self.base_flags) {
@@ -673,6 +863,91 @@ mod tests {
         run(&mut s, &scene, &StepInput::default(), 3.0);
         let (_, later) = centroid(&s);
         assert!(later < 1.2 * after, "dye piles up: {after} -> {later}");
+    }
+
+    fn fire_solver(cells_y: u32) -> Option<GpuStable> {
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping: {e:#}");
+                return None;
+            }
+        };
+        let mut s = GpuStable::smoke_and_fire(gpu);
+        s.params.cells_y = cells_y;
+        Some(s)
+    }
+
+    /// The fire field: flame, smoke and fuel per cell.
+    fn fire_field(s: &GpuStable) -> Vec<[f32; 3]> {
+        let mut out = Vec::new();
+        s.fill_field(0, &mut out).expect("a fire field");
+        out.chunks(3).map(|c| [c[0], c[1], c[2]]).collect()
+    }
+
+    fn weighted_centroid(s: &GpuStable, values: &[f32]) -> Vec2 {
+        let (mut sum, mut total) = (Vec2::ZERO, 0.0);
+        for (k, v) in values.iter().enumerate().filter(|(_, v)| v.is_finite()) {
+            sum += (Vec2::new((k % s.nx) as f32, (k / s.nx) as f32) + 0.5) * s.h * *v;
+            total += v;
+        }
+        sum / total.max(1e-9)
+    }
+
+    /// As the CPU solver's: a block of solid fuel lit along its bottom burns most of
+    /// the way through, and its smoke rises above it.
+    #[test]
+    fn burning_fuel_is_consumed_and_its_smoke_rises() {
+        let Some(mut s) = fire_solver(96) else { return };
+        let mut scene = Scene::empty_box(Vec2::new(2.0, 1.0), 128);
+        scene.fluid_blocks.push(sim::Rect::new(Vec2::new(0.8, 0.0), Vec2::new(1.2, 0.25)));
+        scene.gravity = Vec2::new(0.0, -9.81);
+        s.reset(&scene, Init::FromScene);
+        let fuel = |s: &GpuStable| fire_field(s).iter().filter(|c| c[2].is_finite()).map(|c| c[2]).sum::<f32>();
+        let start = fire_field(&s);
+        let (fuel0, fuel_at) = (fuel(&s), weighted_centroid(&s, &start.iter().map(|c| c[2]).collect::<Vec<_>>()));
+        run(&mut s, &scene, &StepInput::default(), 4.0);
+        let end = fire_field(&s);
+        let smoke: Vec<f32> = end.iter().map(|c| c[1]).collect();
+        let smoke_at = weighted_centroid(&s, &smoke);
+        assert!(fuel(&s) < 0.5 * fuel0, "fuel {fuel0} -> {}", fuel(&s));
+        assert!(smoke.iter().filter(|v| v.is_finite()).sum::<f32>() > 1.0, "no smoke");
+        assert!(smoke_at.y > fuel_at.y + 0.15, "smoke at {smoke_at}, fuel started at {fuel_at}");
+        assert!(end.iter().flatten().all(|v| v.is_nan() || (-1e-3..=1.0 + 1e-3).contains(v)));
+    }
+
+    /// No fuel, no fire: an empty box stays clear.
+    #[test]
+    fn nothing_burns_without_fuel() {
+        let Some(mut s) = fire_solver(64) else { return };
+        let scene = Scene::empty_box(Vec2::new(2.0, 1.0), 128);
+        s.reset(&scene, Init::FromScene);
+        run(&mut s, &scene, &StepInput::default(), 1.0);
+        assert!(fire_field(&s).iter().all(|c| c.iter().all(|v| v.is_nan() || *v == 0.0)));
+    }
+
+    /// The campfire's burner keeps a flame going, and its smoke rises toward the vent.
+    #[test]
+    fn the_campfire_keeps_burning() {
+        let Some(mut s) = fire_solver(96) else { return };
+        let scene = presets::campfire();
+        s.reset(&scene, Init::FromScene);
+        run(&mut s, &scene, &StepInput::default(), 3.0);
+        let field = fire_field(&s);
+        let flame = field.iter().filter(|c| c[0].is_finite()).map(|c| c[0]).fold(0.0, f32::max);
+        let smoke: Vec<f32> = field.iter().map(|c| c[1]).collect();
+        assert!(flame > 0.5, "the brightest flame {flame}");
+        assert!(smoke.iter().filter(|v| v.is_finite()).sum::<f32>() > 1.0, "no smoke");
+        assert!(weighted_centroid(&s, &smoke).y > 0.3, "smoke at {}", weighted_centroid(&s, &smoke));
+        assert_eq!(s.name(), "Smoke & fire (GPU)");
+    }
+
+    /// A half's bits read back as the value (WGSL's packing, unpacked here).
+    #[test]
+    fn halves_round_trip() {
+        for v in [0.0f32, 0.25, 0.5, 0.999, 1.0] {
+            assert!((half(half_bits(v)) - v).abs() < 1e-3, "{v} -> {}", half(half_bits(v)));
+        }
     }
 
     /// A spinning brush stirs a vortex in its direction (anticlockwise: up on the right).

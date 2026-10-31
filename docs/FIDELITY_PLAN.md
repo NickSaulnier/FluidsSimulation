@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **phases A to G done** (2026-10-31); the optional H and I left; decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
+Status: **phases A to H done** (2026-10-31); the optional I left; decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -132,7 +132,7 @@ What's on screen in full screen should hold up close on a large display:
   display, with the tone curve mapping to the display's peak instead of to white
   (decision 2).
 
-## 4. Decisions (1 and 5 made)
+## 4. Decisions (1, 3 and 5 made)
 
 1. **The tone curve (§3.2):** the same compression, on the brightest channel instead of
    each, with a gradual turn toward white (Khronos' PBR Neutral, without its toe), so
@@ -140,8 +140,8 @@ What's on screen in full screen should hold up close on a large display:
    switching (see phase B in §6). No look needed retuning.
 2. **HDR output (§3.8):** in scope? It needs an HDR display to see and to test.
    Recommended: last, if the user has one.
-3. **Which fluids move to the GPU (§3.5):** Smoke & fire is the largest single piece of
-   work in the plan. Recommended: Smoke & fire only, then decide on the others.
+3. **Which fluids move to the GPU (§3.5):** Smoke & fire (the user started phase H);
+   shallow water and Lattice Boltzmann not for now.
 4. **The frame budget:** the target (60 fps at 1080p or 1440p? 4K?) and the GPU it's
    measured on decide how far §3.3, §3.4 and §3.7 can go by default. Recommended: the
    user's own machine at its display's resolution, with the governor as the fallback.
@@ -435,3 +435,43 @@ fidelity reel audited, against the run before, and its frame time measured.
   - **Checked:** 252 app tests (new: the march's, light volume's and gathering's
     shaders validate, and their uniforms' sizes match) and clippy pass; the probes and
     the reel audited (no errors).
+- **Phase H, GPU fire (done):** `sim-gpu/src/stable.rs`, `stable.wgsl`; `sim`'s
+  `solvers/fire.rs` (its parameters visit themselves, and its constants are shared).
+  - **A mode of the GPU stable solver,** as the CPU's Smoke & fire is of its stable
+    solver: "Smoke & fire (GPU)" in the solver list (the CPU's when there's no GPU). The
+    dye is the smoke; one more storage buffer (the eighth a stage may bind) holds, per
+    cell, the gas fuel, temperature, solid fuel and whether it's smouldering, and the
+    advection's scratch for fuel and temperature.
+  - **Ported:** burners (nozzles release lit fuel, flickering ±40 % in steps of three
+    substeps, from a 32-bit hash: not the CPU's numbers, the same spread); hot gas
+    rising (the heat's lift in the forces pass, with the smoke's heaviness); fuel and
+    temperature carried by MacCormack like the dye; burning, heat and soot, and the T²
+    cooling (`react`); heat diffusion (`diffuse`, `commit_heat`); a preset's fluid blocks
+    as solid fuel lit along their bottom. The fire's parameters are the CPU's
+    (`FireParams`, the same keys), so a look's fire settings work on either.
+  - **Drawing:** a compact copy each substep (the smoke, and the flame's brightness and
+    all the fuel packed as two halves) is what's read back for the fire field, the
+    same three values per cell the CPU solver gives.
+  - **Settings:** the CPU's smoke-and-fire ones (vorticity 0.35, smoke fade 0.15,
+    heaviness 0.05) at 384 cells high, 6 cells' travel a substep (3 took ten substeps a
+    frame for gas at 4.9 m/s, and the governor lowered the grid, restarting the fire:
+    found as a squat blob in the audit) and 40 pressure sweeps (80 and 300 gave the same
+    flame and smoke).
+  - **Validated against the CPU solver's tests,** ported: a block of solid fuel lit
+    along its bottom burns more than half away in 4 s and its smoke rises 0.15 m above
+    it; nothing burns without fuel; the campfire's burner keeps a flame (brightness over
+    0.5) and its smoke rises toward the vent. Over 12 s at 384 cells the campfire holds
+    steady (flame brightness 0.54, smoke centred about 0.6 m up).
+  - **By eye** (the campfire without feedback, CPU against GPU): a taller, finer flame
+    and crisper smoke curls.
+  - **Looks:** the visualizer's 2D fire is now the GPU's (the randomizer's table and the
+    three built-in 2D fire looks, Ember drift, Firestorm and Ship of fire); the CPU's
+    stays for simulating by hand.
+  - **The cost:** those three looks run at 62 to 73 fps in the audit (1280 × 720),
+    against 121 to 188 on the CPU solver; the governor didn't need to step in. Hot gas
+    needs five substeps a frame at this resolution (dye one or two), each about a
+    hundred dispatches. Quality as before (94, 82, 100; Ember drift's low contrast is
+    its own). Decision 4 (the frame budget) would settle whether to keep 384 cells.
+  - **Checked:** the sim, sim-gpu and app tests (252 app, 62 sim, 8 GPU stable: new,
+    the three fire tests and a half-float round trip) and clippy (the workspace) pass;
+    the fire looks and probes audited (no errors).

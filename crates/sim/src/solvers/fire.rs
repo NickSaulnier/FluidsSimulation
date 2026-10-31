@@ -66,6 +66,25 @@ impl Default for FireParams {
     }
 }
 
+impl FireParams {
+    /// The fire's controls (shared with the GPU port, so looks name them alike).
+    pub fn visit(&mut self, v: &mut dyn ParamVisitor) {
+        v.section("Fire");
+        v.float(&BURN_RATE, &mut self.burn_rate);
+        v.float(&HEAT, &mut self.heat);
+        v.float(&COOLING, &mut self.cooling);
+        v.float(&RISE, &mut self.rise);
+        v.float(&SOOT, &mut self.soot);
+    }
+
+    pub fn visit_advanced(&mut self, v: &mut dyn ParamVisitor) {
+        v.advanced_section("Combustion");
+        v.float(&IGNITION, &mut self.ignition);
+        v.float(&BURNER, &mut self.burner);
+        v.float(&DIFFUSION, &mut self.diffusion);
+    }
+}
+
 const BURN_RATE: FloatSpec = FloatSpec {
     key: "burn_rate",
     label: "Burn rate (1/s)",
@@ -132,11 +151,11 @@ const BURNER: FloatSpec = FloatSpec {
 };
 
 /// Solid fuel burns this much slower than gas, so a pile lasts.
-const SOLID_BURN: f32 = 0.3;
+pub const SOLID_BURN: f32 = 0.3;
 /// Smouldering fuel below this is spent.
-const EMBERS_OUT: f32 = 0.01;
+pub const EMBERS_OUT: f32 = 0.01;
 /// (See `flicker`.) Burner output varies by this fraction, changing every `FLICKER_HOLD` substeps.
-const FLICKER: f32 = 0.4;
+pub const FLICKER: f32 = 0.4;
 const FLICKER_HOLD: u64 = 3;
 
 /// Temperatures drawn as the faintest and the fullest flame: warm gas below the first
@@ -190,21 +209,11 @@ impl Combustion {
     }
 
     pub fn visit(&mut self, v: &mut dyn ParamVisitor) {
-        let p = &mut self.params;
-        v.section("Fire");
-        v.float(&BURN_RATE, &mut p.burn_rate);
-        v.float(&HEAT, &mut p.heat);
-        v.float(&COOLING, &mut p.cooling);
-        v.float(&RISE, &mut p.rise);
-        v.float(&SOOT, &mut p.soot);
+        self.params.visit(v);
     }
 
     pub fn visit_advanced(&mut self, v: &mut dyn ParamVisitor) {
-        let p = &mut self.params;
-        v.advanced_section("Combustion");
-        v.float(&IGNITION, &mut p.ignition);
-        v.float(&BURNER, &mut p.burner);
-        v.float(&DIFFUSION, &mut p.diffusion);
+        self.params.visit_advanced(v);
     }
 
     /// Burn, release heat and soot into `smoke`, cool, and diffuse heat, over `dt`.

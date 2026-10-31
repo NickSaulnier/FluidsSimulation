@@ -4,7 +4,7 @@ tags = ["fluid", "fire", "mirror"]
 energy = "calm"
 
 [sim]
-solver = "Smoke & fire"
+solver = "Smoke & fire (GPU)"
 scene = "Campfire"
 palette = "Lava"
 reactions = [

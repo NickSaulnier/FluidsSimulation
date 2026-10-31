@@ -5,6 +5,12 @@
 //
 // Velocity: one buffer holding u ((nx+1)·ny), then v (nx·(ny+1)). pd: (pressure,
 // divergence) per cell; the pressure is φ = p·dt/ρ, so the projection is u -= ∇φ.
+//
+// Fire mode (smoke and fire, as sim's fire.rs): the dye is the smoke; each cell also has
+// gas fuel and temperature (carried with the flow, MacCormack like the dye) and solid
+// fuel (which stays put, and smoulders once lit). Nozzles are burners, releasing lit,
+// flickering fuel; hot gas rises; after advection, fuel burns into heat and soot, hot
+// gas cools, and heat diffuses a little.
 
 struct Params {
     n: vec2<u32>,
@@ -21,6 +27,24 @@ struct Params {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
+    // Fire mode: 1 on; the substep (for the burners' flicker); then fire.rs's parameters
+    // and constants.
+    fire: u32,
+    step: u32,
+    _pad3: u32,
+    _pad4: u32,
+    ignition: f32,
+    burn_rate: f32,
+    heat: f32,
+    cooling: f32,
+    soot: f32,
+    rise: f32,
+    diffusion: f32,
+    burner: f32,
+    solid_burn: f32,
+    embers_out: f32,
+    flicker: f32,
+    _pad5: f32,
 }
 
 @group(0) @binding(0) var<uniform> P: Params;
@@ -39,6 +63,9 @@ struct Params {
 // The fastest speed in the fluid this substep (an f32's bits: positive floats order
 // as their bits do), for the next substep's size.
 @group(0) @binding(7) var<storage, read_write> max_speed: atomic<u32>;
+// Fire mode, two per cell: (gas fuel, temperature, solid fuel, 1 if it's smouldering),
+// then (fuel and temperature after MacCormack's forward step, and corrected).
+@group(0) @binding(8) var<storage, read_write> fires: array<vec4<f32>>;
 
 // Red-black Gauss-Seidel colour, set per pipeline.
 override PARITY: u32 = 0u;
@@ -51,6 +78,11 @@ const INFLOW: u32 = 3u;
 /// narrower than `STRIPED_WIDTH` release solid dye (as the CPU solver's `nozzle_dye`).
 const STRIPE_PITCH: f32 = 0.08;
 const STRIPED_WIDTH: f32 = 0.25;
+/// Fire: a burner's output holds for this many substeps between flickers, and the
+/// temperatures drawn as the faintest and the fullest flame (as fire.rs).
+const FLICKER_HOLD: u32 = 3u;
+const FLAME_FAINT: f32 = 1.0;
+const FLAME_FULL: f32 = 3.0;
 
 fn dims() -> vec2<i32> {
     return vec2<i32>(P.n);
@@ -166,8 +198,42 @@ fn sample_dye(p: vec2<f32>, field: u32) -> Sampled {
     return s;
 }
 
+/// How much fuel a burner releases at column `i` on substep `step`, relative to its
+/// steady output: ±`flicker`, held for a few substeps, which seeds the flames' flicker.
+/// A hash (32-bit, so not fire.rs's numbers, but the same spread), so runs repeat.
+fn flicker(i: u32, step: u32) -> f32 {
+    var x = (i * 0x9E3779B9u) ^ ((step / FLICKER_HOLD) * 0x85EBCA6Bu);
+    x ^= x >> 16u;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15u;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16u;
+    let unit = f32(x >> 8u) / 16777216.0;
+    return 1.0 + P.flicker * (2.0 * unit - 1.0);
+}
+
+/// Bilinear sample of a fire field at `p` (0: fuel, 1: temperature; 2 and 3: the same
+/// after the forward step), with the range of the four cells it blends.
+fn sample_fire(p: vec2<f32>, field: u32) -> Sampled {
+    let n = dims();
+    let g = clamp(p / P.h - 0.5, vec2<f32>(0.0), vec2<f32>(n - 1));
+    let c = min(vec2<i32>(floor(g)), max(n - 2, vec2<i32>(0)));
+    let f = g - vec2<f32>(c);
+    var v: array<f32, 4>;
+    for (var k = 0; k < 4; k++) {
+        let i = cell_index(min(c + vec2<i32>(k & 1, (k >> 1) & 1), n - 1));
+        let w = fires[2u * i + field / 2u];
+        v[k] = select(w.x, w.y, field % 2u == 1u);
+    }
+    var s: Sampled;
+    s.value = mix(mix(v[0], v[1], f.x), mix(v[2], v[3], f.x), f.y);
+    s.lo = min(min(v[0], v[1]), min(v[2], v[3]));
+    s.hi = max(max(v[0], v[1]), max(v[2], v[3]));
+    return s;
+}
+
 /// Cell kinds this substep: the scene's (walls, drains), plus the emitters' nozzles,
-/// which hold their dye; walls and drains hold none.
+/// which hold their dye (in fire mode, lit fuel: burners); walls and drains hold none.
 @compute @workgroup_size(16, 16)
 fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = vec2<i32>(id.xy);
@@ -187,7 +253,13 @@ fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
             if abs(across) <= 0.5 * max(width, P.h) && abs(dot(d, a.zw)) <= P.h {
                 t = INFLOW | (e << 8u);
                 let stripe = (i32(floor(across / (0.5 * STRIPE_PITCH))) % 2 + 2) % 2 == 0;
-                dyes[i].x = select(0.0, dye, width < STRIPED_WIDTH || stripe);
+                let amount = select(0.0, dye, width < STRIPED_WIDTH || stripe);
+                if P.fire == 1u {
+                    dyes[i].x = 0.0;
+                    fires[2u * i] = vec4<f32>(amount * flicker(u32(c.x), P.step), P.burner, 0.0, 0.0);
+                } else {
+                    dyes[i].x = amount;
+                }
                 break;
             }
         }
@@ -195,6 +267,9 @@ fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
     flags[i].x = t;
     if t == SOLID || t == DRAIN {
         dyes[i].x = 0.0;
+        if P.fire == 1u {
+            fires[2u * i] = vec4<f32>(0.0);
+        }
     }
     if t != FLUID {
         pd[i].x = 0.0;
@@ -215,16 +290,26 @@ fn boundaries(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
-/// Boussinesq buoyancy: each face accelerates along gravity in proportion to the dye
-/// on it (negative buoyancy: light dye rises).
+/// How heavy a cell's gas is, as a share of gravity: its dye (negative buoyancy:
+/// light dye rises), less, in fire mode, its heat (hot gas rises).
+fn heaviness(c: vec2<i32>) -> f32 {
+    let i = cell_index(clamp(c, vec2<i32>(0), dims() - 1));
+    var h = P.buoyancy * dyes[i].x;
+    if P.fire == 1u {
+        h -= P.rise * fires[2u * i].y;
+    }
+    return h;
+}
+
+/// Boussinesq buoyancy: each face accelerates along gravity in proportion to the
+/// heaviness on it.
 @compute @workgroup_size(16, 16)
 fn forces(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = vec2<i32>(id.xy);
-    let edge = dims() - 1;
     for (var axis = 0u; axis < 2u; axis++) {
         if all(c < comp_dims(axis)) && fixed_face(axis, c).x == 0.0 {
-            let d = 0.5 * (dyes[cell_index(clamp(c, vec2<i32>(0), edge))].x + dyes[cell_index(clamp(c - axis_unit(axis), vec2<i32>(0), edge))].x);
-            vel[comp_index(axis, c)] += P.dt * P.gravity[axis] * P.buoyancy * d;
+            let d = 0.5 * (heaviness(c) + heaviness(c - axis_unit(axis)));
+            vel[comp_index(axis, c)] += P.dt * P.gravity[axis] * d;
         }
     }
 }
@@ -409,9 +494,16 @@ fn advect_forward(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let i = cell_index(c);
     if cell_type(c) == FLUID {
-        dyes[i].y = sample_dye(backtrace(centre(c)), 0u).value;
+        let src = backtrace(centre(c));
+        dyes[i].y = sample_dye(src, 0u).value;
+        if P.fire == 1u {
+            fires[2u * i + 1u] = vec4<f32>(sample_fire(src, 0u).value, sample_fire(src, 1u).value, 0.0, 0.0);
+        }
     } else {
         dyes[i].y = dyes[i].x;
+        if P.fire == 1u {
+            fires[2u * i + 1u] = vec4<f32>(fires[2u * i].xy, 0.0, 0.0);
+        }
     }
 }
 
@@ -426,13 +518,29 @@ fn advect_correct(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = cell_index(c);
     if cell_type(c) != FLUID {
         dyes[i].z = dyes[i].x;
+        if P.fire == 1u {
+            fires[2u * i + 1u] = vec4<f32>(fires[2u * i + 1u].xy, fires[2u * i].xy);
+        }
         return;
     }
     let p = centre(c);
-    let origin = sample_dye(backtrace(p), 0u);
-    let back = sample_dye(forwardtrace(p), 1u);
+    let src = backtrace(p);
+    let to = forwardtrace(p);
+    let origin = sample_dye(src, 0u);
+    let back = sample_dye(to, 1u);
     let d = clamp(dyes[i].y + 0.5 * (dyes[i].x - back.value), origin.lo, origin.hi);
     dyes[i].z = max(d, 0.0) * exp(-P.dissipation * P.dt);
+    if P.fire == 1u {
+        let now = fires[2u * i];
+        let hat = fires[2u * i + 1u];
+        var out = vec2<f32>(0.0);
+        for (var k = 0u; k < 2u; k++) {
+            let o = sample_fire(src, k);
+            let b = sample_fire(to, k + 2u);
+            out[k] = max(clamp(hat[k] + 0.5 * (now[k] - b.value), o.lo, o.hi), 0.0);
+        }
+        fires[2u * i + 1u] = vec4<f32>(hat.xy, out);
+    }
 }
 
 /// The advected dye into place, and a compact copy of it in `vel_tmp` (free until the
@@ -444,5 +552,105 @@ fn commit_dye(@builtin(global_invocation_id) id: vec3<u32>) {
         let i = cell_index(c);
         dyes[i].x = dyes[i].z;
         vel_tmp[i] = dyes[i].z;
+        if P.fire == 1u {
+            fires[2u * i] = vec4<f32>(fires[2u * i + 1u].zw, fires[2u * i].zw);
+        }
+    }
+}
+
+/// Fire: burn, release heat and soot (into the smoke), and cool (as fire.rs's
+/// `react`). Gas fuel burns where the gas is hot enough; solid fuel catches there and
+/// smoulders until it's spent. Hot gas cools as dT/dt = -cooling T², integrated
+/// implicitly. Walls and burners are left alone.
+@compute @workgroup_size(16, 16)
+fn react(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec2<i32>(id.xy);
+    if !inside(c) {
+        return;
+    }
+    let t = cell_type(c);
+    if t == SOLID || t == INFLOW {
+        return;
+    }
+    let i = cell_index(c);
+    let f = fires[2u * i];
+    var fuel = f.x;
+    var temp = f.y;
+    var solid = f.z;
+    let hot = temp >= P.ignition;
+    var burning = f.w > 0.5 || (hot && solid > 0.0);
+    let gas_fraction = 1.0 - exp(-P.burn_rate * P.dt);
+    let solid_fraction = 1.0 - exp(-P.solid_burn * P.burn_rate * P.dt);
+    var burned = 0.0;
+    if hot {
+        burned += fuel * gas_fraction;
+        fuel *= 1.0 - gas_fraction;
+    }
+    if burning {
+        burned += solid * solid_fraction;
+        solid *= 1.0 - solid_fraction;
+        if solid < P.embers_out {
+            solid = 0.0;
+            burning = false;
+        }
+    }
+    temp += P.heat * burned;
+    dyes[i].x = min(dyes[i].x + P.soot * burned, 1.0);
+    temp /= 1.0 + P.cooling * max(temp, 0.0) * P.dt;
+    fires[2u * i] = vec4<f32>(fuel, temp, solid, select(0.0, 1.0, burning));
+}
+
+fn open_cell(c: vec2<i32>) -> bool {
+    let t = cell_type(c);
+    return t != SOLID && t != INFLOW;
+}
+
+/// Fire: heat diffusion, explicit and capped for stability (it's a small effect), into
+/// the forward step's slot (free now); then back.
+@compute @workgroup_size(16, 16)
+fn diffuse(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec2<i32>(id.xy);
+    if !inside(c) {
+        return;
+    }
+    let i = cell_index(c);
+    var temp = fires[2u * i].y;
+    if open_cell(c) {
+        let k = min(P.diffusion * P.dt / (P.h * P.h), 0.2);
+        var flux = 0.0;
+        for (var axis = 0u; axis < 2u; axis++) {
+            for (var side = -1; side <= 1; side += 2) {
+                let nb = c + side * axis_unit(axis);
+                if inside(nb) && open_cell(nb) {
+                    flux += fires[2u * cell_index(nb)].y - temp;
+                }
+            }
+        }
+        temp += k * flux;
+    }
+    fires[2u * i + 1u].y = temp;
+}
+
+@compute @workgroup_size(16, 16)
+fn commit_heat(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec2<i32>(id.xy);
+    if inside(c) {
+        let i = cell_index(c);
+        fires[2u * i].y = fires[2u * i + 1u].y;
+    }
+}
+
+/// Fire: compact copies for reading back, in `vel_tmp` (free until the next substep):
+/// the smoke, then the flame's brightness and all the fuel, packed as two halves.
+@compute @workgroup_size(16, 16)
+fn compact_fire(@builtin(global_invocation_id) id: vec3<u32>) {
+    let c = vec2<i32>(id.xy);
+    if inside(c) {
+        let i = cell_index(c);
+        let f = fires[2u * i];
+        let flame = clamp((f.y - FLAME_FAINT) / (FLAME_FULL - FLAME_FAINT), 0.0, 1.0);
+        let n = u32(dims().x * dims().y);
+        vel_tmp[i] = dyes[i].x;
+        vel_tmp[n + i] = bitcast<f32>(pack2x16float(vec2<f32>(flame, min(f.x + f.z, 1.0))));
     }
 }

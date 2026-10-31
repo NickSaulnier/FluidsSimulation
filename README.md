@@ -52,6 +52,7 @@ optimises the dependencies and the `sim` crate).
 | Stable fluids (dye) | Grid fluid carrying dye, with buoyancy and vorticity confinement |
 | Stable fluids (GPU) | The same on wgpu compute, at three times the resolution, for crisp ink at full screen |
 | Smoke & fire | Stable fluids with fuel, temperature, burning and smoke |
+| Smoke & fire (GPU) | The same on wgpu compute, at three times the resolution: finer flames and smoke curls at full screen |
 | Lattice Boltzmann (dye) | D2Q9 LBM with a Smagorinsky model |
 | Shallow water | A water surface seen from above (height field), lit: waves, wakes and ripples; the music's drops ring out on it |
 | MPM jelly, MPM snow, MPM sand | MLS-MPM particles carrying a material: jelly wobbles and bounces, snow packs and breaks into clumps, sand flows and piles |

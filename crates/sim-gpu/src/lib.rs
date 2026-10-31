@@ -14,8 +14,11 @@ use std::sync::OnceLock;
 pub use pbf::GpuPbf;
 pub use stable::GpuStable;
 
-pub static SOLVERS: &[SolverEntry] =
-    &[SolverEntry { name: "PBF (GPU)", make: pbf::make }, SolverEntry { name: "Stable fluids (GPU)", make: stable::make }];
+pub static SOLVERS: &[SolverEntry] = &[
+    SolverEntry { name: "PBF (GPU)", make: pbf::make },
+    SolverEntry { name: "Stable fluids (GPU)", make: stable::make },
+    SolverEntry { name: "Smoke & fire (GPU)", make: stable::make_fire },
+];
 
 /// A wgpu device for compute work: either headless (`new`, for tests and the bench, and
 /// the 2D GPU solver, which reads its particles back for drawing), or the renderer's own
