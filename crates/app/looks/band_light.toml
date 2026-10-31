@@ -1,0 +1,24 @@
+[meta]
+name = "Band light"
+tags = ["fluid", "dye", "bands"]
+energy = "any"
+
+[sim]
+solver = "Stable fluids (GPU)"
+scene = "Five bands"
+palette = "Aurora"
+params = { vorticity = 0.5, dissipation = 0.02 }
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 0.8 },
+    { trigger = "hat", effect = "flash", gain = 0.4 },
+    { trigger = "brightness", effect = "hue", gain = 0.4 },
+]
+
+[feedback]
+mode = "brightest"
+trail = 0.35
+flow = 1.0
+
+[composite]
+contrast = 1.1
+vignette = 0.3

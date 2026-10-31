@@ -18,7 +18,7 @@
 use super::analyzer::{AudioFeatures, Onset, OnsetKind};
 use serde::{Deserialize, Serialize};
 use utils::rng::SplitMix64;
-use sim::{Droplet, Emitter, ForceBrush, Vec2};
+use sim::{Droplet, Emitter, Feed, ForceBrush, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Trigger {
@@ -234,6 +234,12 @@ const SLOSH_MAX_DEG: f32 = 30.0;
 /// The gust turns around over this period, seconds.
 const GUST_PERIOD_S: f32 = 16.0;
 const LANES: [f32; 3] = [0.3, 0.7, 0.5];
+/// The music scenes' feeds (see `ReactionEngine::feed`): their level with no music at
+/// all (so the scene shows something in the simulator), the level under which a feed
+/// is off, and a bar's length while no tempo is found, seconds.
+const FEED_UNHEARD: f32 = 0.3;
+const FEED_OFF: f32 = 0.05;
+const FEED_BAR_S: f32 = 2.0;
 /// Idle drift starts after this much silence and fades in over `IDLE_FADE_S`, seconds.
 const IDLE_AFTER_S: f32 = 5.0;
 const IDLE_FADE_S: f32 = 2.0;
@@ -265,6 +271,8 @@ pub struct ReactionEngine {
     lane: usize,
     spin_sign: f32,
     rng: SplitMix64,
+    /// Where the feeds are in the bar, 0..1, while no tempo is found.
+    bar: f32,
 }
 
 impl ReactionEngine {
@@ -376,6 +384,7 @@ impl ReactionEngine {
                     dir: Vec2::Y,
                     speed: 2.0 + 3.0 * imp.strength,
                     width: 0.04,
+                    dye: 1.0,
                 }),
                 Effect::Vortex => out.brushes.push(ForceBrush {
                     pos: imp.pos,
@@ -389,6 +398,31 @@ impl ReactionEngine {
             }
         }
         out
+    }
+
+    /// The music scenes' feeds (`sim::Feed`) as this frame's emitters: each at its speed
+    /// times its band's level (and `scale`), turned round the domain's middle with the
+    /// bar (or a steady clock while no tempo is found); off while its band is quiet.
+    pub fn feed(&mut self, feeds: &[Feed], features: Option<&AudioFeatures>, domain: Vec2, scale: f32, dt: f32, out: &mut Vec<Emitter>) {
+        self.bar = (self.bar + dt / FEED_BAR_S).fract();
+        let bar = match features {
+            Some(f) if f.musical.beating => f.musical.bar_phase,
+            _ => self.bar,
+        };
+        for f in feeds {
+            let level = match features {
+                None => FEED_UNHEARD,
+                Some(f) if f.silent => 0.0,
+                Some(features) => features.bands.get(f.band).copied().unwrap_or(0.0),
+            } * scale;
+            if level < FEED_OFF {
+                continue;
+            }
+            let turn = Vec2::from_angle(std::f32::consts::TAU * f.turns_per_bar * bar);
+            let middle = 0.5 * domain;
+            let e = f.emitter;
+            out.push(Emitter { pos: middle + turn.rotate(e.pos - middle), dir: turn.rotate(e.dir), speed: e.speed * level, ..e });
+        }
     }
 
     /// A slow swirl wandering on a Lissajous path, turning around now and then, once the
@@ -570,5 +604,36 @@ mod tests {
         let r = [Reaction::new(Trigger::Kick, Effect::Splash, 1.0, false)];
         let out = e.evaluate(&r, Some(&features(0.0, 0.5)), &[kick(1.0)], DOMAIN, G, 1.0, 0.01);
         assert!(out.brushes.is_empty());
+    }
+
+    /// A feed pours at its band's level, is off while the band is quiet or the music
+    /// silent, and goes round the middle with the bar.
+    #[test]
+    fn feeds_follow_their_band_and_the_bar() {
+        let mut e = ReactionEngine::default();
+        let emitter = Emitter { pos: Vec2::new(1.5, 0.5), dir: Vec2::Y, speed: 2.0, width: 0.05, dye: 0.5 };
+        let feeds = [Feed { emitter, band: 1, turns_per_bar: 1.0 }];
+        let feed = |e: &mut ReactionEngine, f: Option<&AudioFeatures>| {
+            let mut out = Vec::new();
+            e.feed(&feeds, f, DOMAIN, 1.0, 0.0, &mut out);
+            out
+        };
+        let mut f = features(0.5, 0.5);
+        f.musical.beating = true;
+        let out = feed(&mut e, Some(&f));
+        assert_eq!(out.len(), 1);
+        assert!((out[0].speed - 1.0).abs() < 1e-5 && out[0].dye == 0.5);
+        assert!(out[0].pos.distance(emitter.pos) < 1e-5, "at the downbeat, where it starts");
+        // A quarter of the bar on, a quarter of the way round (anticlockwise).
+        f.musical.bar_phase = 0.25;
+        let out = feed(&mut e, Some(&f));
+        assert!(out[0].pos.distance(Vec2::new(1.0, 1.0)) < 1e-4 && out[0].dir.distance(Vec2::NEG_X) < 1e-4, "{:?}", out[0]);
+        // Off when the band is quiet, or everything's silent.
+        assert!(feed(&mut e, Some(&features(0.01, 0.5))).is_empty());
+        let mut silent = features(0.5, 0.5);
+        silent.silent = true;
+        assert!(feed(&mut e, Some(&silent)).is_empty());
+        // With no music at all, a gentle stream (so the scene shows something).
+        assert!(feed(&mut e, None)[0].speed > 0.0);
     }
 }

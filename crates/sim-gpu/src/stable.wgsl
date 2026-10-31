@@ -183,10 +183,11 @@ fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
             let d = p - a.xy;
             let across = dot(d, vec2<f32>(-a.w, a.z));
             let width = geom[2u * e + 1u].y;
+            let dye = geom[2u * e + 1u].z;
             if abs(across) <= 0.5 * max(width, P.h) && abs(dot(d, a.zw)) <= P.h {
                 t = INFLOW | (e << 8u);
                 let stripe = (i32(floor(across / (0.5 * STRIPE_PITCH))) % 2 + 2) % 2 == 0;
-                dyes[i].x = select(0.0, 1.0, width < STRIPED_WIDTH || stripe);
+                dyes[i].x = select(0.0, dye, width < STRIPED_WIDTH || stripe);
                 break;
             }
         }

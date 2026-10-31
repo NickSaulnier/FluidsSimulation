@@ -72,6 +72,10 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("newtons_star.toml", include_str!("../../looks/newtons_star.toml")),
     ("sponge_dive.toml", include_str!("../../looks/sponge_dive.toml")),
     ("bulb_in_smoke.toml", include_str!("../../looks/bulb_in_smoke.toml")),
+    ("band_light.toml", include_str!("../../looks/band_light.toml")),
+    ("bar_spiral.toml", include_str!("../../looks/bar_spiral.toml")),
+    ("crossfire.toml", include_str!("../../looks/crossfire.toml")),
+    ("rainfall.toml", include_str!("../../looks/rainfall.toml")),
 ];
 
 /// How much the director favours a look by its stars (one to five), when picking by

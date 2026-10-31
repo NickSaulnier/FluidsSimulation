@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn jets_become_burners_on_the_floor() {
         let mut out = output();
-        out.emitters.push(Emitter { pos: Vec2::new(0.3, 0.07), dir: Vec2::Y, speed: 3.0, width: 0.04 });
+        out.emitters.push(Emitter { pos: Vec2::new(0.3, 0.07), dir: Vec2::Y, speed: 3.0, width: 0.04, dye: 1.0 });
         let (input, _) = lift(&out, SIZE, Vec3::X, G);
         let b = input.burners[0];
         assert_eq!(b.pos.y, JET_HEIGHT);

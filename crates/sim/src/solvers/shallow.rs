@@ -719,7 +719,7 @@ mod tests {
     #[test]
     fn emitters_make_currents_without_flooding() {
         let (mut s, scene) = calm();
-        let tap = Emitter { pos: Vec2::new(0.5, 0.5), dir: Vec2::X, speed: 2.0, width: 0.1 };
+        let tap = Emitter { pos: Vec2::new(0.5, 0.5), dir: Vec2::X, speed: 2.0, width: 0.1, dye: 1.0 };
         let input = StepInput { emitters: vec![tap], ..StepInput::default() };
         run(&mut s, &scene, &input, 4.0);
         let downstream = s.cell_velocity((0.62 / s.h) as usize, (0.5 / s.h) as usize);

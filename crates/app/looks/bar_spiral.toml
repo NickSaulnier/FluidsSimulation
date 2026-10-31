@@ -1,0 +1,24 @@
+[meta]
+name = "Bar spiral"
+tags = ["fluid", "dye", "spiral", "tempo"]
+energy = "energetic"
+
+[sim]
+solver = "Stable fluids (dye)"
+scene = "Tempo vortex"
+palette = "Sunset"
+params = { vorticity = 0.6, dissipation = 0.03 }
+reactions = [
+    { trigger = "snare", effect = "vortex", gain = 0.6 },
+    { trigger = "hat", effect = "flash", gain = 0.5 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[feedback]
+mode = "smear"
+trail = 0.4
+flow = 1.0
+rotation = 0.1
+
+[composite]
+vignette = 0.3

@@ -1,6 +1,6 @@
 # Visuals Plan
 
-Status: **phases A and B done** (2026-10-30); decisions 3 to 5 open (§4). Better pictures and a closer
+Status: **phases A to C done** (2026-10-30); decisions 3 to 5 open (§4). Better pictures and a closer
 fit to the music, now that visualizing music is the app's main purpose. Grouped into
 phases; each phase is committed on its own.
 
@@ -240,3 +240,39 @@ before.
   - **Left for later** (the looks, not their fluids): Ember drift (dark noise, the fire
     barely shows), Smoke dance and Ghost smoke (dim, grainy), Neon scope (a still
     blob), Cover drift and Dye tornado (washing out to one colour).
+- **Phase C, music scenes (done):** `sim::presets` (the scenes), `sim::scene::Feed`,
+  `ReactionEngine::feed` (driving them), four looks.
+  - **Feeds:** a scene can carry emitters the music drives (`Scene::feeds`): each frame
+    the app adds them to the step's emitters at their speed times one band's level
+    (and the intensity), turned round the middle `turns_per_bar` times a bar (locked to
+    the bar phase while a tempo is found, a 2 s bar otherwise). Off while its band is
+    quiet or the music silent; a gentle 0.3 with no music at all, so the scenes show
+    something in the simulator. Solvers never see feeds, so every solver runs them
+    (through the temporary emitters the faucet already uses), and they pause with the
+    jets when particles are over budget.
+  - **Two colours:** an emitter now carries its dye, 0 to 1 (`Emitter::dye`, 1 for
+    every emitter before), which the dye solvers (CPU and GPU) release and the fire
+    solver takes as fuel; less is a darker, fainter shade of the palette's ramp. Each
+    band's feed has its own shade.
+  - **The scenes,** weightless and open on every side (drains in the border, as the
+    campfire's top), so what pours in leaves again: **Five bands** (a feed per band on
+    an ellipse round the window, the lowest at the bottom, aimed past the middle so the
+    streams curl round each other), **Tempo vortex** (two feeds on a circle round the
+    middle, bass and mids, pouring along it and going round once a bar), **Two jets**
+    (bass from the left, treble from the right, a little apart so they curl where they
+    meet) and **Rain** (open water, nothing in it; the drops are the look's reactions,
+    so a kick isn't a wider swell than a snare as the plan had it, only stronger).
+  - **The looks** (44 to 48): Band light (GPU dye, five bands), Bar spiral (CPU dye,
+    tempo vortex), Crossfire (GPU dye, two jets), Rainfall (shallow water, rain, a drop
+    on every kick, snare and hat). All four scored 100 against the anthem and against a
+    funk drum loop, and stay full of moving colour through the build-up and the
+    breakdown, where the tank scenes' strips go quiet. The two GPU ones run at 78 to 90
+    fps in the audit window (the other GPU dye looks 92 to 192).
+  - **The randomizer:** both dye solvers get the three feed scenes, shallow water gets
+    rain, and smoke & fire gets five bands (84 in the audit: five torches in grey smoke).
+    Fire on the tempo vortex (17) and the two jets (63) came out sparse and grey, so it
+    keeps out of them.
+  - **Checked in the app:** 232 app tests (a new one: a feed follows its band and the
+    bar) and the workspace's pass, clippy clean; the four looks audited on the anthem and
+    the drum loop; 16 seeded random looks (three on the new scenes, 99 to 100; the two
+    weak ones are on the campfire, as before).

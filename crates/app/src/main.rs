@@ -1351,8 +1351,9 @@ impl State {
         let gravity = tilt(self.ui.gravity(), self.look_frame.gravity_tilt) * self.look_frame.gravity_scale;
         let intensity = self.look_frame.intensity;
         let mut reaction = self.music.react(&self.ui.reactions, self.world.scene.size, gravity, self.ui.presenting, real_dt, intensity);
+        self.music.feed(&self.world.scene.feeds, self.world.scene.size, real_dt, intensity, &mut reaction.emitters);
         if !stability::room_for_fluid(&self.world) {
-            reaction.emitters.clear(); // jets pause while particles are over budget
+            reaction.emitters.clear(); // jets and feeds pause while particles are over budget
         }
         self.world.scene.gravity = reaction.gravity;
         step_input.brushes.extend(reaction.brushes);

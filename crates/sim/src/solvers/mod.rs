@@ -255,7 +255,7 @@ pub fn nozzle_offset(e: &Emitter, h: f32, c: Vec2) -> Option<f32> {
 /// Dye concentration a nozzle releases at offset `across` from its centre line.
 pub fn nozzle_dye(e: &Emitter, across: f32) -> f32 {
     let stripe = ((across / (0.5 * STRIPE_PITCH)).floor() as i32).rem_euclid(2) == 0;
-    if e.width < STRIPED_WIDTH || stripe { 1.0 } else { 0.0 }
+    if e.width < STRIPED_WIDTH || stripe { e.dye } else { 0.0 }
 }
 
 /// MacCormack advection (Selle et al. 2008) of a cell-centred scalar `q` through

@@ -349,7 +349,7 @@ impl GpuStable {
         for e in &emitters {
             let dir = e.dir.normalize_or(Vec2::NEG_Y);
             geom.push([e.pos.x, e.pos.y, dir.x, dir.y]);
-            geom.push([e.speed, e.width, 0.0, 0.0]);
+            geom.push([e.speed, e.width, e.dye, 0.0]);
         }
         let brushes: Vec<_> = input.brushes.iter().take((GEOM_CAPACITY - geom.len()) / 3).collect();
         for b in &brushes {

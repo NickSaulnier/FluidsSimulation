@@ -316,6 +316,12 @@ impl Music {
         self.engine.evaluate(reactions, features, &self.frame_onsets, domain, base_gravity, self.intensity * scale, dt)
     }
 
+    /// The music scenes' feeds as this frame's emitters (see `ReactionEngine::feed`).
+    pub fn feed(&mut self, feeds: &[sim::Feed], domain: Vec2, dt: f32, scale: f32, out: &mut Vec<sim::Emitter>) {
+        let features = self.analyzer.as_ref().map(Analyzer::features);
+        self.engine.feed(feeds, features, domain, self.intensity * scale, dt, out);
+    }
+
     /// Beats heard this frame.
     pub fn beat_count(&self) -> usize {
         self.frame_beats.len()

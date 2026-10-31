@@ -35,6 +35,8 @@ pub struct Scene {
     /// Regions filled with fluid on reset.
     pub fluid_blocks: Vec<Rect>,
     pub emitters: Vec<Emitter>,
+    /// Emitters the music drives (see `Feed`); empty but in the music scenes.
+    pub feeds: Vec<Feed>,
     /// Particles entering these are removed.
     pub drains: Vec<Rect>,
     /// Emitters stop when a solver reaches this many particles.
@@ -50,6 +52,7 @@ impl Scene {
             solid: SolidMask::new_box(size, size.y / mask_cells_y as f32),
             fluid_blocks: Vec::new(),
             emitters: Vec::new(),
+            feeds: Vec::new(),
             drains: Vec::new(),
             max_particles: 60_000,
         }
@@ -282,6 +285,20 @@ pub struct Emitter {
     pub speed: f32,
     /// Width of the nozzle across the stream, metres.
     pub width: f32,
+    /// How much dye (or fuel, in the fire solver) it releases, 0 to 1: 1 is the
+    /// palette's brightest, less a darker shade of it.
+    pub dye: f32,
+}
+
+/// An emitter the music drives, in the scenes made for the visualizer: each frame the
+/// app adds it to the step's emitters (`StepInput::emitters`) at its speed times the
+/// level of one of the music's five bands (`band`, 0 the lowest), turned round the
+/// domain's middle `turns_per_bar` times a bar. Solvers never read feeds themselves.
+#[derive(Clone, Copy, Debug)]
+pub struct Feed {
+    pub emitter: Emitter,
+    pub band: usize,
+    pub turns_per_bar: f32,
 }
 
 /// A drop landing on the fluid's surface, for as long as it's in the input: a rate, so

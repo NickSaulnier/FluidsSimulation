@@ -569,7 +569,7 @@ mod tests {
         let scene = crate::presets::dam_break();
         let mut lbm = Lbm::with_params(LbmParams { cells_y: 64, ..LbmParams::default() });
         lbm.reset(&scene, Init::FromScene);
-        let faucet = crate::scene::Emitter { pos: Vec2::new(1.5, 0.8), dir: Vec2::NEG_Y, speed: 2.0, width: 0.06 };
+        let faucet = crate::scene::Emitter { pos: Vec2::new(1.5, 0.8), dir: Vec2::NEG_Y, speed: 2.0, width: 0.06, dye: 1.0 };
         let input = StepInput { emitters: vec![faucet], ..StepInput::default() };
         for _ in 0..300 {
             Stepper::default().advance(&mut lbm, &scene, 1.0 / 60.0, &input);

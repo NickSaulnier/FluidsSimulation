@@ -1,0 +1,20 @@
+[meta]
+name = "Rainfall"
+tags = ["fluid", "water", "ripples"]
+energy = "any"
+
+[sim]
+solver = "Shallow water"
+scene = "Rain"
+palette = "Deep sea"
+params = { damping = 0.3 }
+reactions = [
+    { trigger = "kick", effect = "drop", gain = 1.6 },
+    { trigger = "snare", effect = "drop", gain = 1.1 },
+    { trigger = "hat", effect = "drop", gain = 0.6 },
+    { trigger = "brightness", effect = "hue", gain = 0.3 },
+]
+
+[composite]
+aberration = 0.006
+vignette = 0.35

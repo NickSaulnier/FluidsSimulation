@@ -164,7 +164,7 @@ impl Input {
                 // Pour along the drag direction; straight down while holding still.
                 let motion = here - prev;
                 let dir = if motion.length() > 1e-3 { motion.normalize() } else { Vec2::NEG_Y };
-                input.emitters.push(Emitter { pos: here, dir, speed: ui.faucet_speed, width: ui.brush_radius });
+                input.emitters.push(Emitter { pos: here, dir, speed: ui.faucet_speed, width: ui.brush_radius, dye: 1.0 });
             }
             Tool::PaintWall | Tool::EraseWall => {
                 if starting {

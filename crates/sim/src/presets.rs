@@ -1,6 +1,6 @@
 //! Scene presets. Solver-agnostic: they describe geometry and fluid, nothing else.
 
-use crate::scene::{Emitter, Rect, Scene};
+use crate::scene::{Emitter, Feed, Rect, Scene};
 use glam::Vec2;
 
 pub struct Preset {
@@ -20,6 +20,10 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Pond", build: pond_in },
     Preset { name: "Breakwater", build: breakwater_in },
     Preset { name: "Falling blocks", build: falling_blocks_in },
+    Preset { name: "Five bands", build: five_bands_in },
+    Preset { name: "Tempo vortex", build: tempo_vortex_in },
+    Preset { name: "Two jets", build: two_jets_in },
+    Preset { name: "Rain", build: rain_in },
 ];
 
 /// Column width for the Martin & Moyce validation case (height is twice this).
@@ -80,7 +84,7 @@ pub fn fountain() -> Scene {
 pub fn fountain_in(d: Vec2) -> Scene {
     let mut s = tank(d);
     s.fluid_blocks.push(Rect::new(Vec2::new(0.0, 0.0), Vec2::new(d.x, 0.2)));
-    s.emitters.push(Emitter { pos: Vec2::new(0.5 * d.x, 0.1), dir: Vec2::Y, speed: 3.2, width: 0.04 });
+    s.emitters.push(Emitter { pos: Vec2::new(0.5 * d.x, 0.1), dir: Vec2::Y, speed: 3.2, width: 0.04, dye: 1.0 });
     for x in [0.03, d.x - 0.09] {
         s.drains.push(Rect::new(Vec2::new(x, 0.21), Vec2::new(x + 0.06, 0.6)));
     }
@@ -117,7 +121,7 @@ pub fn wind_tunnel_in(d: Vec2) -> Scene {
     // resolution: a gap left at its ends would be the only way into the pocket behind
     // it, which it draws from, and a fine grid forced the whole inflow through it.
     let height = inner.size().y + 0.02;
-    s.emitters.push(Emitter { pos: Vec2::new(inner.min.x + 0.01, 0.5 * d.y), dir: Vec2::X, speed: 1.0, width: height });
+    s.emitters.push(Emitter { pos: Vec2::new(inner.min.x + 0.01, 0.5 * d.y), dir: Vec2::X, speed: 1.0, width: height, dye: 1.0 });
     s.drains.push(Rect::new(Vec2::new(inner.max.x - 0.12, inner.min.y), inner.max));
     s.solid.paint_disc(Vec2::new(0.5, 0.52 * d.y), 0.06, true);
     s.solid.update_derived();
@@ -137,7 +141,7 @@ pub fn campfire_in(d: Vec2) -> Scene {
     let mut s = tank(d);
     let inner = s.solid.interior();
     // Slow and wide, so buoyancy rather than the jet shapes the flame.
-    s.emitters.push(Emitter { pos: Vec2::new(0.5 * d.x, inner.min.y + 0.01), dir: Vec2::Y, speed: 0.3, width: 0.24 });
+    s.emitters.push(Emitter { pos: Vec2::new(0.5 * d.x, inner.min.y + 0.01), dir: Vec2::Y, speed: 0.3, width: 0.24, dye: 1.0 });
     // Each reaches a centimetre into the picture, so particles at the edge leave too.
     let (reach, sill) = (0.01, inner.min.y + 0.15);
     s.drains.push(Rect::new(Vec2::new(0.0, inner.max.y - reach), d));
@@ -208,6 +212,69 @@ pub fn falling_blocks_in(d: Vec2) -> Scene {
     s
 }
 
+/// Weightless and open on every side, through drains in the border just outside the
+/// window (each reaching a centimetre in), so what the feeds pour in leaves again
+/// instead of filling a closed box: the music scenes' frame.
+fn open(d: Vec2) -> Scene {
+    let mut s = tank(d);
+    s.gravity = Vec2::ZERO;
+    let inner = s.solid.interior();
+    let reach = 0.01;
+    s.drains.push(Rect::new(Vec2::ZERO, Vec2::new(d.x, inner.min.y + reach)));
+    s.drains.push(Rect::new(Vec2::new(0.0, inner.max.y - reach), d));
+    s.drains.push(Rect::new(Vec2::ZERO, Vec2::new(inner.min.x + reach, d.y)));
+    s.drains.push(Rect::new(Vec2::new(inner.max.x - reach, 0.0), d));
+    s
+}
+
+/// Five feeds round the window, one per band (the lowest at the bottom, a lighter shade
+/// for each band up), each pouring in with its own band: made for the dye solvers.
+/// They aim past the middle, so the streams curl round each other.
+pub fn five_bands_in(d: Vec2) -> Scene {
+    let mut s = open(d);
+    let inner = s.solid.interior();
+    let (middle, reach) = (0.5 * d, 0.5 * inner.size() - 0.08);
+    for band in 0..5 {
+        let angle = -std::f32::consts::FRAC_PI_2 + band as f32 * std::f32::consts::TAU / 5.0;
+        let pos = middle + Vec2::from_angle(angle) * reach;
+        let dir = Vec2::from_angle(0.35).rotate((middle - pos).normalize());
+        let emitter = Emitter { pos, dir, speed: 1.6, width: 0.06, dye: 0.4 + 0.15 * band as f32 };
+        s.feeds.push(Feed { emitter, band, turns_per_bar: 0.0 });
+    }
+    s
+}
+
+/// Two feeds on opposite sides of a circle round the middle, pouring along it and
+/// going round it once a bar: the bass's bright, the mids' darker. Their streams wind
+/// up a swirl in the middle that turns with the bar.
+pub fn tempo_vortex_in(d: Vec2) -> Scene {
+    let mut s = open(d);
+    let (middle, r) = (0.5 * d, 0.28 * d.min_element());
+    let feed = |side: f32, speed, dye, band| Feed { emitter: Emitter { pos: middle + Vec2::new(side * r, 0.0), dir: Vec2::new(0.0, side), speed, width: 0.06, dye }, band, turns_per_bar: 1.0 };
+    s.feeds.push(feed(1.0, 1.6, 1.0, 1));
+    s.feeds.push(feed(-1.0, 1.2, 0.5, 3));
+    s
+}
+
+/// Two jets facing each other across the middle, a little apart so they curl where
+/// they meet: the bass's from the left, bright, the treble's from the right, darker.
+pub fn two_jets_in(d: Vec2) -> Scene {
+    let mut s = open(d);
+    let inner = s.solid.interior();
+    let (y, apart) = (0.5 * d.y, 0.05 * d.y);
+    let left = Emitter { pos: Vec2::new(inner.min.x + 0.05, y + apart), dir: Vec2::X, speed: 2.2, width: 0.08, dye: 1.0 };
+    let right = Emitter { pos: Vec2::new(inner.max.x - 0.05, y - apart), dir: Vec2::NEG_X, speed: 2.2, width: 0.08, dye: 0.45 };
+    s.feeds.push(Feed { emitter: left, band: 1, turns_per_bar: 0.0 });
+    s.feeds.push(Feed { emitter: right, band: 4, turns_per_bar: 0.0 });
+    s
+}
+
+/// Open water with nothing in it: made for shallow water, the look's drops (on the
+/// hits) ringing out and crossing. Other solvers get an empty box.
+pub fn rain_in(d: Vec2) -> Scene {
+    tank(d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +304,13 @@ mod tests {
                 }
                 for e in &s.emitters {
                     assert!(inner.contains(e.pos), "{} at {aspect}: emitter at {}", p.name, e.pos);
+                }
+                // Feeds, wherever they turn to.
+                for f in &s.feeds {
+                    let r = (f.emitter.pos - 0.5 * d).length();
+                    let reach = if f.turns_per_bar != 0.0 { Rect::new(0.5 * d - r, 0.5 * d + r) } else { Rect::new(f.emitter.pos, f.emitter.pos) };
+                    assert!(inner.contains(reach.min) && inner.contains(reach.max), "{} at {aspect}: feed at {}", p.name, f.emitter.pos);
+                    assert!(f.band < 5, "{}: band {}", p.name, f.band);
                 }
                 for r in &s.drains {
                     assert!(inside(r.min) && inside(r.max), "{} at {aspect}: drain {r:?}", p.name);

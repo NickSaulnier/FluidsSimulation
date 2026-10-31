@@ -56,7 +56,11 @@ optimises the dependencies and the `sim` crate).
 | Fire (3D GPU), Smoke (3D GPU) | 3D grid fluids on the GPU, raymarched, with an orbiting camera |
 
 2D scenes: dam break, double dam break, tank with obstacle, fountain, Martin & Moyce
-column, wind tunnel, campfire, pond, breakwater, falling blocks. 3D scenes, in the open air (smoke rises out of the picture): campfire, torch, twin
+column, wind tunnel, campfire, pond, breakwater, falling blocks; and four made for the
+music, open at the edges so nothing settles: five bands (a source per band round the
+window, each pouring with its own band), tempo vortex (two sources going round the
+middle once a bar), two jets (bass from the left, treble from the right, curling where
+they meet) and rain (open water for the drops). 3D scenes, in the open air (smoke rises out of the picture): campfire, torch, twin
 burners, chimney.
 
 The fluid fills the window edge to edge, the scene taking the window's shape, and
@@ -92,7 +96,7 @@ resolution in full screen if the simulation falls behind real time.
   new section, and a dive travels endlessly into the fractal (or out), looping where the
   picture repeats itself. The fluid's flow can bend them.
 - **Looks:** a look bundles a fluid (or none), colours, the picture's settings,
-  reactions and equations. There are 44 built in, 16 of them without fluid; they keep to
+  reactions and equations. There are 48 built in, 16 of them without fluid; they keep to
   the fluids that look good in full screen (no MPM, no test rigs). Each is a
   TOML file (format in [crates/app/looks/README.md](crates/app/looks/README.md)); your
   own go in `%APPDATA%\fluid-toy\looks` and reload when saved. "Save as" writes the
