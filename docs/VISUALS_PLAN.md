@@ -1,6 +1,6 @@
 # Visuals Plan
 
-Status: **phase A done** (2026-10-30); decisions open (§4). Better pictures and a closer
+Status: **phases A and B done** (2026-10-30); decisions 3 to 5 open (§4). Better pictures and a closer
 fit to the music, now that visualizing music is the app's main purpose. Grouped into
 phases; each phase is committed on its own.
 
@@ -130,12 +130,14 @@ Each gets a built-in look or two, and joins the randomizer's scenes.
 - **The randomizer** makes variants of its own looks (as Shift+D does, kept with the
   look), and the editor lists them.
 
-## 4. Decisions (open)
+## 4. Decisions (1 and 2 made)
 
 1. **Which solvers and scenes go:** decided from the contact sheet (phase A) and the
-   user's eye; my guess is in §3.2.
-2. **Their built-in looks:** moved to a better fluid, made fluid-free, or dropped?
-   Recommended: moved where the look is good apart from its fluid, dropped otherwise.
+   user's eye. Gone from the visualizer: the MPM fluids, FLIP outside the fountain, the
+   Martin & Moyce column and the falling blocks. PBF and PBF (GPU) stay (the user has
+   chaotic looks of their own on them).
+2. **Their built-in looks:** moved where the look is good apart from its fluid, dropped
+   otherwise (see phase B in §6).
 3. **Intensity for every look:** on by default for all looks (recommended), or only for
    looks that ask for it?
 4. **Harmony (§3.6):** in scope? It's new analysis (chroma), and the most uncertain to
@@ -212,3 +214,29 @@ before.
     for looks without fluid, 66 to 230 with); 16 random looks; pressing D ten times on a
     drum loop, each look scored about 4 s in (all kept, 69 to 100). A look actually
     replaced wasn't seen on screen.
+- **Phase B, curation (done):** `looks/random.rs` (`FLUIDS`) and the built-in looks.
+  - **What the strips showed:** the particle fluids (FLIP, PBF, MPM) fill the screen
+    only in the drop; in the build-up and the breakdown they're a puddle on the floor.
+    The scores average over the run, so they missed it. The grid fluids are driven by
+    an inflow, a burner or stirring, and never settle.
+  - **No flag:** the plan had a flag on each solver and scene, but FLIP stays in one
+    scene only (the fountain, which keeps pouring), which separate flags can't say.
+    The randomizer's `FLUIDS` table (solver → the scenes it's shown in) is now also the
+    list of what the visualizer shows; a test checks every built-in look keeps to it.
+    The user's own looks aren't filtered (they chose their fluid), and the Simulate tab
+    still offers everything. Ballistic (debug) and PBF (GPU) were never in the table.
+  - **Out of the table:** MPM jelly, snow and sand; FLIP in the dam breaks, the tank and
+    the column (its weight down from 1.5 to 0.8, with one scene left); the Martin &
+    Moyce column and the falling blocks from every solver. The MPM ranges stay in
+    `PHYSICS`, for varying the user's own looks (Shift+D).
+  - **The built-in looks** (48 to 44): Ocean pulse moved from FLIP in the tank to FLIP
+    in the fountain (100 in the audit; a moving mound when quiet instead of a flat
+    pool); Dye tornado from the column to the double dam break (77 to 81: colour from
+    the first frame, still washing out to purple later). Dropped: Jelly drop, Snow
+    globe, Shifting dunes (MPM) and Deep current (FLIP in the column).
+  - **Checked in the app:** 231 tests pass; the audit of the two moved looks, and of 16
+    seeded random looks (none on a fluid or scene left out; 14 from 81 to 100, two weak
+    ones on Smoke & fire at 15 and 58, which the phase A check would replace).
+  - **Left for later** (the looks, not their fluids): Ember drift (dark noise, the fire
+    barely shows), Smoke dance and Ghost smoke (dim, grainy), Neon scope (a still
+    blob), Cover drift and Dye tornado (washing out to one colour).

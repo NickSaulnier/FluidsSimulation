@@ -92,7 +92,8 @@ resolution in full screen if the simulation falls behind real time.
   new section, and a dive travels endlessly into the fractal (or out), looping where the
   picture repeats itself. The fluid's flow can bend them.
 - **Looks:** a look bundles a fluid (or none), colours, the picture's settings,
-  reactions and equations. There are 48 built in, 16 of them without fluid. Each is a
+  reactions and equations. There are 44 built in, 16 of them without fluid; they keep to
+  the fluids that look good in full screen (no MPM, no test rigs). Each is a
   TOML file (format in [crates/app/looks/README.md](crates/app/looks/README.md)); your
   own go in `%APPDATA%\fluid-toy\looks` and reload when saved. "Save as" writes the
   current settings as a look.

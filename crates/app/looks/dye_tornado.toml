@@ -5,7 +5,7 @@ energy = "energetic"
 
 [sim]
 solver = "Stable fluids (dye)"
-scene = "Martin & Moyce column"
+scene = "Double dam break"
 palette = "Ink"
 params = { vorticity = 0.6, buoyancy = -0.2 }
 reactions = [

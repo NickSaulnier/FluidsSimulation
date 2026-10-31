@@ -9,7 +9,7 @@ energy = "any"
 
 [sim]
 solver = "FLIP"
-scene = "Tank with obstacle"
+scene = "Fountain"
 palette = "Ocean"
 liquid = true
 reactions = [

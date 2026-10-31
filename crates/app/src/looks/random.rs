@@ -86,18 +86,21 @@ pub const PHYSICS: &[(&str, &[Range])] = &[
 /// What a random look runs on, and how often: a solver (empty for no fluid) and the
 /// scenes that suit it. The 2D solvers stay in the scenes their built-ins use (the
 /// dye solvers need a scene with an inflow or a column to stir; fire needs a burner).
+///
+/// It's also what the visualizer shows: the built-in looks keep to it (a test checks).
+/// Left out because they settle into a puddle whenever the music is quiet, or are test
+/// rigs: FLIP outside the fountain (which keeps pouring), the MPM fluids, the Martin &
+/// Moyce column and the falling blocks. The Simulate tab still has them all, and the
+/// user's own looks may use anything.
 const FLUIDS: &[(&str, &[&str], f32)] = &[
     ("", &[], 3.0),
-    ("FLIP", &["Dam break", "Double dam break", "Tank with obstacle", "Fountain", "Martin & Moyce column"], 1.5),
-    ("PBF", &["Dam break", "Double dam break", "Tank with obstacle", "Martin & Moyce column"], 1.0),
-    ("Stable fluids (dye)", &["Dam break", "Double dam break", "Tank with obstacle", "Martin & Moyce column"], 2.0),
-    ("Stable fluids (GPU)", &["Dam break", "Double dam break", "Tank with obstacle", "Martin & Moyce column", "Wind tunnel"], 1.5),
+    ("FLIP", &["Fountain"], 0.8),
+    ("PBF", &["Dam break", "Double dam break", "Tank with obstacle"], 1.0),
+    ("Stable fluids (dye)", &["Dam break", "Double dam break", "Tank with obstacle"], 2.0),
+    ("Stable fluids (GPU)", &["Dam break", "Double dam break", "Tank with obstacle", "Wind tunnel"], 1.5),
     ("Smoke & fire", &["Campfire"], 1.5),
     ("Lattice Boltzmann (dye)", &["Wind tunnel"], 1.0),
-    ("Shallow water", &["Pond", "Breakwater", "Dam break", "Tank with obstacle", "Wind tunnel", "Falling blocks"], 1.5),
-    ("MPM jelly", &["Falling blocks", "Double dam break", "Tank with obstacle"], 0.8),
-    ("MPM snow", &["Falling blocks", "Dam break", "Double dam break"], 0.8),
-    ("MPM sand", &["Dam break", "Double dam break", "Falling blocks", "Tank with obstacle"], 0.8),
+    ("Shallow water", &["Pond", "Breakwater", "Dam break", "Tank with obstacle", "Wind tunnel"], 1.5),
     ("Fire (3D GPU)", &["Campfire 3D", "Torch", "Twin burners", "Chimney"], 1.5),
     ("Smoke (3D GPU)", &["Campfire 3D", "Torch", "Twin burners", "Chimney"], 1.0),
 ];
@@ -1019,6 +1022,15 @@ mod tests {
             let Ok(gpu) = sim3d::GpuContext::new() else { return };
             let mut world = sim3d::World3d::new(gpu, k, 0);
             check(s.name, &mut world);
+        }
+    }
+
+    /// The built-in looks keep to the fluids the visualizer shows.
+    #[test]
+    fn built_in_looks_keep_to_the_shown_fluids() {
+        for look in Library::builtin().looks.iter().filter(|l| l.has_fluid()) {
+            let shown = FLUIDS.iter().any(|(solver, scenes, _)| *solver == look.solver && scenes.contains(&look.scene.as_str()));
+            assert!(shown, "{}: {} in {} isn't shown in the visualizer", look.name, look.solver, look.scene);
         }
     }
 
