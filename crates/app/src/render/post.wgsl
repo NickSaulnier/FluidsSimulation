@@ -5,7 +5,10 @@
 // added onto the one above. The composite folds the picture into its symmetry, adds the
 // echo and the bloom, tone-maps, then grades the colours (see composite.rs). During a
 // blend between looks it mixes in a still of the old picture. Last, it dithers, so the
-// 8-bit target doesn't band.
+// 8-bit target doesn't band. The scene is read blurred along its flow (motion blur), and
+// read sharply (Catmull-Rom) when it was drawn smaller than the target. On an HDR target
+// the tone curve rolls off toward the display's peak instead of white, and the picture
+// is scaled to scRGB (1 = 80 nits) so white is the paper white asked for.
 
 struct Post {
     // Brightness (linear) where glow starts, and the width of the soft start.
@@ -42,6 +45,15 @@ struct Post {
     blend_seed: f32,
     // 1 to dither (an 8-bit target), 0 not.
     dither: f32,
+    // The brightest the picture goes, in paper whites (1 on SDR), and the scale from
+    // paper white to the target's units (scRGB: paper white over 80 nits; 1 on SDR).
+    top: f32,
+    scale: f32,
+    // The motion blur: the flow (uv per second) times this, seconds, is how far the
+    // picture moved while the shutter was open (0: none).
+    blur: f32,
+    // 1 if the scene is smaller than the target (read sharply), 0 not.
+    upscale: f32,
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
@@ -57,6 +69,12 @@ struct Post {
 @group(0) @binding(3) var bloom: texture_2d<f32>;
 // The old picture, for a blend; a stand-in elsewhere.
 @group(0) @binding(4) var still: texture_2d<f32>;
+// The scene's flow, uv per second, at the scene's size (zero where nothing moves, or a
+// stand-in when there's none this frame).
+@group(0) @binding(5) var flow: texture_2d<f32>;
+
+/// Motion blur takes this many samples along the flow.
+const BLUR_TAPS: i32 = 5;
 
 /// Brightness up to here passes the tone curve unchanged, so ordinary colours look as
 /// they did before HDR; above it, highlights roll off smoothly toward 1.
@@ -140,11 +158,71 @@ fn tone(c: vec3f) -> vec3f {
     if peak <= TONE_KNEE {
         return c;
     }
-    let room = 1.0 - TONE_KNEE;
-    let new_peak = 1.0 - room * room / (peak - TONE_KNEE + room);
+    // Toward 1 on SDR; toward the display's peak (in paper whites) on HDR.
+    let room = post.top - TONE_KNEE;
+    let new_peak = post.top - room * room / (peak - TONE_KNEE + room);
     let white = 1.0 - 1.0 / (TONE_WHITE * (peak - new_peak) + 1.0);
     // Toward white in OKLab, so the hue holds as the colour pales.
     return max(from_oklab(mix(oklab(c * (new_peak / peak)), oklab(vec3f(new_peak)), white)), vec3f(0.0));
+}
+
+/// The scene at `uv`: Catmull-Rom (nine bilinear taps, clamped to the four nearest
+/// texels so edges don't ring) when it's being enlarged, so a lowered resolution stays
+/// sharp; one bilinear tap otherwise.
+fn scene_at(uv: vec2f) -> vec3f {
+    let bilinear = textureSampleLevel(src, linear_clamp, uv, 0.0).rgb;
+    if post.upscale <= 0.0 {
+        return bilinear;
+    }
+    let size = vec2f(textureDimensions(src));
+    let pos = uv * size - 0.5;
+    let base = floor(pos);
+    let f = pos - base;
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    let w3 = f * f * (-0.5 + 0.5 * f);
+    let w12 = w1 + w2;
+    let t0 = (base - 0.5) / size;
+    let t12 = (base + 0.5 + w2 / w12) / size;
+    let t3 = (base + 2.5) / size;
+    let xs = array<f32, 3>(t0.x, t12.x, t3.x);
+    let ys = array<f32, 3>(t0.y, t12.y, t3.y);
+    let wx = array<f32, 3>(w0.x, w12.x, w3.x);
+    let wy = array<f32, 3>(w0.y, w12.y, w3.y);
+    var cubic = vec3f(0.0);
+    for (var j = 0; j < 3; j++) {
+        for (var i = 0; i < 3; i++) {
+            cubic += textureSampleLevel(src, linear_clamp, vec2f(xs[i], ys[j]), 0.0).rgb * (wx[i] * wy[j]);
+        }
+    }
+    let last = vec2i(size) - 1;
+    let at = vec2i(base);
+    let a = textureLoad(src, clamp(at, vec2i(0), last), 0).rgb;
+    let b = textureLoad(src, clamp(at + vec2i(1, 0), vec2i(0), last), 0).rgb;
+    let c = textureLoad(src, clamp(at + vec2i(0, 1), vec2i(0), last), 0).rgb;
+    let d = textureLoad(src, clamp(at + vec2i(1, 1), vec2i(0), last), 0).rgb;
+    return clamp(cubic, min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
+}
+
+/// The scene at `uv` blurred along its flow: the samples spread over where the picture
+/// moved while the shutter was open, so fast motion reads as continuous rather than
+/// stepping. Unblurred where it moved less than half a pixel.
+fn blurred_scene(uv: vec2f) -> vec3f {
+    if post.blur <= 0.0 {
+        return scene_at(uv);
+    }
+    let dims = vec2i(textureDimensions(flow));
+    let moved = textureLoad(flow, clamp(vec2i(uv * vec2f(dims)), vec2i(0), dims - 1), 0).xy * post.blur;
+    if length(moved * vec2f(textureDimensions(src))) < 0.5 {
+        return scene_at(uv);
+    }
+    var sum = vec3f(0.0);
+    for (var k = 0; k < BLUR_TAPS; k++) {
+        let t = f32(k) / f32(BLUR_TAPS - 1) - 0.5;
+        sum += scene_at(uv + moved * t);
+    }
+    return sum / f32(BLUR_TAPS);
 }
 
 /// `uv` reflected back into the picture (beyond an edge, the picture mirrored), so a
@@ -264,6 +342,9 @@ fn ign(p: vec2f) -> f32 {
 /// it moves and averages out), then back to linear for the target to encode. Black
 /// stays black.
 fn dither(c: vec3f, p: vec2f) -> vec3f {
+    if post.dither <= 0.0 {
+        return c;
+    }
     let frame = post.seed / 1.618;
     let n = ign(p + 5.588238 * frame) + ign(p + vec2f(37.0, 17.0) + 5.588238 * (frame + 0.5)) - 1.0;
     let s = encode(c);
@@ -341,7 +422,7 @@ fn fs_composite(in: VOut) -> @location(0) vec4f {
             textureSampleLevel(src, linear_clamp, uv - shift, 0.0).b,
         );
     } else {
-        scene = textureSampleLevel(src, linear_clamp, uv, 0.0).rgb;
+        scene = blurred_scene(uv);
     }
     if post.echo > 0.0 {
         let echo_uv = 0.5 + (uv - 0.5) * post.echo_flip / post.echo_zoom;
@@ -375,7 +456,8 @@ fn fs_composite(in: VOut) -> @location(0) vec4f {
     if post.grain > 0.0 {
         c = c + post.grain * (hash(in.pos.xy, post.seed) - 0.5);
     }
-    c = clamp(c, vec3f(0.0), vec3f(1.0));
+    // Into the target's units (the still a blend shows is already in them).
+    c = clamp(c, vec3f(0.0), vec3f(post.top)) * post.scale;
     if post.blend < 1.0 {
         c = mix(old_picture(in.uv, post.blend), c, blend_mask(in.uv, post.blend));
     }

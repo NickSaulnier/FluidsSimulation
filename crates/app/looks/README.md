@@ -239,6 +239,7 @@ The picture's last touches, drawn on the screen and never fed back. All off by d
 | `invert` | 0 to 1 |
 | `aberration` | colour fringes toward the edges, 0 to 0.05 |
 | `vignette`, `grain` | darker corners (0 to 1), film grain (0 to 0.3) |
+| `motion_blur` | blur along the picture's flow, as the share of a frame the shutter is open: 0 none to 1 (default 0.5); only where there's a flow (feedback on, or a 3D look) |
 
 ## `[code]`: equations
 

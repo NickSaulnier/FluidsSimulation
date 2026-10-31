@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **phases A to H done** (2026-10-31); the optional I left; decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
+Status: **every phase done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -132,14 +132,14 @@ What's on screen in full screen should hold up close on a large display:
   display, with the tone curve mapping to the display's peak instead of to white
   (decision 2).
 
-## 4. Decisions (1, 3 and 5 made)
+## 4. Decisions (1, 2, 3 and 5 made)
 
 1. **The tone curve (§3.2):** the same compression, on the brightest channel instead of
    each, with a gradual turn toward white (Khronos' PBR Neutral, without its toe), so
    colours under the knee are as they were; compared on the reel's fire looks before
    switching (see phase B in §6). No look needed retuning.
-2. **HDR output (§3.8):** in scope? It needs an HDR display to see and to test.
-   Recommended: last, if the user has one.
+2. **HDR output (§3.8):** in scope (the user has an HDR display); built in phase I, off
+   by default, a setting.
 3. **Which fluids move to the GPU (§3.5):** Smoke & fire (the user started phase H);
    shallow water and Lattice Boltzmann not for now.
 4. **The frame budget:** the target (60 fps at 1080p or 1440p? 4K?) and the GPU it's
@@ -475,3 +475,47 @@ fidelity reel audited, against the run before, and its frame time measured.
   - **Checked:** the sim, sim-gpu and app tests (252 app, 62 sim, 8 GPU stable: new,
     the three fire tests and a half-float round trip) and clippy (the workspace) pass;
     the fire looks and probes audited (no errors).
+- **Phase I, extras (done):** `render/post.wgsl`, `render/post.rs`, `gpu.rs`,
+  `render/ui_layer.rs`, the screen settings.
+  - **Motion blur:** the composite reads the scene as five samples along its flow
+    (screen uv per second) over the share of the frame the shutter is open: the
+    composite setting `motion_blur` (0 to 1, default 0.5, a slider). Only where the
+    flow was drawn this frame (with feedback on, and always in 3D), and only where the
+    picture moved half a pixel or more. Checked on the GPU: stripes moving a twelfth of
+    the width in a frame lose more than half their contrast; still, none.
+  - **Enlarging, not temporal upscaling** (a change from §3.8): when the scene is drawn
+    smaller than the target (the render scale, the automatic three quarters above
+    1440p, the governor), the composite reads it with Catmull-Rom (clamped, as the
+    feedback's) instead of one bilinear tap. A temporal upscaler would need each
+    pixel's motion for the whole picture, which the feedback's warp, the flow and the
+    fractal's own gathering make up between them, and jitter fed into the feedback loop
+    would smear into its trails; the feedback already gathers over time. Checked: a
+    step enlarged twice keeps 0.475 of its height between the pixels either side
+    (bilinear: 0.4), without overshoot.
+  - **HDR output:** a screen setting (off by default; greyed out, with why, where the
+    display isn't HDR), with the paper white (80 to 480 nits, default 200) and the
+    display's peak (400 to 4000, default 1000).
+    - **The surface:** `Rgba16Float` with wgpu 30's `ExtendedSrgbLinear` colour space
+      (scRGB, DXGI's G10 P709), where the surface reports it for that format (asked
+      again on resize, so a move to an SDR display falls back).
+    - **The composite:** the tone curve rolls off toward the peak in paper whites
+      (peak / white) instead of 1, colours under the knee as before; the result scaled
+      by white / 80 nits; no dithering (a float target).
+    - **The interface:** egui writes gamma values to any target that isn't sRGB, so on
+      scRGB it would be washed out; it draws into an 8-bit layer instead, as on SDR,
+      and the layer goes over the surface decoded to linear at paper white.
+    - **Grabs** (screenshots, recordings, thumbnails, the audit, the random looks'
+      check) stay SDR: an SDR composite of their own, from the same frame.
+    - **Checked:** on the GPU, a grey comes out at its paper white's scale and a
+      highlight above paper white, up to the peak (on SDR the same highlight stays
+      under white). On this machine Windows reports an HDR display: the app ran the
+      visualizer in HDR (40 s, a song, looks changing) with no errors, and the
+      thumbnails it took meanwhile are ordinary SDR images. How it looks on the
+      display is for the user to judge.
+  - **The reel** (against phase G's): as it was, but Ocean pulse (its fast liquid
+    blurred along the flow: sharpness 1.42 → 1.26, shimmer 0.11 → 0.06) and Firestorm's
+    frame rate (phase H's GPU fire). A first run was disturbed (frame rates down by a
+    third on looks that hadn't changed); run again, they were as before.
+  - **Checked:** 256 app tests (new: HDR output above paper white, motion blur along
+    the flow, an enlarged scene staying sharp, the interface layer's shader) and clippy
+    pass.

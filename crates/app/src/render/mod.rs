@@ -18,6 +18,7 @@ pub mod score;
 mod solid;
 pub mod thumbnail;
 pub mod timer;
+pub mod ui_layer;
 pub mod waves;
 
 use crate::view::View;

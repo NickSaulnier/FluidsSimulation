@@ -209,6 +209,7 @@ impl Settings {
             aberration: clamp(c.aberration, 0.0, 0.05),
             vignette: clamp(c.vignette, 0.0, 1.0),
             grain: clamp(c.grain, 0.0, 0.3),
+            motion_blur: clamp(c.motion_blur, 0.0, 1.0),
             ..*c
         };
         for r in &mut s.reactions {
@@ -266,7 +267,7 @@ mod tests {
         state.browser.tags = vec!["water".into()];
         state.director.tags_only = true;
         state.director.random_looks = true;
-        state.screen = crate::ui::Screen { monitor: Some("DISPLAY2".into()), windowed: true, on_top: true, fps_cap: 60 };
+        state.screen = crate::ui::Screen { monitor: Some("DISPLAY2".into()), windowed: true, on_top: true, fps_cap: 60, hdr: true, hdr_white: 250, hdr_peak: 800 };
         let json = serde_json::to_string(&Settings::from_state(&state)).unwrap();
         let mut back = UiState::default();
         serde_json::from_str::<Settings>(&json).unwrap().apply(&mut back);

@@ -113,7 +113,8 @@ resolution in full screen if the simulation falls behind real time.
   roll off keeping their hue and pale toward white; hue turns and palette blends are
   in OKLab, so they keep their lightness; the output is dithered, so gradients don't
   band. The feedback reads the last frame sharply (Catmull-Rom), so trails keep their
-  detail; a look can ask for MilkDrop's softer smear.
+  detail; a look can ask for MilkDrop's softer smear. Fast motion is blurred along the
+  flow, and a picture drawn smaller (a lowered resolution) is enlarged sharply.
 - **Fractals:** Mandelbrot, Julia, Burning Ship, Tricorn and Newton, and in 3D the
   Mandelbulb and the Menger sponge (raymarched, behind the gas in 3D looks), in the
   look's colours, over the fluid or alone; a 2D one gathers its samples across frames
@@ -159,7 +160,9 @@ resolution in full screen if the simulation falls behind real time.
   the director can mix them in now and then (a setting, off by default). A random look
   that comes out dark, empty or murky in its first seconds is replaced by another.
 - **Screen:** the display to show on (the app moves there at once; a map of your
-  displays to pick from), the visualizer in a window kept on top, a frame-rate cap.
+  displays to pick from), the visualizer in a window kept on top, a frame-rate cap,
+  and HDR output on an HDR display (Windows' HDR on): the picture's white at a paper
+  white you set, its highlights (fire, flashes, glow) up to the display's peak.
 - **Interface:** a dark, high-contrast theme in Inter and Orbitron, three sizes, and
   motion throughout (sliding panels, switches, popping and filling icons), with a
   "Reduce motion" setting.

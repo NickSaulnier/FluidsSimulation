@@ -25,7 +25,31 @@ const MIN_LEVEL: u32 = 8;
 const AUTO_FULL_PIXELS: u32 = 2560 * 1440;
 const AUTO_SCALE: f32 = 0.75;
 
-/// Must match `Post` in post.wgsl (160 bytes).
+/// HDR output's levels: the paper white (what the picture's white is shown at) and the
+/// display's peak, nits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HdrLevels {
+    pub white: f32,
+    pub peak: f32,
+}
+
+/// An HDR surface's format (scRGB: linear, 1 is 80 nits).
+pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const SCRGB_NITS: f32 = 80.0;
+
+/// How the composite writes its target: dithered (8 bits), the brightest it goes in
+/// paper whites, the scale to the target's units, the motion blur's shutter (seconds),
+/// whether it enlarges the scene.
+#[derive(Clone, Copy, Debug)]
+struct Output {
+    dither: bool,
+    top: f32,
+    scale: f32,
+    blur: f32,
+    upscale: bool,
+}
+
+/// Must match `Post` in post.wgsl (176 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -54,6 +78,10 @@ struct Uniforms {
     blend_seed: f32,
     /// 1 to dither (for an 8-bit target), 0 not.
     dither: f32,
+    top: f32,
+    scale: f32,
+    blur: f32,
+    upscale: f32,
     _pad: [f32; 3],
     deep: [f32; 4],
     base: [f32; 4],
@@ -61,7 +89,7 @@ struct Uniforms {
 }
 
 impl Uniforms {
-    fn new(strength: f32, echo: Echo, aspect: f32, c: &Composite, dither: bool) -> Self {
+    fn new(strength: f32, echo: Echo, aspect: f32, c: &Composite, out: Output) -> Self {
         let s = &c.settings;
         Self {
             threshold: THRESHOLD,
@@ -87,7 +115,11 @@ impl Uniforms {
             blend: c.blend.amount.clamp(0.0, 1.0),
             blend_pattern: c.blend.pattern.index(),
             blend_seed: c.blend.seed,
-            dither: f32::from(u8::from(dither)),
+            dither: f32::from(u8::from(out.dither)),
+            top: out.top,
+            scale: out.scale,
+            blur: out.blur,
+            upscale: f32::from(u8::from(out.upscale)),
             _pad: [0.0; 3],
             deep: composite::linear(c.palette.deep),
             base: composite::linear(c.palette.base),
@@ -140,16 +172,26 @@ struct Targets {
 pub struct PostProcess {
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// The composite's settings for an SDR target while the output is HDR (for grabs).
+    uniforms_sdr: wgpu::Buffer,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
     sampler: wgpu::Sampler,
     /// Stands in for the bloom texture in the passes that don't read it.
     blank: wgpu::TextureView,
     prefilter: wgpu::RenderPipeline,
     down: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
+    /// The composite into the SDR format (the surface's without HDR, and grabs').
     composite: wgpu::RenderPipeline,
     targets: Option<Targets>,
-    /// The composite's format, for the stills.
+    /// The SDR format.
     output: wgpu::TextureFormat,
+    /// HDR output: its levels, and the composite into `HDR_FORMAT`.
+    hdr: Option<(HdrLevels, wgpu::RenderPipeline)>,
+    /// This frame's flow (for the motion blur), and its time.
+    flow: Option<wgpu::TextureView>,
+    frame_dt: f32,
     /// Stills of the picture for blends (made when first captured), and which one shows.
     stills: [Option<(wgpu::TextureView, [u32; 2])>; 2],
     still: usize,
@@ -194,6 +236,16 @@ impl PostProcess {
                 },
                 texture(3),
                 texture(4),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -220,12 +272,15 @@ impl PostProcess {
             })
         };
         let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("post uniforms"),
-            size: size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let buffer = |label| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let (uniforms, uniforms_sdr) = (buffer("post uniforms"), buffer("post uniforms (sdr)"));
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("post"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -239,14 +294,65 @@ impl PostProcess {
             up: pipeline("fs_up", SCENE_FORMAT, Some(wgpu::BlendState { color: add, alpha: add })),
             composite: pipeline("fs_composite", output, None),
             output,
+            hdr: None,
+            flow: None,
+            frame_dt: 0.0,
             stills: [None, None],
             still: 0,
             layout,
             uniforms,
+            uniforms_sdr,
+            shader,
+            pipeline_layout,
             sampler,
             blank,
             targets: None,
         }
+    }
+
+    /// Write HDR output at `levels` (to an `HDR_FORMAT` target), or SDR (`None`). A change
+    /// drops the stills (they're in the other's units).
+    pub fn set_hdr(&mut self, device: &wgpu::Device, levels: Option<HdrLevels>) {
+        match (levels, &mut self.hdr) {
+            (Some(l), Some((now, _))) => *now = l,
+            (Some(l), None) => {
+                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("fs_composite (hdr)"),
+                    layout: Some(&self.pipeline_layout),
+                    vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &self.shader,
+                        entry_point: Some("fs_composite"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(HDR_FORMAT.into())],
+                    }),
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+                self.hdr = Some((l, pipeline));
+                self.stills = [None, None];
+            }
+            (None, Some(_)) => {
+                self.hdr = None;
+                self.stills = [None, None];
+            }
+            (None, None) => {}
+        }
+    }
+
+    /// This frame's flow (screen uv per second, the scene's size), for the motion blur
+    /// (none: no blur), and the frame's time.
+    pub fn set_flow(&mut self, flow: Option<&wgpu::TextureView>, frame_dt: f32) {
+        self.flow = flow.cloned();
+        self.frame_dt = frame_dt;
+    }
+
+    /// The format the composite writes the surface in.
+    fn surface_format(&self) -> wgpu::TextureFormat {
+        if self.hdr.is_some() { HDR_FORMAT } else { self.output }
     }
 
     /// The texture to draw the scene into, `size` pixels (made or remade as needed).
@@ -274,15 +380,20 @@ impl PostProcess {
     }
 
     fn group(&self, device: &wgpu::Device, src: &wgpu::TextureView, bloom: &wgpu::TextureView, still: &wgpu::TextureView) -> wgpu::BindGroup {
+        self.group_with(device, &self.uniforms, src, bloom, still)
+    }
+
+    fn group_with(&self, device: &wgpu::Device, uniforms: &wgpu::Buffer, src: &wgpu::TextureView, bloom: &wgpu::TextureView, still: &wgpu::TextureView) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(bloom) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(still) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(self.flow.as_ref().unwrap_or(&self.blank)) },
             ],
         })
     }
@@ -308,8 +419,16 @@ impl PostProcess {
         let aspect = t.size[0] as f32 / t.size[1].max(1) as f32;
         // Only a target of 8 bits a channel bands (a float one, in tests, doesn't).
         let dither = matches!(self.output.remove_srgb_suffix(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm);
-        let uniforms = Uniforms::new(strength, echo, aspect, composite, dither);
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        let blur = if self.flow.is_some() { composite.settings.motion_blur.clamp(0.0, 1.0) * self.frame_dt } else { 0.0 };
+        let target = output.texture().size();
+        let upscale = t.size[0] < target.width || t.size[1] < target.height;
+        let sdr = Output { dither, top: 1.0, scale: 1.0, blur, upscale };
+        let out = match &self.hdr {
+            Some((l, _)) => Output { dither: false, top: (l.peak / l.white).max(1.0), scale: l.white / SCRGB_NITS, ..sdr },
+            None => sdr,
+        };
+        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&Uniforms::new(strength, echo, aspect, composite, out)));
+        queue.write_buffer(&self.uniforms_sdr, 0, bytemuck::bytes_of(&Uniforms::new(strength, echo, aspect, composite, sdr)));
         if strength > 0.0 {
             let prefilter = self.group(device, source, &self.blank, &self.blank);
             fullscreen(encoder, "bloom prefilter", &t.levels[0], false, &self.prefilter, &prefilter);
@@ -324,7 +443,8 @@ impl PostProcess {
             timer.mark(encoder, Stage::Composite);
         }
         let composite = self.group(device, source, &t.levels[0], self.still_view());
-        fullscreen(encoder, "composite", output, false, &self.composite, &composite);
+        let pipeline = self.hdr.as_ref().map_or(&self.composite, |(_, p)| p);
+        fullscreen(encoder, "composite", output, false, pipeline, &composite);
     }
 
     /// The still a blend shows the old picture from (a stand-in before any capture).
@@ -343,7 +463,7 @@ impl PostProcess {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: self.output,
+                format: self.surface_format(),
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
@@ -352,16 +472,31 @@ impl PostProcess {
         let Some(t) = &self.targets else { return };
         let (target, _) = self.stills[next].as_ref().expect("just made");
         let composite = self.group(device, source, &t.levels[0], self.still_view());
-        fullscreen(encoder, "capture", target, false, &self.composite, &composite);
+        let pipeline = self.hdr.as_ref().map_or(&self.composite, |(_, p)| p);
+        fullscreen(encoder, "capture", target, false, pipeline, &composite);
         self.still = next;
     }
 
-    /// The composite of `source` again, into `output` (of the same format), with what the
-    /// last `run` set up (its glow and settings): for thumbnails.
+    /// The composite of `source` again, into `output` (the surface's format, or the SDR
+    /// one while the output is HDR: grabs are SDR), with what the last `run` set up (its
+    /// glow and settings): for thumbnails, screenshots, recordings.
     pub fn composite_again(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, output: &wgpu::TextureView) {
         let Some(t) = &self.targets else { return };
-        let composite = self.group(device, source, &t.levels[0], self.still_view());
-        fullscreen(encoder, "composite again", output, false, &self.composite, &composite);
+        match &self.hdr {
+            Some((_, pipeline)) if output.texture().format() == HDR_FORMAT => {
+                let composite = self.group(device, source, &t.levels[0], self.still_view());
+                fullscreen(encoder, "composite again", output, false, pipeline, &composite);
+            }
+            Some(_) => {
+                // (The blend's still is in HDR units: an SDR grab shows the new look.)
+                let composite = self.group_with(device, &self.uniforms_sdr, source, &t.levels[0], &self.blank);
+                fullscreen(encoder, "composite again (sdr)", output, false, &self.composite, &composite);
+            }
+            None => {
+                let composite = self.group(device, source, &t.levels[0], self.still_view());
+                fullscreen(encoder, "composite again", output, false, &self.composite, &composite);
+            }
+        }
     }
 }
 
@@ -646,6 +781,94 @@ pub(crate) mod tests {
     }
 
     /// Half floats for the test's uploads and readbacks.
+    /// The composite of a grey `scene` (`size`, a value per pixel) into a float target
+    /// `out` pixels, with `post` set up as the caller likes.
+    fn composite_of(device: &wgpu::Device, queue: &wgpu::Queue, post: &mut PostProcess, size: [u32; 2], out: [u32; 2], scene: &dyn Fn(u32, u32) -> f32) -> Vec<[f32; 4]> {
+        let target = post.scene_target(device, size);
+        let data: Vec<half_float::F16x4> = (0..size[1]).flat_map(|y| (0..size[0]).map(move |x| (x, y))).map(|(x, y)| half_float::F16x4::grey(scene(x, y))).collect();
+        queue.write_texture(
+            target.texture().as_image_copy(),
+            bytemuck::cast_slice(&data),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: None },
+            wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+        );
+        let output = texture_2d(device, "output", out);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        post.run(device, queue, &mut encoder, &target, &output, 0.0, Echo::NONE, &Composite::NONE, None);
+        queue.submit([encoder.finish()]);
+        half_float::read(device, queue, output.texture(), out)
+    }
+
+    /// On an HDR target: an ordinary grey is at paper white's scale (scRGB: 1 is 80
+    /// nits), and a bright highlight goes above paper white, up to the peak; on SDR the
+    /// same highlight stays under white.
+    #[test]
+    fn hdr_output_reaches_above_paper_white() {
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let mut post = PostProcess::new(device, SCENE_FORMAT);
+        let size = [32u32, 32];
+        let sdr_bright = composite_of(device, queue, &mut post, size, size, &|_, _| 6.0)[0][0];
+        post.set_hdr(device, Some(HdrLevels { white: 200.0, peak: 1000.0 }));
+        let grey = composite_of(device, queue, &mut post, size, size, &|_, _| 0.5)[0][0];
+        let bright = composite_of(device, queue, &mut post, size, size, &|_, _| 6.0)[0][0];
+        let scale = 200.0 / SCRGB_NITS;
+        assert!((grey - 0.5 * scale).abs() < 0.01, "grey at {grey}, expected {}", 0.5 * scale);
+        assert!(bright > 2.0 * scale && bright <= 5.0 * scale + 0.01, "a highlight at {bright} (paper white {scale}, peak {})", 5.0 * scale);
+        assert!(sdr_bright < 1.0, "on SDR the highlight is {sdr_bright}");
+    }
+
+    /// Stripes moving fast along the flow come out blurred; with no flow, sharp.
+    #[test]
+    fn motion_blur_follows_the_flow() {
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let mut post = PostProcess::new(device, SCENE_FORMAT);
+        let size = [64u32, 32];
+        let stripes = |x: u32, _| if x % 8 < 4 { 0.6 } else { 0.05 };
+        let contrast = |img: &[[f32; 4]]| {
+            let row: Vec<f32> = (16..48).map(|x| img[(16 * size[0] + x) as usize][0]).collect();
+            row.iter().fold(0.0f32, |m, &v| m.max(v)) - row.iter().fold(1.0f32, |m, &v| m.min(v))
+        };
+        let still = contrast(&composite_of(device, queue, &mut post, size, size, &stripes));
+        // Ten uv a second sideways: over half a 60th of a second, a twelfth of the width.
+        let flow = super::super::feedback::texture(device, "flow", size, super::super::feedback::FLOW_FORMAT);
+        // (Halves: 10 is 0x4900.)
+        let moving = vec![[0x4900u16, 0]; (size[0] * size[1]) as usize];
+        queue.write_texture(
+            flow.texture().as_image_copy(),
+            bytemuck::cast_slice(&moving),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 4), rows_per_image: None },
+            wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+        );
+        post.set_flow(Some(&flow), 1.0 / 60.0);
+        let blurred = contrast(&composite_of(device, queue, &mut post, size, size, &stripes));
+        assert!(still > 0.5 && blurred < 0.5 * still, "stripes' contrast {still} still, {blurred} moving");
+    }
+
+    /// A scene drawn at half size and enlarged keeps a sharper step than bilinear would
+    /// (Catmull-Rom: the pixels either side of the edge differ by 0.475 of the step
+    /// instead of 0.4), without overshooting.
+    #[test]
+    fn an_enlarged_scene_stays_sharp() {
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let mut post = PostProcess::new(device, SCENE_FORMAT);
+        let img = composite_of(device, queue, &mut post, [32, 32], [64, 64], &|x, _| if x < 16 { 0.0 } else { 0.8 });
+        let at = |x: u32| img[(32 * 64 + x) as usize][0];
+        assert!(at(32) - at(31) > 0.44, "across the edge: {} to {}", at(31), at(32));
+        assert!((0..64).all(|x| (-1e-3..=0.8 + 1e-3).contains(&at(x))), "overshoot");
+    }
+
     pub(crate) mod half_float {
         use bytemuck::{Pod, Zeroable};
 

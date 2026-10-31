@@ -131,6 +131,7 @@ fn composite(ui: &mut egui::Ui, s: &mut CompositeSettings) {
     slider(ui, "Fringes", "Chromatic aberration: colour fringes toward the edges.", &mut s.aberration, 0.0..=0.05);
     slider(ui, "Vignette", "Darker corners.", &mut s.vignette, 0.0..=1.0);
     slider(ui, "Grain", "Film grain.", &mut s.grain, 0.0..=0.3);
+    slider(ui, "Motion blur", "Blur along the picture's flow, as the share of a frame the shutter is open (with feedback on, or in 3D).", &mut s.motion_blur, 0.0..=1.0);
     if *s != CompositeSettings::OFF && ui.button("Reset").on_hover_text("Everything as it was: no symmetry, no grading, no lens").clicked() {
         *s = CompositeSettings::OFF;
     }
@@ -361,6 +362,19 @@ fn screen(ui: &mut egui::Ui, s: &mut crate::ui::UiState) {
     });
     if s.monitors.len() > 1 {
         display_map(ui, &s.monitors, &mut screen.monitor, s.window_display.as_deref());
+    }
+    ui.add_enabled_ui(s.hdr_available, |ui| {
+        widgets::toggle(ui, &mut screen.hdr, "HDR output", "Brighter highlights (fire, flashes, glow) on an HDR display: the picture's white at the paper white, its highlights up to the peak");
+    });
+    if !s.hdr_available {
+        ui.weak("HDR output needs an HDR display, with HDR turned on in Windows' display settings.");
+    } else if screen.hdr {
+        row(ui, "Paper white", "How bright the picture's white is, nits (Windows' SDR content brightness is about the same)", |ui| {
+            ui.add(egui::Slider::new(&mut screen.hdr_white, 80..=480).suffix(" nits"));
+        });
+        row(ui, "Peak", "The display's brightest, nits (its HDR rating: 400, 600, 1000...)", |ui| {
+            ui.add(egui::Slider::new(&mut screen.hdr_peak, 400..=4000).logarithmic(true).suffix(" nits"));
+        });
     }
     let label = |cap: u32| if cap == 0 { "No cap".to_string() } else { format!("{cap} fps") };
     row(ui, "Frame rate", "The most frames per second: lower saves power (and heat) on a fast display", |ui| {

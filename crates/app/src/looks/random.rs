@@ -957,6 +957,7 @@ impl Rounded for CompositeSettings {
             aberration: round(self.aberration),
             vignette: round(self.vignette),
             grain: round(self.grain),
+            motion_blur: round(self.motion_blur),
             ..self
         }
     }

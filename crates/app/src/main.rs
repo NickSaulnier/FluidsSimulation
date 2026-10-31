@@ -120,6 +120,8 @@ struct State {
     egui_ctx: egui::Context,
     egui_winit: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    /// The interface over an HDR surface (see `render::ui_layer`).
+    ui_layer: render::ui_layer::UiLayer,
     /// Textures egui asked to free; released next frame, after this frame has drawn.
     egui_pending_free: Vec<egui::TextureId>,
     world: World,
@@ -371,6 +373,7 @@ impl State {
             Some(gpu.device.limits().max_texture_dimension_2d as usize),
         );
         let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.ui_format, Default::default());
+        let ui_layer = render::ui_layer::UiLayer::new(&gpu.device, gpu.ui_format, render::post::HDR_FORMAT);
 
         let world = World::with_solvers(&SOLVERS, 0, 0);
         log::info!("{} particles", world.initial_particles);
@@ -400,6 +403,7 @@ impl State {
             camera: OrbitCamera::framing(glam::Vec3::ONE),
             renderer3d,
             post,
+            ui_layer,
             timer,
             feedback,
             velocity: Vec::new(),
@@ -1351,6 +1355,11 @@ impl State {
         }
         self.update_title();
         self.thumbnail_key = self.thumbnail_wanted();
+        // HDR output: the surface as the settings ask (where the display can), and the
+        // composite to match.
+        self.ui.hdr_available = self.gpu.hdr_available;
+        self.gpu.set_hdr(self.ui.screen.hdr);
+        self.post.set_hdr(&self.gpu.device, self.gpu.hdr.then(|| self.ui.screen.hdr_levels()));
 
         let frame = match self.gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -1502,7 +1511,7 @@ impl State {
             ui::SolverChoice::ThreeD(k) => match &mut self.world3d {
                 Some(world) => world.switch_solver(k),
                 None => {
-                    let gpu = sim3d::GpuContext::shared(self.gpu.device.clone(), self.gpu.queue.clone(), self.gpu.adapter.clone());
+                    let gpu = sim3d::GpuContext::shared(self.gpu.device.clone(), self.gpu.queue.clone(), self.gpu.adapter().to_string());
                     let world = sim3d::World3d::new(gpu, k, 0);
                     self.camera = OrbitCamera::framing(world.scene.size);
                     self.world3d = Some(world);
@@ -1648,6 +1657,9 @@ impl State {
         mark(&self.timer, &mut encoder, Stage::Glow);
         let blend = render::composite::Blend { amount: self.ui.director.blend(), pattern: self.blend_pattern, seed: self.blend_seed };
         let composite = render::composite::Composite { settings: self.look_frame.composite, clock: self.composite_clock, palette: self.palette_now, blend };
+        // The motion blur's flow: drawn this frame with feedback on, and always in 3D.
+        let flow_drawn = self.world3d.is_some() || feedback.enabled;
+        self.post.set_flow(flow_drawn.then_some(&flow), self.frame_dt);
         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
         self.post.run(device, queue, &mut encoder, &picture, &target, self.ui.glow, feedback.echo(), &composite, self.timer.as_ref());
         if self.ui.director.capturing() {
@@ -1657,7 +1669,7 @@ impl State {
         }
         // Screenshots and recordings: the composite again, into a frame to read back.
         if std::mem::take(&mut self.screenshot_wanted) {
-            match self.grabber.begin(device, surface, self.gpu.config.format, Grab::Screenshot) {
+            match self.grabber.begin(device, surface, self.gpu.sdr_format, Grab::Screenshot) {
                 Some(view) => {
                     self.post.composite_again(device, &mut encoder, &picture, &view);
                     self.grabber.end(&mut encoder);
@@ -1667,14 +1679,14 @@ impl State {
         }
         if let Some(recorder) = self.recorder.as_ref().filter(|r| r.wants_frame()) {
             let tag = Grab::Video(recorder.time());
-            if let Some(view) = self.grabber.begin(device, recorder.size, self.gpu.config.format, tag) {
+            if let Some(view) = self.grabber.begin(device, recorder.size, self.gpu.sdr_format, tag) {
                 self.post.composite_again(device, &mut encoder, &picture, &view);
                 self.grabber.end(&mut encoder);
             }
         }
         for (tag, size) in [(self.audit_grab.take(), audit::GRAB), (self.audit_full.take(), surface)] {
             if let Some(tag) = tag
-                && let Some(view) = self.grabber.begin(device, size, self.gpu.config.format, Grab::Audit(tag))
+                && let Some(view) = self.grabber.begin(device, size, self.gpu.sdr_format, Grab::Audit(tag))
             {
                 self.post.composite_again(device, &mut encoder, &picture, &view);
                 self.grabber.end(&mut encoder);
@@ -1683,7 +1695,7 @@ impl State {
         if std::mem::take(&mut self.check_grab)
             && let Some(look) = self.check.as_ref().map(|c| c.look.clone())
         {
-            match self.grabber.begin(device, render::score::CHECK_SIZE, self.gpu.config.format, Grab::Check(look)) {
+            match self.grabber.begin(device, render::score::CHECK_SIZE, self.gpu.sdr_format, Grab::Check(look)) {
                 Some(view) => {
                     self.post.composite_again(device, &mut encoder, &picture, &view);
                     self.grabber.end(&mut encoder);
@@ -1696,7 +1708,7 @@ impl State {
             }
         }
         if let Some(key) = self.thumbnail_key.take() {
-            let thumbnail = self.thumbnailer.target(device, surface, self.gpu.config.format);
+            let thumbnail = self.thumbnailer.target(device, surface, self.gpu.sdr_format);
             self.post.composite_again(device, &mut encoder, &picture, &thumbnail);
             let crop = self.canvas_fraction();
             self.thumbnailer.copy(device, &mut encoder, key, crop);
@@ -1710,10 +1722,12 @@ impl State {
             pixels_per_point: egui_out.pixels_per_point,
         };
         let paint_jobs = self.egui_ctx.tessellate(egui_out.shapes, egui_out.pixels_per_point);
-        let ui_target = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.gpu.ui_format),
-            ..Default::default()
-        });
+        // On an HDR surface egui draws into a layer of its own, put over after.
+        let (ui_target, load) = if self.gpu.hdr {
+            (self.ui_layer.target(device, [self.gpu.config.width, self.gpu.config.height]), wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT))
+        } else {
+            (frame.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(self.gpu.ui_format), ..Default::default() }), wgpu::LoadOp::Load)
+        };
         let egui_commands = self.egui_renderer.update_buffers(device, queue, &mut encoder, &paint_jobs, &screen);
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1722,13 +1736,17 @@ impl State {
                     view: &ui_target,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
                 })],
                 ..Default::default()
             });
             // egui-wgpu wants a `RenderPass<'static>`; `forget_lifetime` trades the
             // compile-time borrow of the encoder for a runtime check.
             self.egui_renderer.render(&mut pass.forget_lifetime(), &paint_jobs, &screen);
+        }
+        if self.gpu.hdr {
+            let white = self.ui.screen.hdr_levels().white;
+            self.ui_layer.draw(device, queue, &mut encoder, &target, white / 80.0);
         }
         if let Some(timer) = &mut self.timer {
             timer.mark(&mut encoder, Stage::End);

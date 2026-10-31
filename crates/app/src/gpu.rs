@@ -8,6 +8,7 @@ use winit::window::Window;
 
 pub struct Gpu {
     instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     window: Arc<Window>,
     /// `'static` because the surface holds its own `Arc<Window>` clone, so it can never
     /// outlive the window it draws into.
@@ -17,8 +18,18 @@ pub struct Gpu {
     pub config: wgpu::SurfaceConfiguration,
     /// Non-sRGB view format of the swapchain, for egui (which blends in gamma space).
     pub ui_format: wgpu::TextureFormat,
-    /// The adapter's name, for logs and the 3D solvers' context.
-    pub adapter: String,
+    /// The SDR swapchain format (sRGB): the surface's without HDR, and grabs'.
+    pub sdr_format: wgpu::TextureFormat,
+    /// Whether the surface is HDR now (`HDR_FORMAT`, scRGB), and whether it can be (the
+    /// display is HDR: Windows reports the colour space for it).
+    pub hdr: bool,
+    pub hdr_available: bool,
+    adapter_name: String,
+}
+
+/// Whether `surface` can show `HDR_FORMAT` as scRGB (the display is in HDR mode).
+fn hdr_supported(surface: &wgpu::Surface<'_>, adapter: &wgpu::Adapter) -> bool {
+    surface.get_capabilities(adapter).color_spaces(crate::render::post::HDR_FORMAT).contains(wgpu::SurfaceColorSpaces::EXTENDED_SRGB_LINEAR)
 }
 
 impl Gpu {
@@ -58,8 +69,32 @@ impl Gpu {
             config.view_formats.push(ui_format);
         }
         surface.configure(&device, &config);
+        let hdr_available = hdr_supported(&surface, &adapter);
+        log::info!("HDR output: {}", if hdr_available { "available" } else { "not available (an SDR display, or HDR off in Windows)" });
 
-        Ok(Self { instance, window, surface, device, queue, config, ui_format, adapter: info.name })
+        Ok(Self { instance, adapter, window, surface, device, queue, sdr_format: config.format, config, ui_format, hdr: false, hdr_available, adapter_name: info.name })
+    }
+
+    /// Switch the surface to HDR (scRGB, `HDR_FORMAT`) or back to SDR, if it isn't
+    /// already and (for HDR) the display can show it. Returns whether it changed.
+    pub fn set_hdr(&mut self, on: bool) -> bool {
+        let on = on && self.hdr_available;
+        if on == self.hdr {
+            return false;
+        }
+        if on {
+            self.config.format = crate::render::post::HDR_FORMAT;
+            self.config.color_space = wgpu::SurfaceColorSpace::ExtendedSrgbLinear;
+            self.config.view_formats.clear();
+        } else {
+            self.config.format = self.sdr_format;
+            self.config.color_space = wgpu::SurfaceColorSpace::Auto;
+            self.config.view_formats = if self.ui_format != self.sdr_format { vec![self.ui_format] } else { Vec::new() };
+        }
+        self.hdr = on;
+        self.reconfigure();
+        log::info!("surface: {}", if on { "HDR (scRGB)" } else { "SDR" });
+        true
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -69,11 +104,21 @@ impl Gpu {
         }
         self.config.width = size.width;
         self.config.height = size.height;
+        // (A move to another display can change whether it's HDR.)
+        self.hdr_available = hdr_supported(&self.surface, &self.adapter);
+        if self.hdr && !self.hdr_available {
+            self.set_hdr(false);
+        }
         self.surface.configure(&self.device, &self.config);
     }
 
     pub fn reconfigure(&self) {
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// The adapter's name, for logs and the 3D solvers' context.
+    pub fn adapter(&self) -> &str {
+        &self.adapter_name
     }
 
     /// The surface itself is gone (rare: GPU driver reset, display change). Rebuild it.

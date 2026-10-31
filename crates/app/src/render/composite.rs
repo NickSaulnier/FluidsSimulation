@@ -73,6 +73,9 @@ pub struct CompositeSettings {
     /// Darkened corners, 0 to 1; film grain, 0 to 0.3.
     pub vignette: f32,
     pub grain: f32,
+    /// Motion blur along the picture's flow: the share of a frame the shutter is open, 0
+    /// (none) to 1. Only where there's a flow (with feedback on, or a 3D look).
+    pub motion_blur: f32,
 }
 
 impl CompositeSettings {
@@ -90,6 +93,7 @@ impl CompositeSettings {
         aberration: 0.0,
         vignette: 0.0,
         grain: 0.0,
+        motion_blur: 0.5,
     };
 }
 

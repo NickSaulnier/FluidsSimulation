@@ -39,7 +39,7 @@ const REVEAL: Duration = Duration::from_secs(3);
 const NOTICE: Duration = Duration::from_secs(4);
 
 /// Where and how the visualizer shows (F11), and how fast frames come.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Screen {
     /// The monitor for full screen, by name (none: the window's own).
@@ -49,6 +49,25 @@ pub struct Screen {
     pub on_top: bool,
     /// Frames per second at most (0: as fast as the display allows).
     pub fps_cap: u32,
+    /// HDR output, where the display is HDR: its paper white (the picture's white) and
+    /// the display's peak, nits.
+    pub hdr: bool,
+    pub hdr_white: u32,
+    pub hdr_peak: u32,
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Self { monitor: None, windowed: false, on_top: false, fps_cap: 0, hdr: false, hdr_white: 200, hdr_peak: 1000 }
+    }
+}
+
+impl Screen {
+    /// HDR output's levels, kept sensible (the peak above paper white).
+    pub fn hdr_levels(&self) -> crate::render::post::HdrLevels {
+        let white = self.hdr_white.clamp(80, 480) as f32;
+        crate::render::post::HdrLevels { white, peak: (self.hdr_peak as f32).clamp(white, 10_000.0) }
+    }
 }
 
 /// A display, as the interface shows it.
@@ -179,6 +198,8 @@ pub struct UiState {
     pub window_display: Option<String>,
     pub show_particles: bool,
     pub faucet_speed: f32,
+    /// Whether the display can show HDR (from the surface, for the settings).
+    pub hdr_available: bool,
     /// Draw particles as a continuous liquid surface.
     pub liquid: bool,
     /// Light a grid solver's dye as a surface: 0 flat, 1 fully.
@@ -271,6 +292,7 @@ impl Default for UiState {
             show_particles: true,
             faucet_speed: 2.0,
             liquid: true,
+            hdr_available: false,
             relief: 0.0,
             orbit: 0.12,
             blob_size: 3.0,
