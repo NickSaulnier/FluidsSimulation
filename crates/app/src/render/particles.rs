@@ -86,10 +86,14 @@ impl ParticleLayer {
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         let count = self.bind_instances(pass);
-        pass.draw(0..4, 0..count);
+        if count > 0 {
+            pass.draw(0..4, 0..count);
+        }
     }
 
     /// Bind the instance buffers for this frame's particles; returns the instance count.
+    /// With none, nothing is bound, and the caller must not draw (wgpu rejects a draw
+    /// with its vertex buffers unset, even of no instances).
     pub fn bind_instances(&self, pass: &mut wgpu::RenderPass<'_>) -> u32 {
         if self.count > 0 {
             let bytes = u64::from(self.count) * VEC2_BYTES;

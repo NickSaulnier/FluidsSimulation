@@ -219,7 +219,9 @@ impl LiquidLayer {
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, &self.splat_group, &[]);
         let count = particles.bind_instances(&mut pass);
-        pass.draw(0..4, 0..count);
+        if count > 0 {
+            pass.draw(0..4, 0..count);
+        }
     }
 
     /// Pass 2 (inside the scene pass): threshold and shade the field over the domain.
