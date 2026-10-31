@@ -4,13 +4,18 @@
 //! how its quality moved since the last audit in the same folder.
 //!
 //! `fluid-toy --audit [TRACK] [--audit-from=S] [--audit-seconds=S] [--audit-looks=TEXT]
-//! [--audit-random=N] [--audit-out=FOLDER]`
+//! [--audit-reel] [--audit-random=N] [--audit-out=FOLDER]`
 //!
 //! - Without a track it plays the generated "anthem" (`audio::songs`: an intro, a
 //!   build-up, a drop, a breakdown), from just before its first build-up, so each look
 //!   sees a build-up, a drop and the start of a breakdown.
-//! - `--audit-looks` keeps to looks whose names contain the text; `--audit-random`
-//!   audits that many random looks instead (seeded 1 to N, so the same each time).
+//! - `--audit-looks` keeps to looks whose names contain the text (or any of several,
+//!   separated by commas); `--audit-reel` to the fidelity reel (`REEL`: looks that
+//!   show each artefact the fidelity measures look for); `--audit-random` audits that
+//!   many random looks instead (seeded 1 to N, so the same each time).
+//! - Besides the small frames, every `FULL_EVERY_S` it grabs two frames in a row at the
+//!   window's size, for the fidelity measures (banding, sharpness, shimmer; see
+//!   `render::score`), shown on the sheet but not yet counted in the quality.
 //! - The app runs as the visualizer in a 1280 × 720 window, muted, and doesn't save its
 //!   settings. It quits when done; the sheet is `index.html` in the folder
 //!   (`Pictures\fluid-toy\audit` unless given).
@@ -18,7 +23,7 @@
 //!   as the scoring now stands (for tuning it without running every look again).
 
 use crate::render::grab::Image;
-use crate::render::score::{Run, Score};
+use crate::render::score::{Fidelity, Run, Score, fidelity, shimmer};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -38,12 +43,21 @@ const DRAIN_S: f32 = 1.5;
 const ANTHEM_BUILD_S: f32 = 15.2;
 /// Where a track of your own is played from, unless given.
 const TRACK_FROM_S: f32 = 30.0;
+/// Full-size pairs are grabbed this often, from a second after the warm-up.
+const FULL_EVERY_S: f32 = 3.0;
+/// The fidelity reel: a dark smoke and a dark ink look (banding), long trails (banding
+/// in the fade, softening), a fractal dive (shimmer), fire in 2D and 3D (the tone
+/// curve, the raymarch's grain), and a particle liquid. None with film grain, which
+/// the measures read as noise (it hides banding, as a dither does, and flickers).
+pub const REEL: [&str; 8] = ["Smoke dance", "Ink nebula", "Aurora", "Spiral galaxy", "Julia tunnel", "Firestorm", "Bonfire 3D", "Quicksilver"];
 
 pub struct Options {
     pub track: Option<PathBuf>,
     from: Option<f32>,
     seconds: f32,
-    filter: Option<String>,
+    /// Looks whose names contain any of these (lower case); or exactly the reel's.
+    filter: Vec<String>,
+    reel: bool,
     random: u64,
     out: PathBuf,
 }
@@ -60,7 +74,8 @@ impl Options {
             track: args.iter().find(|a| !a.starts_with("--")).map(PathBuf::from),
             from: value("--audit-from").and_then(|v| v.parse().ok()),
             seconds: value("--audit-seconds").and_then(|v| v.parse().ok()).unwrap_or(36.0f32).max(WARM_S + 4.0),
-            filter: value("--audit-looks").map(str::to_lowercase),
+            filter: value("--audit-looks").map_or_else(Vec::new, |v| v.split(',').map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).collect()),
+            reel: args.iter().any(|a| a == "--audit-reel"),
             random: value("--audit-random").and_then(|v| v.parse().ok()).unwrap_or(0),
             out,
         })
@@ -80,17 +95,20 @@ pub struct Action {
     /// Show this look (play the music from `seek` too).
     pub start: Option<Item>,
     pub seek: Option<f32>,
-    /// Grab this frame, at `GRAB`.
+    /// Grab this frame, at `GRAB`; and at the window's size.
     pub grab: Option<Tag>,
+    pub full: Option<Tag>,
     pub quit: bool,
 }
 
-/// A grab's place: the look's turn, and the music's activity since the grab before.
+/// A grab's place: the look's turn, and the music's activity since the grab before;
+/// for a full-size one, which pair it's in and whether it's the second.
 #[derive(Clone, Copy, Debug)]
 pub struct Tag {
     turn: usize,
     at: f32,
     activity: f32,
+    pair: Option<(u32, bool)>,
 }
 
 /// This frame, as the app saw it.
@@ -144,7 +162,16 @@ pub struct Audit {
     frames: u32,
     frames_s: f32,
     requested: usize,
+    received: usize,
     grabs: Vec<(Tag, Image)>,
+    /// Full-size pairs: the next one's time and number, whether its second frame is due
+    /// this frame, the first frame of a pair waiting for its second, and the fidelity
+    /// measured (with the pair's shimmer).
+    next_full: f32,
+    pairs: u32,
+    second_due: bool,
+    first: Option<(u32, Image)>,
+    fidelity: Vec<(Fidelity, Option<f32>)>,
     entries: Vec<Entry>,
     /// Each look's quality in the last audit in the same folder.
     before: HashMap<String, f32>,
@@ -172,7 +199,13 @@ impl Audit {
             frames: 0,
             frames_s: 0.0,
             requested: 0,
+            received: 0,
             grabs: Vec::new(),
+            next_full: 0.0,
+            pairs: 0,
+            second_due: false,
+            first: None,
+            fidelity: Vec::new(),
             entries: Vec::new(),
             before,
             from: 0.0,
@@ -192,8 +225,12 @@ impl Audit {
                 self.queue = if self.options.random > 0 {
                     (1..=self.options.random).map(Item::Random).collect()
                 } else {
-                    let filter = self.options.filter.as_deref();
-                    tick.looks.iter().filter(|n| filter.is_none_or(|f| n.to_lowercase().contains(f))).map(|n| Item::Look(n.clone())).collect()
+                    let filter = &self.options.filter;
+                    if self.options.reel {
+                        REEL.iter().filter(|n| tick.looks.iter().any(|l| l == *n)).map(|n| Item::Look(n.to_string())).collect()
+                    } else {
+                        tick.looks.iter().filter(|n| filter.is_empty() || filter.iter().any(|f| n.to_lowercase().contains(f))).map(|n| Item::Look(n.clone())).collect()
+                    }
                 };
                 let default = if self.options.track.is_some() { TRACK_FROM_S } else { ANTHEM_BUILD_S - WARM_S };
                 self.from = self.options.from.unwrap_or(default);
@@ -206,7 +243,7 @@ impl Audit {
             Phase::Starting => {
                 if self.name.is_some() && tick.showing == self.name.as_deref() {
                     self.phase = Phase::Running;
-                    (self.t, self.next_grab) = (0.0, WARM_S);
+                    (self.t, self.next_grab, self.next_full) = (0.0, WARM_S, WARM_S + 1.0);
                 }
             }
             Phase::Running => {
@@ -226,14 +263,25 @@ impl Audit {
                     let activity = level + if self.hits > 0 { 0.5 } else { 0.0 };
                     (self.level_sum, self.level_frames, self.hits) = (0.0, 0, 0);
                     // The first grab only starts the count: its activity is the warm-up's.
-                    action.grab = Some(Tag { turn: self.turn, at: self.t, activity });
+                    action.grab = Some(Tag { turn: self.turn, at: self.t, activity, pair: None });
+                    self.requested += 1;
+                }
+                // A full-size pair: two frames in a row.
+                if self.second_due {
+                    self.second_due = false;
+                    action.full = Some(Tag { turn: self.turn, at: self.t, activity: 0.0, pair: Some((self.pairs - 1, true)) });
+                    self.requested += 1;
+                } else if self.t >= self.next_full && self.t < self.options.seconds {
+                    self.next_full += FULL_EVERY_S;
+                    action.full = Some(Tag { turn: self.turn, at: self.t, activity: 0.0, pair: Some((self.pairs, false)) });
+                    (self.pairs, self.second_due) = (self.pairs + 1, true);
                     self.requested += 1;
                 }
             }
             Phase::Draining(t) => {
                 let t = t + tick.dt;
                 self.phase = Phase::Draining(t);
-                if self.grabs.len() >= self.requested || t >= DRAIN_S {
+                if self.received >= self.requested || t >= DRAIN_S {
                     self.finish_look(&fluid);
                     return self.next(action);
                 }
@@ -243,10 +291,34 @@ impl Audit {
         action
     }
 
-    /// A grab came back.
+    /// A grab came back. A full-size one is measured at once (the first of a pair once
+    /// its second is in), and not kept.
     pub fn receive(&mut self, tag: Tag, image: Image) {
-        if tag.turn == self.turn {
-            self.grabs.push((tag, image));
+        if tag.turn != self.turn {
+            return;
+        }
+        match tag.pair {
+            None => self.grabs.push((tag, image)),
+            Some((n, false)) => {
+                self.flush_first();
+                self.first = Some((n, image));
+            }
+            Some((n, true)) => match self.first.take() {
+                Some((m, first)) if m == n => self.fidelity.push((fidelity(&first), shimmer(&first, &image))),
+                other => {
+                    self.first = other;
+                    self.flush_first();
+                    self.fidelity.push((fidelity(&image), None));
+                }
+            },
+        }
+        self.received += 1;
+    }
+
+    /// A pair's first frame whose second never came: measured alone.
+    fn flush_first(&mut self) {
+        if let Some((_, first)) = self.first.take() {
+            self.fidelity.push((fidelity(&first), None));
         }
     }
 
@@ -258,8 +330,10 @@ impl Audit {
             action.seek = Some(self.from);
             self.phase = Phase::Starting;
             self.name = None;
-            (self.level_sum, self.level_frames, self.hits, self.frames, self.frames_s, self.requested) = (0.0, 0, 0, 0, 0.0, 0);
+            (self.level_sum, self.level_frames, self.hits, self.frames, self.frames_s, self.requested, self.received) = (0.0, 0, 0, 0, 0.0, 0, 0);
+            (self.pairs, self.second_due, self.first) = (0, false, None);
             self.grabs.clear();
+            self.fidelity.clear();
             return action;
         }
         self.phase = Phase::Done;
@@ -277,6 +351,10 @@ impl Audit {
         for (tag, image) in &self.grabs {
             run.push(image, tag.activity);
         }
+        self.flush_first();
+        for &(f, s) in &self.fidelity {
+            run.push_fidelity(f, s);
+        }
         let fps = self.frames as f32 / self.frames_s.max(1e-3);
         let score = run.score(fps);
         let name = self.name.clone().unwrap_or_else(|| format!("look {}", self.turn + 1));
@@ -288,6 +366,7 @@ impl Audit {
         let before = self.before.get(&name).copied();
         self.entries.push(Entry { fluid: fluid(&name), name, score, strip, before });
         self.grabs.clear();
+        self.fidelity.clear();
         self.turn += 1;
     }
 
@@ -379,7 +458,7 @@ img {{ display: block; height: 72px; image-rendering: auto; }}
 <h1>Look audit</h1>
 <p>{} looks, {:.0} s each against {}{} (scored after {:.0} s). Mean quality {:.0}. Worst first.</p>
 <div class="wrap"><table>
-<tr><th>Quality</th><th>Look</th><th>Problems</th><th>Frames</th><th class="n">Dark</th><th class="n">White</th><th class="n">Detail</th><th class="n">Filled</th><th class="n">Contrast</th><th class="n">Motion</th><th class="n">Follows</th><th class="n">Dead</th><th class="n">fps</th></tr>
+<tr><th>Quality</th><th>Look</th><th>Problems</th><th>Frames</th><th class="n">Dark</th><th class="n">White</th><th class="n">Detail</th><th class="n">Filled</th><th class="n">Contrast</th><th class="n">Motion</th><th class="n">Follows</th><th class="n">Dead</th><th class="n">fps</th><th class="n" title="Share of the picture in terraces (8-bit banding)">Banding</th><th class="n" title="Fine detail over coarse: about 1 sharp, lower soft">Sharp</th><th class="n" title="Fine detail flickering between frames: 0 stable">Shimmer</th></tr>
 "#,
         entries.len(),
         options.seconds,
@@ -397,9 +476,11 @@ img {{ display: block; height: 72px; image-rendering: auto; }}
         });
         let problems = s.problems().join(", ");
         let following = s.following.map_or("–".to_string(), |f| format!("{f:.2}"));
+        let banding = s.banding.map_or("–".to_string(), |b| format!("{:.0}%", 100.0 * b));
+        let (sharpness, shimmer) = (s.sharpness.map_or("–".to_string(), |v| format!("{v:.2}")), s.shimmer.map_or("–".to_string(), |v| format!("{v:.2}")));
         let _ = writeln!(
             page,
-            "<tr><td class=\"q {class}\">{:.0}{change}</td><td>{}<br><span class=\"muted\">{}</span></td><td class=\"bad\">{}</td><td><img src=\"{}\" alt=\"\"></td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.3}</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.2}</td><td class=\"n\">{:.3}</td><td class=\"n\">{following}</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.0}</td></tr>",
+            "<tr><td class=\"q {class}\">{:.0}{change}</td><td>{}<br><span class=\"muted\">{}</span></td><td class=\"bad\">{}</td><td><img src=\"{}\" alt=\"\"></td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.3}</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.2}</td><td class=\"n\">{:.3}</td><td class=\"n\">{following}</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.0}</td><td class=\"n\">{banding}</td><td class=\"n\">{sharpness}</td><td class=\"n\">{shimmer}</td></tr>",
             s.quality,
             escape(&e.name),
             escape(&e.fluid),

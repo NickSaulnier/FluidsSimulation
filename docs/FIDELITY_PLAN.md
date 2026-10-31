@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **planned** (2026-10-31); nothing started, decisions open (§4). A sharper, cleaner
+Status: **phase A done** (2026-10-31); decisions open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -168,4 +168,51 @@ fidelity reel audited, against the run before, and its frame time measured.
 
 ## 6. Progress
 
-Nothing yet.
+- **Phase A, measures (done):** `render/score.rs` (`fidelity`, `shimmer`), `audit.rs`.
+  - **Full-size frames:** every 3 s from a second after the warm-up, the audit grabs two
+    frames in a row at the window's size (1280 × 720), measured as they come back and
+    not kept (about 22 frames a look).
+  - **Banding:** the share of the frame in terraces, across or down: runs of one colour
+    at least 6 pixels long next to another a step of 1 or 2 levels away. A dark
+    gradient on 8 bits measures 90 % and more; the same dithered under 20 %; flat
+    black 0.
+  - **Sharpness** (in place of the plan's softening along a trail, which needs to know
+    where a trail is): the fine detail (luma less its 3 × 3 mean) over the same at a
+    quarter of the size, times 4. Sharp squares measure about 1, the same blurred well
+    under half that, noise over 1.5. It's for comparing a look with itself, before and
+    after a change: its level depends on what's drawn.
+  - **Shimmer:** between the two frames of a pair, the change in fine detail where the
+    coarse picture moved less than 2 levels, over the fine detail there (counted only
+    where there's at least 2 levels of it, and only if that's 1 % of the frame).
+    Random detail redrawn each frame measures over 0.8; the same frame twice 0; a
+    smooth pattern moving a tenth of a pixel under 0.3. Smooth looks (fire on black,
+    smoke) often have too little still detail to tell, and show none.
+  - **The sheet** has three more columns (banding, sharpness, shimmer, with what each
+    means on hovering the heading); none counts in the quality yet.
+  - **The reel:** `--audit-reel` audits eight looks: Smoke dance, Ink nebula, Aurora,
+    Spiral galaxy, Julia tunnel, Firestorm, Bonfire 3D, Quicksilver. Looks with film
+    grain are left out: grain reads as noise (high sharpness, shimmer over 1) and hides
+    banding as a dither does (Ghost smoke and Ember drift, tried first, measured 0 %
+    banding and shimmer 1.2).
+  - **`--audit-looks`** takes several names, separated by commas.
+  - **The baseline** (the anthem, 36 s each; the measures to beat in phases B to G):
+
+    | Look | Quality | Banding | Sharpness | Shimmer |
+    |---|---|---|---|---|
+    | Smoke dance | 87 | 37 % | 1.40 | – |
+    | Ink nebula | 100 | 9 % | 0.88 | 0.05 |
+    | Aurora | 94 | 64 % | 1.11 | 0.04 |
+    | Spiral galaxy | 97 | 48 % | 2.20 | 0.08 |
+    | Julia tunnel | 100 | 19 % | 3.19 | 0.90 |
+    | Firestorm | 93 | 21 % | 1.13 | – |
+    | Bonfire 3D | 100 | 45 % | 1.39 | – |
+    | Quicksilver | 100 | 10 % | 1.39 | 0.33 |
+
+    What it says: banding is widespread in the dark and trailing looks (Aurora 64 %,
+    Spiral galaxy 48 %, Bonfire 3D 45 %), which phase B's dithering should take to near
+    0; the Julia dive shimmers (0.90), phase D's target; the liquid flickers a little
+    (0.33).
+  - **Checked:** 245 app tests (new: banding finds terraces and not dithered or flat
+    frames, sharpness tells sharp from soft and noise, shimmer finds flickering detail
+    and not still or smoothly moving pictures) and clippy pass; the reel audited
+    (above, no errors).

@@ -30,8 +30,10 @@ cargo run --release -p app -- path/to/song.mp3 --visualizer
   exits; dropping them on the window does the same.
 - `--audit` plays every look in turn against the same music (a generated song, or a
   track given), scores its frames (dark, blown out, flat, still, following the music,
-  frame rate) and writes a contact sheet, worst first, to `Pictures\fluid-toy\audit`;
-  `--audit-looks=TEXT` keeps to looks with that in their names, `--audit-random=N`
+  frame rate; and, from full-size frames, banding, sharpness and shimmer) and writes a
+  contact sheet, worst first, to `Pictures\fluid-toy\audit`; `--audit-looks=TEXT`
+  keeps to looks with that in their names (several, separated by commas),
+  `--audit-reel` to eight looks that show the picture's artefacts, `--audit-random=N`
   audits random looks instead.
 
 Use `--release`: a debug build of the solvers is far too slow (the dev profile already
@@ -220,5 +222,5 @@ The design notes and progress, phase by phase, are in `docs/`:
 [ANALYZER_PLAN.md](docs/ANALYZER_PLAN.md), [MILKDROP_PLAN.md](docs/MILKDROP_PLAN.md),
 [IMPROVEMENTS_PLAN.md](docs/IMPROVEMENTS_PLAN.md), [FRACTALS_PLAN.md](docs/FRACTALS_PLAN.md),
 [VISUALS_PLAN.md](docs/VISUALS_PLAN.md) (pictures that follow the music better) and
-[FIDELITY_PLAN.md](docs/FIDELITY_PLAN.md) (a sharper, cleaner picture; planned).
+[FIDELITY_PLAN.md](docs/FIDELITY_PLAN.md) (a sharper, cleaner picture; under way).
 Not done (the optional extras left for later): Spout, MIDI and OSC.

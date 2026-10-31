@@ -221,6 +221,8 @@ struct State {
     /// The audit under way (`--audit`), and its grab for this frame.
     audit: Option<audit::Audit>,
     audit_grab: Option<audit::Tag>,
+    /// The same at the window's size, for the fidelity measures.
+    audit_full: Option<audit::Tag>,
     /// A new random look being watched (see `render::score::Check`), a frame of it to
     /// grab, and how many looks in a row were thrown away before the next one.
     check: Option<render::score::Check>,
@@ -474,6 +476,7 @@ impl State {
             governor: governor::Governor::default(),
             audit: audit.map(audit::Audit::new),
             audit_grab: None,
+            audit_full: None,
             check: None,
             check_grab: false,
             rolls: 0,
@@ -1115,6 +1118,7 @@ impl State {
             self.ui.director.cut(i);
         }
         self.audit_grab = action.grab;
+        self.audit_full = action.full;
         self.quit |= action.quit;
         self.audit = Some(audit);
     }
@@ -1665,11 +1669,13 @@ impl State {
                 self.grabber.end(&mut encoder);
             }
         }
-        if let Some(tag) = self.audit_grab.take()
-            && let Some(view) = self.grabber.begin(device, audit::GRAB, self.gpu.config.format, Grab::Audit(tag))
-        {
-            self.post.composite_again(device, &mut encoder, &picture, &view);
-            self.grabber.end(&mut encoder);
+        for (tag, size) in [(self.audit_grab.take(), audit::GRAB), (self.audit_full.take(), surface)] {
+            if let Some(tag) = tag
+                && let Some(view) = self.grabber.begin(device, size, self.gpu.config.format, Grab::Audit(tag))
+            {
+                self.post.composite_again(device, &mut encoder, &picture, &view);
+                self.grabber.end(&mut encoder);
+            }
         }
         if std::mem::take(&mut self.check_grab)
             && let Some(look) = self.check.as_ref().map(|c| c.look.clone())

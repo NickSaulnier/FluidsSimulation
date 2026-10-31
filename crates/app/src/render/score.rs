@@ -14,6 +14,20 @@
 //! only counts against a frame that's almost all black. Each measure becomes a 0..1
 //! subscore between a floor (0) and a level that's plenty (1), and the quality is their
 //! weighted geometric mean, so any one failing sinks it.
+//!
+//! **Fidelity**, from full-resolution frames (small ones lose what it looks for); not
+//! yet part of the quality, until its levels are judged against looks by eye:
+//! - **Banding:** the share of the frame in terraces: runs of one colour at least
+//!   `TERRACE_RUN` pixels long, across or down, next to another such run a level or two
+//!   away. A smooth gradient on 8 bits without dithering is all terraces; a flat
+//!   background has none (no step), nor has a dithered or noisy gradient (no runs).
+//! - **Sharpness:** the fine detail (each pixel's luma less its 3 × 3 neighbourhood's
+//!   mean) over the same at a quarter of the size, times 4: about 1 for sharp edges,
+//!   well under for a soft picture (the fine scale empty), over 1 for noise.
+//! - **Shimmer:** between two frames in a row, how much the fine detail changes where
+//!   the coarse picture (the neighbourhood means) hardly moves, over how much fine
+//!   detail is there: about 0 for a still or smoothly moving picture, toward 1 and over
+//!   for detail that flickers from frame to frame (aliasing).
 
 use crate::render::grab::Image;
 
@@ -31,6 +45,16 @@ const CONTRAST_TAIL: f32 = 0.02;
 /// Below this spread of activity, the music is too even to tell whether the picture
 /// follows it.
 const EVEN_MUSIC: f32 = 0.04;
+/// Banding: a terrace is a run of one colour this long, next to another a step of at
+/// most `TERRACE_STEP` levels (of 255, in its largest channel) away.
+const TERRACE_RUN: usize = 6;
+const TERRACE_STEP: u8 = 2;
+/// Shimmer: where the coarse picture changed less than this (luma) between the frames,
+/// and the fine detail is at least this, counted; none if under `SHIMMER_SHARE` of the
+/// frame is.
+const STILL: f32 = 2.0 / 255.0;
+const SOME_DETAIL: f32 = 2.0 / 255.0;
+const SHIMMER_SHARE: f32 = 0.01;
 
 /// One frame's measures.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -104,6 +128,109 @@ fn percentile(counts: &[usize; 256], share: f32) -> u8 {
     255
 }
 
+/// A full-resolution frame's banding and sharpness (see the module docs).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Fidelity {
+    pub banding: f32,
+    pub sharpness: f32,
+}
+
+pub fn fidelity(image: &Image) -> Fidelity {
+    let [w, h] = [image.size[0] as usize, image.size[1] as usize];
+    let pixels = image.rgba.as_chunks::<4>().0;
+    // Banding: terraced pixels, across and down.
+    let mut terraced = vec![false; w * h];
+    let step = |a: &[u8; 4], b: &[u8; 4]| (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0);
+    let mut line = |at: &dyn Fn(usize) -> usize, len: usize| {
+        // Runs of one colour along the line: (start, length).
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for k in 0..len {
+            match runs.last_mut() {
+                Some((start, n)) if pixels[at(*start)][..3] == pixels[at(k)][..3] => *n += 1,
+                _ => runs.push((k, 1)),
+            }
+        }
+        for pair in runs.windows(2) {
+            let ((a, n), (b, m)) = (pair[0], pair[1]);
+            let d = step(&pixels[at(a)], &pixels[at(b)]);
+            if n >= TERRACE_RUN && m >= TERRACE_RUN && (1..=TERRACE_STEP).contains(&d) {
+                for k in (a..a + n).chain(b..b + m) {
+                    terraced[at(k)] = true;
+                }
+            }
+        }
+    };
+    for y in 0..h {
+        line(&|x| y * w + x, w);
+    }
+    for x in 0..w {
+        line(&|y| y * w + x, h);
+    }
+    let banding = terraced.iter().filter(|&&t| t).count() as f32 / (w * h).max(1) as f32;
+    // Sharpness: fine detail here against a quarter of the size.
+    let y = luma(image);
+    let quarter = shrink(&y, w, h, 4);
+    let fine = |l: &[f32], w: usize, h: usize| {
+        let mean = box3(l, w, h);
+        l.iter().zip(&mean).map(|(a, b)| (a - b).abs()).sum::<f32>() / l.len().max(1) as f32
+    };
+    let coarse = fine(&quarter, w / 4, h / 4);
+    let sharpness = if coarse > 1e-5 { 4.0 * fine(&y, w, h) / coarse } else { 0.0 };
+    Fidelity { banding, sharpness }
+}
+
+/// How much the fine detail flickers between two frames in a row of the same size (see
+/// the module docs); none if too little of the picture holds still with detail in it.
+pub fn shimmer(a: &Image, b: &Image) -> Option<f32> {
+    if a.size != b.size {
+        return None;
+    }
+    let [w, h] = [a.size[0] as usize, a.size[1] as usize];
+    let (ya, yb) = (luma(a), luma(b));
+    let (ma, mb) = (box3(&ya, w, h), box3(&yb, w, h));
+    let (mut change, mut detail, mut counted) = (0.0, 0.0, 0usize);
+    for i in 0..w * h {
+        let (fa, fb) = (ya[i] - ma[i], yb[i] - mb[i]);
+        if (ma[i] - mb[i]).abs() < STILL && fa.abs() >= SOME_DETAIL {
+            change += (fb - fa).abs();
+            detail += fa.abs();
+            counted += 1;
+        }
+    }
+    (counted as f32 >= SHIMMER_SHARE * (w * h) as f32 && detail > 0.0).then(|| change / detail)
+}
+
+/// Each pixel's 3 × 3 neighbourhood's mean (clamped at the edges).
+fn box3(l: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut across = vec![0.0; l.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let row = &l[y * w..(y + 1) * w];
+            across[y * w + x] = (row[x.saturating_sub(1)] + row[x] + row[(x + 1).min(w - 1)]) / 3.0;
+        }
+    }
+    let mut out = vec![0.0; l.len()];
+    for y in 0..h {
+        for x in 0..w {
+            out[y * w + x] = (across[y.saturating_sub(1) * w + x] + across[y * w + x] + across[(y + 1).min(h - 1) * w + x]) / 3.0;
+        }
+    }
+    out
+}
+
+/// `l` (`w` × `h`) shrunk by `k` each way, each pixel the mean of its block.
+fn shrink(l: &[f32], w: usize, h: usize, k: usize) -> Vec<f32> {
+    let (sw, sh) = (w / k, h / k);
+    let mut out = vec![0.0; sw * sh];
+    for y in 0..sh * k {
+        for x in 0..sw * k {
+            out[(y / k) * sw + x / k] += l[y * w + x];
+        }
+    }
+    out.iter_mut().for_each(|v| *v /= (k * k) as f32);
+    out
+}
+
 /// The mean change of each pixel's luma between two frames of the same size.
 pub fn motion(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len().max(1) as f32
@@ -130,6 +257,14 @@ pub struct Score {
     /// The share of frames that were dead, and the frames a second.
     pub dead: f32,
     pub fps: f32,
+    /// Fidelity, from full-resolution frames (see the module docs): means over them;
+    /// none without any (shimmer: without a pair to tell).
+    #[serde(default)]
+    pub banding: Option<f32>,
+    #[serde(default)]
+    pub sharpness: Option<f32>,
+    #[serde(default)]
+    pub shimmer: Option<f32>,
 }
 
 /// 0 at `lo`, 1 at `hi` (either way round), smooth between.
@@ -178,6 +313,9 @@ impl Score {
 #[derive(Default)]
 pub struct Run {
     measures: Vec<Measure>,
+    /// Full-resolution frames' fidelity, and the shimmer of pairs of them.
+    fidelity: Vec<Fidelity>,
+    shimmers: Vec<f32>,
     /// Motion since the frame before, and the music's activity over that time.
     moves: Vec<(f32, f32)>,
     last: Option<Vec<f32>>,
@@ -198,6 +336,13 @@ impl Run {
         self.measures.len()
     }
 
+    /// Add a full-resolution frame's fidelity, and its shimmer against the frame after
+    /// it (if that was grabbed and could tell).
+    pub fn push_fidelity(&mut self, fidelity: Fidelity, shimmer: Option<f32>) {
+        self.fidelity.push(fidelity);
+        self.shimmers.extend(shimmer);
+    }
+
     pub fn score(&self, fps: f32) -> Score {
         let n = self.measures.len().max(1) as f32;
         let mean = |f: fn(&Measure) -> f32| self.measures.iter().map(f).sum::<f32>() / n;
@@ -214,6 +359,9 @@ impl Run {
             following: correlation(&self.moves),
             dead: self.measures.iter().filter(|m| m.dead()).count() as f32 / n,
             fps,
+            banding: average(self.fidelity.iter().map(|f| f.banding)),
+            sharpness: average(self.fidelity.iter().map(|f| f.sharpness)),
+            shimmer: average(self.shimmers.iter().copied()),
         }
         .with_quality()
     }
@@ -272,6 +420,12 @@ impl Check {
             (quality < CHECK_QUALITY, quality)
         })
     }
+}
+
+/// The mean, if there are any.
+fn average(values: impl Iterator<Item = f32>) -> Option<f32> {
+    let (sum, n) = values.fold((0.0, 0usize), |(s, n), v| (s + v, n + 1));
+    (n > 0).then(|| sum / n as f32)
 }
 
 /// The Pearson correlation of the pairs; none if the second varies too little to say.
@@ -368,6 +522,63 @@ mod tests {
         assert_eq!(grabs as usize, CHECK_FRAMES);
         assert!(dead.verdict().is_some_and(|v| v.0), "{:?}", dead.verdict());
         assert!(fine.verdict().is_some_and(|v| !v.0), "{:?}", fine.verdict());
+    }
+
+    fn full(f: impl Fn(u32, u32) -> [u8; 3]) -> Image {
+        let size = [256, 144];
+        let rgba = (0..size[1]).flat_map(|y| (0..size[0]).map(move |x| (x, y))).flat_map(|(x, y)| {
+            let [r, g, b] = f(x, y);
+            [r, g, b, 255]
+        });
+        Image { size, rgba: rgba.collect() }
+    }
+
+    /// A dark gradient on 8 bits bands; dithered, or flat, it doesn't.
+    #[test]
+    fn banding_finds_terraces() {
+        let level = |x: u32| 20.0 + 16.0 * x as f32 / 256.0;
+        let banded = fidelity(&full(|x, _| [level(x) as u8; 3])).banding;
+        let mut rng = utils::rng::SplitMix64::new(1);
+        let noise: Vec<f32> = (0..256 * 144).map(|_| rng.next_f32()).collect();
+        let dithered = fidelity(&full(|x, y| [(level(x) + noise[(y * 256 + x) as usize]) as u8; 3])).banding;
+        let flat = fidelity(&full(|_, _| [0, 0, 0])).banding;
+        assert!(banded > 0.9 && dithered < 0.2 && flat == 0.0, "{banded} {dithered} {flat}");
+    }
+
+    /// Sharp edges read about 1, the same blurred well under, noise over.
+    #[test]
+    fn sharpness_tells_sharp_from_soft() {
+        let squares = |x: u32, y: u32| if (x / 16 + y / 16).is_multiple_of(2) { 220.0 } else { 30.0 };
+        let sharp = fidelity(&full(|x, y| [squares(x, y) as u8; 3])).sharpness;
+        let blurred = |x: u32, y: u32| {
+            let mut sum = 0.0;
+            for dy in -3i32..=3 {
+                for dx in -3i32..=3 {
+                    sum += squares((x as i32 + dx).max(0) as u32, (y as i32 + dy).max(0) as u32);
+                }
+            }
+            sum / 49.0
+        };
+        let soft = fidelity(&full(|x, y| [blurred(x, y) as u8; 3])).sharpness;
+        let mut rng = utils::rng::SplitMix64::new(2);
+        let values: Vec<u8> = (0..256 * 144).map(|_| (rng.next_f32() * 255.0) as u8).collect();
+        let noise = fidelity(&full(|x, y| [values[(y * 256 + x) as usize]; 3])).sharpness;
+        assert!((0.6..1.6).contains(&sharp) && soft < 0.5 * sharp && noise > 1.5, "{sharp} {soft} {noise}");
+    }
+
+    /// Detail that flickers between frames shimmers; the same frame twice, or a smooth
+    /// pattern moving a fraction of a pixel, doesn't.
+    #[test]
+    fn shimmer_finds_flickering_detail() {
+        let mut rng = utils::rng::SplitMix64::new(3);
+        let (a, b): (Vec<u8>, Vec<u8>) = (0..256 * 144).map(|_| ((rng.next_f32() * 255.0) as u8, (rng.next_f32() * 255.0) as u8)).unzip();
+        let flicker = shimmer(&full(|x, y| [a[(y * 256 + x) as usize]; 3]), &full(|x, y| [b[(y * 256 + x) as usize]; 3]));
+        let still = full(|x, y| [a[(y * 256 + x) as usize]; 3]);
+        let wave = |shift: f32| full(move |x, y| [(128.0 + 100.0 * ((x as f32 + shift) * 0.4).sin() * (y as f32 * 0.3).cos()) as u8; 3]);
+        let smooth = shimmer(&wave(0.0), &wave(0.1));
+        assert!(flicker.is_some_and(|s| s > 0.8), "{flicker:?}");
+        assert_eq!(shimmer(&still, &still), Some(0.0));
+        assert!(smooth.is_some_and(|s| s < 0.3), "{smooth:?}");
     }
 
     #[test]
