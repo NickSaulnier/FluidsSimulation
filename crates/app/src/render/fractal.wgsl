@@ -29,6 +29,10 @@ struct Fractal {
     // Samples a pixel: 4, or 1 when the frames can't keep up.
     samples: u32,
     _pad: f32,
+    // This frame's offset of the samples, in pixels (so frames gathered together sample
+    // between each other's points).
+    jitter: vec2f,
+    _pad2: vec2f,
     // The 3D kinds' camera: where it is, and its forward (w: the tangent of half the
     // field of view), right and up.
     eye: vec4f,
@@ -313,7 +317,7 @@ fn sample(ndc: vec2f) -> vec4f {
 fn fs(i: VOut) -> @location(0) vec4f {
     // Where the picture here came from, had the fluid carried it.
     let texel = min(vec2u(i.pos.xy), textureDimensions(displacement) - 1u);
-    let origin = i.ndc - textureLoad(displacement, texel, 0).xy * F.bend;
+    let origin = i.ndc - textureLoad(displacement, texel, 0).xy * F.bend + F.jitter * vec2f(1.0 / F.aspect, 1.0) * F.pixel;
     if F.kind >= MANDELBULB {
         return march(origin);
     }

@@ -110,7 +110,8 @@ resolution in full screen if the simulation falls behind real time.
   detail; a look can ask for MilkDrop's softer smear.
 - **Fractals:** Mandelbrot, Julia, Burning Ship, Tricorn and Newton, and in 3D the
   Mandelbulb and the Menger sponge (raymarched, behind the gas in 3D looks), in the
-  look's colours, over the fluid or alone. They move with the music: a Julia set's shape
+  look's colours, over the fluid or alone; a 2D one gathers its samples across frames
+  (moved with it), so its filaments are smooth. They move with the music: a Julia set's shape
   wanders (a Mandelbulb's lobes), the zoom pulses with the bass, a tour moves on at each
   new section, and a dive travels endlessly into the fractal (or out), looping where the
   picture repeats itself. The fluid's flow can bend them.

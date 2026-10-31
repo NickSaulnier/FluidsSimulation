@@ -6,6 +6,15 @@
 //!
 //! The shader works in f32: past about 10⁵× zoom the picture would break into blocks,
 //! so zoom is capped there (`MAX_ZOOM`).
+//!
+//! A 2D fractal's samples are gathered across frames (`History`, `fractal_history.wgsl`):
+//! each frame samples at a new sub-pixel offset into a texture of its own, and is
+//! blended into the frames before it, moved by the fractal's own motion since (its
+//! centre, turn and zoom are known each frame, so the move is exact), clamped to this
+//! frame's neighbourhood so changes don't leave ghosts; the result is drawn over the
+//! scene. So a still or moving fractal gathers many samples a pixel, and fine filaments
+//! don't shimmer. A bent fractal (moved per pixel by the fluid) and the 3D kinds are
+//! drawn straight into the scene, as they come.
 
 use super::palette::Palette;
 use super::post::SCENE_FORMAT;
@@ -154,7 +163,7 @@ impl Default for FractalSettings {
     }
 }
 
-/// Must match `Fractal` in fractal.wgsl (208 bytes).
+/// Must match `Fractal` in fractal.wgsl (224 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -183,6 +192,9 @@ struct Uniforms {
     /// Samples a pixel: 4, or 1 when the frames can't keep up (`Quality`).
     samples: u32,
     _pad: f32,
+    /// This frame's offset of the samples, pixels.
+    jitter: [f32; 2],
+    _pad2: [f32; 2],
     /// The 3D kinds' camera: where it is, and its forward (w: the tangent of half the
     /// field of view), right and up.
     eye: [f32; 4],
@@ -222,8 +234,86 @@ pub fn quality(step: u32) -> (u32, f32) {
     }
 }
 
+/// How much of each frame goes into the gathered picture (the rest is the frames
+/// before): about the last dozen frames count.
+const HISTORY_WEIGHT: f32 = 0.15;
+/// The frames' sub-pixel offsets: the Halton sequence (bases 2 and 3), eight long.
+const JITTER: usize = 8;
+
+/// Must match `Resolve` in fractal_history.wgsl (32 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ResolveUniforms {
+    turn: [f32; 2],
+    offset: [f32; 2],
+    aspect: f32,
+    weight: f32,
+    _pad: [f32; 2],
+}
+
+/// A 2D fractal gathered across frames: this frame's samples, and the gathered picture
+/// (the latest of two), at the canvas's size; the view the latest was drawn with (none:
+/// nothing to reuse), and the frame count for the offsets.
+struct History {
+    size: [u32; 2],
+    current: wgpu::TextureView,
+    frames: [wgpu::TextureView; 2],
+    latest: usize,
+    view: Option<FractalView>,
+    frame: usize,
+}
+
+/// Where the fractal's canvas is on the plane: its centre, its turn (radians), half its
+/// height, and its aspect; and what it shows (its kind), which no move can carry over.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FractalView {
+    centre: [f32; 2],
+    turn: f32,
+    half_height: f32,
+    aspect: f32,
+    kind: u32,
+}
+
+impl FractalView {
+    /// Where a point of this canvas (in canvas heights about its centre) was on `old`'s:
+    /// old = offset + turn × new, `turn` as scale × (cos, sin). None if they can't be
+    /// compared.
+    fn from(&self, old: &FractalView) -> Option<([f32; 2], [f32; 2])> {
+        if old.kind != self.kind || old.half_height <= 0.0 || (old.aspect - self.aspect).abs() > 1e-3 {
+            return None;
+        }
+        let scale = self.half_height / old.half_height;
+        let (sin, cos) = (self.turn - old.turn).sin_cos();
+        let d = [(self.centre[0] - old.centre[0]) / old.half_height, (self.centre[1] - old.centre[1]) / old.half_height];
+        let (s, c) = (-old.turn).sin_cos();
+        Some(([scale * cos, scale * sin], [c * d[0] - s * d[1], s * d[0] + c * d[1]]))
+    }
+}
+
+/// A render pass into `target` alone.
+fn pass<'a>(encoder: &'a mut wgpu::CommandEncoder, label: &str, target: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>) -> wgpu::RenderPass<'a> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
+        ..Default::default()
+    })
+}
+
+/// The Halton sequence's `k`th value in `base`, 0..1.
+fn halton(mut k: usize, base: usize) -> f32 {
+    let (mut f, mut r) = (1.0, 0.0);
+    while k > 0 {
+        f /= base as f32;
+        r += f * (k % base) as f32;
+        k /= base;
+    }
+    r
+}
+
 pub struct FractalLayer {
     pipeline: wgpu::RenderPipeline,
+    /// The same, into the history's own texture (no blending).
+    gather_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     /// No displacement, for when the fluid doesn't bend it.
@@ -231,6 +321,12 @@ pub struct FractalLayer {
     /// The spin and the colour cycle, added up.
     turn: f32,
     phase: f32,
+    resolve_pipeline: wgpu::RenderPipeline,
+    over_pipeline: wgpu::RenderPipeline,
+    history_layout: wgpu::BindGroupLayout,
+    resolve_uniforms: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    history: Option<History>,
 }
 
 impl FractalLayer {
@@ -256,22 +352,59 @@ impl FractalLayer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fractal"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         // Premultiplied alpha: the fractal over the scene.
         let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fractal"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: SCENE_FORMAT, blend: Some(wgpu::BlendState { color: over, alpha: over }), write_mask: wgpu::ColorWrites::COLOR })],
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
+        let over_scene = Some(wgpu::BlendState { color: over, alpha: over });
+        let make = |label: &str, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, entry: &str, blend: Option<wgpu::BlendState>, mask: wgpu::ColorWrites| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState { module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: SCENE_FORMAT, blend, write_mask: mask })],
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = make("fractal", &pipeline_layout, &shader, "fs", over_scene, wgpu::ColorWrites::COLOR);
+        let gather_pipeline = make("fractal gather", &pipeline_layout, &shader, "fs", None, wgpu::ColorWrites::ALL);
+        let history_shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("fractal_history.wgsl"), source: wgpu::ShaderSource::Wgsl(include_str!("fractal_history.wgsl").into()) });
+        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        };
+        let history_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fractal history"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(size_of::<ResolveUniforms>() as u64) },
+                    count: None,
+                },
+                texture_entry(1),
+                texture_entry(2),
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
         });
+        let history_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fractal history"), bind_group_layouts: &[Some(&history_layout)], immediate_size: 0 });
+        let resolve_pipeline = make("fractal resolve", &history_pipeline_layout, &history_shader, "fs_resolve", None, wgpu::ColorWrites::ALL);
+        let over_pipeline = make("fractal over", &history_pipeline_layout, &history_shader, "fs_over", over_scene, wgpu::ColorWrites::COLOR);
+        let resolve_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fractal resolve uniforms"),
+            size: size_of::<ResolveUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("fractal history"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fractal uniforms"),
             size: size_of::<Uniforms>() as u64,
@@ -279,7 +412,21 @@ impl FractalLayer {
             mapped_at_creation: false,
         });
         let still = super::feedback::texture(device, "fractal still", [1, 1], super::feedback::FLOW_FORMAT);
-        Self { pipeline, layout, uniforms, still, turn: 0.0, phase: 0.0 }
+        Self {
+            pipeline,
+            gather_pipeline,
+            layout,
+            uniforms,
+            still,
+            turn: 0.0,
+            phase: 0.0,
+            resolve_pipeline,
+            over_pipeline,
+            history_layout,
+            resolve_uniforms,
+            sampler,
+            history: None,
+        }
     }
 
     /// Advance the spin and the colour cycle by `dt` seconds (call every frame).
@@ -288,14 +435,22 @@ impl FractalLayer {
         self.phase = (self.phase + settings.colour_speed * dt).rem_euclid(1.0);
     }
 
+    /// Start gathering afresh (a new look: its first frames shouldn't blend with the
+    /// last look's fractal).
+    pub fn reset(&mut self) {
+        if let Some(h) = &mut self.history {
+            h.view = None;
+        }
+    }
+
     /// Draw the fractal onto `target` within `viewport` (pixels: x, y, width, height), if
     /// `settings` ask for it, bent by `bend`'s displacement (scene uv, the target's size)
-    /// if there is one.
+    /// if there is one. A 2D one unbent is gathered across frames (see the module docs).
     /// A 3D kind's camera turns with `camera`'s (yaw, pitch) too, when there is one (a
     /// 3D look's).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
@@ -309,6 +464,7 @@ impl FractalLayer {
     ) {
         let [x, y, w, h] = viewport;
         if !settings.enabled || settings.opacity <= 0.0 || w < 1.0 || h < 1.0 {
+            self.reset();
             return;
         }
         let mut uniforms = self.uniforms(settings, palette, w / h, h, camera);
@@ -321,6 +477,22 @@ impl FractalLayer {
             let size = target.texture().size();
             uniforms.bend = [2.0 * size.width as f32 / w, -2.0 * size.height as f32 / h];
         }
+        let gather = bend.is_none() && !settings.kind.is_3d();
+        if !gather {
+            self.reset();
+        }
+        let view = FractalView { centre: uniforms.centre, turn: settings.rotation + self.turn, half_height: uniforms.half_height, aspect: uniforms.aspect, kind: uniforms.kind };
+        let size = [w.round() as u32, h.round() as u32];
+        if gather {
+            if self.history.as_ref().is_none_or(|h| h.size != size) {
+                let texture = |label| super::feedback::texture(device, label, size, SCENE_FORMAT);
+                self.history = Some(History { size, current: texture("fractal current"), frames: [texture("fractal history"), texture("fractal history")], latest: 0, view: None, frame: 0 });
+            }
+            let history = self.history.as_mut().expect("made above");
+            history.frame += 1;
+            let k = 1 + history.frame % JITTER;
+            uniforms.jitter = [halton(k, 2) - 0.5, halton(k, 3) - 0.5];
+        }
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fractal"),
@@ -330,6 +502,10 @@ impl FractalLayer {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(bend.unwrap_or(&self.still)) },
             ],
         });
+        if gather {
+            self.gather(device, queue, encoder, &group, target, viewport, view);
+            return;
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("fractal"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -344,6 +520,54 @@ impl FractalLayer {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
+    }
+
+    /// This frame's samples into the history's texture, blended into the gathered picture
+    /// (moved by the fractal's motion since the latest), which is then drawn over `target`
+    /// within `viewport`.
+    #[allow(clippy::too_many_arguments)]
+    fn gather(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, group: &wgpu::BindGroup, target: &wgpu::TextureView, viewport: [f32; 4], view: FractalView) {
+        let history = self.history.as_mut().expect("made by draw");
+        {
+            let mut p = pass(encoder, "fractal samples", &history.current, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            p.set_pipeline(&self.gather_pipeline);
+            p.set_bind_group(0, group, &[]);
+            p.draw(0..3, 0..1);
+        }
+        let moved = history.view.and_then(|old| view.from(&old));
+        let (turn, offset) = moved.unwrap_or(([1.0, 0.0], [0.0, 0.0]));
+        let uniforms = ResolveUniforms { turn, offset, aspect: view.aspect, weight: if moved.is_some() { HISTORY_WEIGHT } else { 1.0 }, _pad: [0.0; 2] };
+        queue.write_buffer(&self.resolve_uniforms, 0, bytemuck::bytes_of(&uniforms));
+        let (old, new) = (history.latest, 1 - history.latest);
+        let bind = |history_view: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fractal history"),
+                layout: &self.history_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.resolve_uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&history.current) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(history_view) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            })
+        };
+        {
+            let group = bind(&history.frames[old]);
+            let mut p = pass(encoder, "fractal resolve", &history.frames[new], wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            p.set_pipeline(&self.resolve_pipeline);
+            p.set_bind_group(0, &group, &[]);
+            p.draw(0..3, 0..1);
+        }
+        {
+            let group = bind(&history.frames[new]);
+            let mut p = pass(encoder, "fractal over", target, wgpu::LoadOp::Load);
+            let [x, y, w, h] = viewport;
+            p.set_viewport(x, y, w, h, 0.0, 1.0);
+            p.set_pipeline(&self.over_pipeline);
+            p.set_bind_group(0, &group, &[]);
+            p.draw(0..3, 0..1);
+        }
+        (history.latest, history.view) = (new, Some(view));
     }
 
     fn uniforms(&self, s: &FractalSettings, palette: &Palette, aspect: f32, height_px: f32, camera: Option<(f32, f32)>) -> Uniforms {
@@ -370,6 +594,8 @@ impl FractalLayer {
             bend: [0.0; 2],
             samples: 4,
             _pad: 0.0,
+            jitter: [0.0; 2],
+            _pad2: [0.0; 2],
             eye: v4(eye, 0.0),
             forward: v4(forward, (0.5 * FOV_3D).tan()),
             right: v4(right, 0.0),
@@ -958,7 +1184,7 @@ mod tests {
     #[test]
     fn the_shaders_validate() {
         use wgpu::naga;
-        for (name, source) in [("fractal.wgsl", include_str!("fractal.wgsl")), ("bend.wgsl", include_str!("bend.wgsl"))] {
+        for (name, source) in [("fractal.wgsl", include_str!("fractal.wgsl")), ("fractal_history.wgsl", include_str!("fractal_history.wgsl")), ("bend.wgsl", include_str!("bend.wgsl"))] {
             let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
                 .validate(&module)
@@ -968,7 +1194,82 @@ mod tests {
 
     #[test]
     fn the_uniforms_match_the_shader() {
-        assert_eq!(size_of::<Uniforms>(), 208);
+        assert_eq!((size_of::<Uniforms>(), size_of::<ResolveUniforms>()), (224, 32));
+    }
+
+    /// A move of the canvas maps its points back to where they were: a pan of a tenth of
+    /// its height up, and a zoom in by two, a turn.
+    #[test]
+    fn a_view_finds_its_points_in_the_last() {
+        let old = FractalView { centre: [0.2, -0.1], turn: 0.3, half_height: 0.5, aspect: 1.6, kind: 1 };
+        let plane = |v: &FractalView, l: [f32; 2]| {
+            let (s, c) = v.turn.sin_cos();
+            [v.centre[0] + v.half_height * (c * l[0] - s * l[1]), v.centre[1] + v.half_height * (s * l[0] + c * l[1])]
+        };
+        let new = FractalView { centre: [0.25, -0.05], turn: 0.5, half_height: 0.25, ..old };
+        let (turn, offset) = new.from(&old).expect("comparable");
+        for l in [[0.0, 0.0], [1.0, 0.5], [-1.3, -0.7]] {
+            let back = [offset[0] + turn[0] * l[0] - turn[1] * l[1], offset[1] + turn[1] * l[0] + turn[0] * l[1]];
+            let (a, b) = (plane(&new, l), plane(&old, back));
+            assert!((a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5, "{l:?}: {a:?} against {b:?}");
+        }
+        assert!(FractalView { kind: 0, ..new }.from(&old).is_none(), "another kind can't carry over");
+    }
+
+    /// On a headless GPU, at one sample a pixel: frames gathered together stop
+    /// flickering (each frame alone, at its own offset, differs from the last far
+    /// more); and a fractal panning across the canvas comes out where a still one at the
+    /// same place does, without a ghost of where it was.
+    #[test]
+    fn frames_gather_without_ghosts() {
+        use crate::render::post::tests::half_float;
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let size = [160u32, 90];
+        let mut layer = FractalLayer::new(device);
+        let palette = crate::render::palette::PALETTES[0].1;
+        let target = super::super::feedback::texture(device, "scene", size, SCENE_FORMAT);
+        let frame = |layer: &mut FractalLayer, settings: &FractalSettings| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            super::super::feedback::clear(&mut encoder, &target);
+            layer.draw(device, queue, &mut encoder, &target, [0.0, 0.0, size[0] as f32, size[1] as f32], settings, &palette, None, 1, None);
+            queue.submit([encoder.finish()]);
+            half_float::read(device, queue, target.texture(), size)
+        };
+        let change = |a: &[[f32; 4]], b: &[[f32; 4]]| a.iter().zip(b).map(|(p, q)| (p[0] - q[0]).abs() + (p[1] - q[1]).abs() + (p[2] - q[2]).abs()).sum::<f32>() / a.len() as f32;
+        let julia = FractalSettings { centre: [0.0, 0.0], zoom: 1.0, ..on(FractalKind::Julia) };
+
+        let mut alone = Vec::new();
+        for _ in 0..8 {
+            layer.reset();
+            alone.push(frame(&mut layer, &julia));
+        }
+        let flicker = (1..8).map(|k| change(&alone[k - 1], &alone[k])).sum::<f32>() / 7.0;
+        let mut gathered = Vec::new();
+        for _ in 0..32 {
+            gathered.push(frame(&mut layer, &julia));
+        }
+        let settled = (24..32).map(|k| change(&gathered[k - 1], &gathered[k])).sum::<f32>() / 8.0;
+        assert!(settled < 0.3 * flicker, "gathered frames still change {settled} a frame (alone, {flicker})");
+
+        // Panning a sixth of the canvas's height over 20 frames, against the same place
+        // gathered still.
+        layer.reset();
+        let at = |k: usize| FractalSettings { centre: [0.1 * k as f32 / 20.0, 0.0], ..julia };
+        let mut panned = Vec::new();
+        for k in 0..=20 {
+            panned = frame(&mut layer, &at(k));
+        }
+        layer.reset();
+        let mut still = Vec::new();
+        for _ in 0..32 {
+            still = frame(&mut layer, &at(20));
+        }
+        let ghost = change(&panned, &still);
+        assert!(ghost < flicker, "the panned fractal differs {ghost} from the still one (a frame alone flickers {flicker})");
     }
 
     /// What fractal.wgsl's `escape` and `newton` find at `p`: (escaped, or the root
@@ -1240,7 +1541,7 @@ mod tests {
         };
         let (device, queue) = (&gpu.device, &gpu.queue);
         let size = [160u32, 90];
-        let layer = FractalLayer::new(device);
+        let mut layer = FractalLayer::new(device);
         let palette = crate::render::palette::PALETTES[0].1;
         for kind in FractalKind::ALL {
             let whole = FractalSettings { centre: spots(kind)[0].0, zoom: spots(kind)[0].1, ..on(kind) };

@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **phases A to C done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
+Status: **phases A to D done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -299,3 +299,48 @@ fidelity reel audited, against the run before, and its frame time measured.
   - **Checked:** 246 app tests (the feedback pass's GPU test now also carries stripes:
     sharp keeps them, bilinear blurs them, and nothing overshoots) and clippy pass; the
     reel audited (above, no errors).
+- **Phase D, stable fractals (done):** `render/fractal.rs` (`History`), `render/fractal_history.wgsl`.
+  - **Three passes** for a 2D fractal not bent by the fluid: its samples (4, or 1 when
+    the governor has lowered it) at this frame's sub-pixel offset (Halton, bases 2 and
+    3, eight long) into a texture of the canvas's size; the resolve, blending 15 % of
+    that into the gathered picture before it, moved to where its points now are and
+    clamped to the range of this frame's 3 × 3 neighbourhood, into the other of two
+    history textures; and the gathered picture drawn over the scene, as the fractal
+    was before.
+  - **The move** is exact: the canvas's centre, turn and half-height are known each
+    frame, so a point of this canvas is found in the last one's as an offset plus a
+    turn and scale (worked out in canvas heights, so a deep zoom's tiny centre steps
+    keep their precision). History that moves outside the canvas isn't used; nor is it
+    after a change of kind, a new look or variant, the fractal turned off, a bent or 3D
+    fractal (drawn straight into the scene, as before), or a change of size.
+  - **What the clamp does:** what changed this frame (a Julia set wandering, the
+    colours cycling, a dive's colour shift, a morph kick) is pulled to this frame's
+    colours, so it can't leave ghosts; still detail keeps gathering. The history is read
+    with Catmull-Rom, as the feedback is (phase C), so a dive's resampling doesn't blur
+    it.
+  - **Measured on the GPU** (one sample a pixel, a Julia set): single frames at their
+    own offsets change 0.086 a pixel from frame to frame, gathered frames 0.0095 (9×
+    less); a Julia set panned a sixth of the canvas over 20 frames differs from the same
+    place gathered still by 0.022, a quarter of one frame's flicker (no ghost).
+  - **In the app** (20 s each, gathering on against off, with Julia tunnel taken apart):
+
+    | Look | Sharpness | Shimmer |
+    |---|---|---|
+    | Julia, still | 2.79 → 1.70 | 0.00 → 0.07 |
+    | Julia, diving (no wander) | 2.79 → 1.40 | 0.87 → 0.53 |
+    | Julia tunnel (diving, wandering, kicked) | 2.45 → 1.66 | – → 0.93 |
+
+    The fall in sharpness is the aliasing going: a still set's jagged, pixel-scale
+    edges become smooth (by eye too); a still set without gathering doesn't flicker at
+    all (every frame samples the same points), and gathered it moves a little with the
+    offsets. A dive shimmers 40 % less. Julia tunnel itself changes for real every frame
+    (its Julia point wanders, its colours shift with the dive's depth), which the clamp
+    rightly keeps and the shimmer measure can't tell from flicker: its shimmer stays
+    about where it was (the off run found too little still detail to measure).
+  - **The reel** (against phase C's): Julia tunnel's sharpness 2.69 → 1.72, its shimmer
+    0.72 → 0.73; the looks without a fractal as they were (within the runs' variation).
+    Frame rates as before (Julia tunnel at 239, the cap).
+  - **Checked:** 248 app tests (new: a view finds its points in the last one after a
+    pan, zoom and turn, and not across kinds; on the GPU, gathered frames stop
+    flickering and a panned fractal leaves no ghost) and clippy pass; the reel and the
+    Julia experiments audited (above, no errors).

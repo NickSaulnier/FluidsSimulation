@@ -890,8 +890,9 @@ impl State {
         // out dead (a few in a row at most).
         let rolls = std::mem::take(&mut self.rolls);
         self.check = (look.source == looks::Source::Random && self.audit.is_none() && rolls < render::score::MAX_ROLLS).then(|| render::score::Check::new(look.name.clone(), rolls));
-        // A new look's fractal starts at full detail.
+        // A new look's fractal starts at full detail, gathered afresh.
         (self.fractal_governor, self.fractal_quality) = (governor::Governor::default(), 0);
+        self.fractal.reset();
         // Put back any parameters the last look's reactions were modulating.
         self.modulate_params(&[], &[]);
         if fresh {
@@ -950,6 +951,7 @@ impl State {
         self.blend_pattern = patterns[(self.rng.next_u64() % patterns.len() as u64) as usize];
         self.blend_seed = 100.0 * self.rng.next_f32();
         (self.fractal_governor, self.fractal_quality) = (governor::Governor::default(), 0);
+        self.fractal.reset();
         looks::apply_picture(&look, &mut self.ui);
         log::info!("look: {} (variant {variant})", look.name);
     }
@@ -1774,7 +1776,7 @@ impl State {
 
     /// The look's fractal onto `target` (the scene, at `scale` of the window's size). A
     /// 3D fractal in a 3D look turns with the look's camera.
-    fn draw_fractal(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, scale: f32) {
+    fn draw_fractal(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, scale: f32) {
         let viewport = self.viewport_3d().map(|v| v * scale);
         let fractal = &self.look_frame.waves.fractal;
         let camera = self.world3d.as_ref().map(|_| (self.camera.yaw, self.camera.pitch - OrbitCamera::framing(glam::Vec3::ONE).pitch));
