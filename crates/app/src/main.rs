@@ -698,6 +698,7 @@ impl State {
             scene,
             palette: self.ui.palette,
             liquid,
+            relief: self.ui.relief,
             orbit,
             feedback: self.ui.feedback,
             waves: self.ui.waves,
@@ -1800,7 +1801,7 @@ impl State {
         let field = key.and_then(|key| {
             let index = fields.iter().position(|f| f.key == key)?;
             let layout = self.world.solver.fill_field(index, &mut self.field_values)?;
-            Some(render::FieldFrame { layout, values: &self.field_values, kind: fields[index].kind, opacity })
+            Some(render::FieldFrame { layout, values: &self.field_values, kind: fields[index].kind, opacity, relief: self.ui.relief })
         });
         let options = render::DrawOptions {
             view,

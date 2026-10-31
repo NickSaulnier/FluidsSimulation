@@ -8,6 +8,7 @@ harmony = 1.0
 solver = "Stable fluids (GPU)"
 scene = "Double dam break"
 palette = "Ink"
+relief = 0.6
 params = { buoyancy = 0.3, vorticity = 0.45 }
 reactions = [
     { trigger = "snare", effect = "vortex", gain = 0.8 },

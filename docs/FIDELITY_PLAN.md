@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **phases A to D done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
+Status: **phases A to E done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -147,7 +147,7 @@ What's on screen in full screen should hold up close on a large display:
    user's own machine at its display's resolution, with the governor as the fallback.
 5. **Per-look settings or global (§3.3, §3.5):** look settings, with defaults from the
    contact sheet. Sharpness (phase C): per look, default 1 (sharp), MilkDrop's
-   converted presets 0.
+   converted presets 0. Relief (phase E): per look, default 0 (flat, as before).
 
 ## 5. Phases
 
@@ -344,3 +344,31 @@ fidelity reel audited, against the run before, and its frame time measured.
     pan, zoom and turn, and not across kinds; on the GPU, gathered frames stop
     flickering and a panned fractal leaves no ghost) and clippy pass; the reel and the
     Julia experiments audited (above, no errors).
+- **Phase E, lit dye (done):** `render/overlay.wgsl`, `render/overlay.rs`.
+  - **Where:** every grid solver's dye (the CPU and GPU stable fluids, Lattice Boltzmann)
+    is drawn the same way, colourised on the CPU into an 8-bit texture whose alpha rises
+    with the dye's thickness (`colormap`). The lighting is in that overlay's shader, for
+    concentrations only (fire and water have their own colouring; water is lit already).
+  - **The light:** the alpha's slope, a texel and a half each way (wider than a texel,
+    so the grid's facets don't show when the field is magnified), taken 6 times steeper
+    as a normal; shaded from the upper left (flat dye as it was: 1 + 1.5 × (n·l − l_z)),
+    with a highlight off the slopes facing the light (Blinn, exponent 40) in the
+    palette's highlight colour; mixed in by the look's relief.
+  - **`relief`** in `[sim]` (0 to 1, default 0, an error on a look without a fluid),
+    a slider in the View tab for grid solvers, saved by Save as, set with the look's
+    picture (so a reloaded file shows it at once). Random dye looks get 0.4 to 0.9 two
+    times in five (drawn last, so a seed's look is otherwise as it was). Ink nebula
+    (0.6) and Silk streams (0.5) have it.
+  - **By eye** (a full-size frame of Ink nebula at 0.8): glossy, embossed ink, its
+    filaments standing up from the dark between them, with no facets or speckle from
+    the 8-bit alpha.
+  - **The audit** keeps one full-size frame of each look (`full_NNN.png`, the strip on
+    the sheet links to it), for looking at closely.
+  - **The reel** (against phase D's): Ink nebula's sharpness 0.44 → 0.58 and shimmer
+    0.00 → 0.09 (the lit detail moving with the flow, which is real); the others as
+    they were. Frame rates within the runs' variation (Ink nebula 124 → 117).
+  - **Found on the way:** the linker's unresolved-symbol error seen once during the
+    visuals plan came back (a corrupt incremental build cache); `cargo clean -p app`
+    fixed it again.
+  - **Checked:** 249 app tests (new: relief is read, kept to 0..1, written back, and
+    needs a fluid) and clippy pass; the reel and the relief looks audited (no errors).

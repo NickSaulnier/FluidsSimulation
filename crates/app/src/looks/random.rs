@@ -275,6 +275,7 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
         scene: scene.to_string(),
         palette: random_palette(d),
         liquid: kind == Kind::Particles && d.chance(0.5),
+        relief: 0.0,
         orbit: if three_d { round(d.range(0.05, 0.2)) } else { 0.0 },
         feedback,
         waves,
@@ -293,6 +294,10 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
     for _ in 0..VARIANTS {
         let variant = random_variant(d, &look);
         look.variants.push(variant);
+    }
+    // Drawn after the rest too: lit dye, now and then.
+    if kind == Kind::Dye && d.chance(RELIEF_CHANCE) {
+        look.relief = round(d.range(0.4, 0.9));
     }
     look.energy = energy(&look);
     look
@@ -428,6 +433,9 @@ pub fn vary(look: &Look, rng: &mut SplitMix64, name: &str) -> Look {
     tame(&mut v);
     v
 }
+
+/// How often a random dye look's dye is lit as a surface (at 0.4 to 0.9).
+const RELIEF_CHANCE: f32 = 0.4;
 
 /// How often a random look's colour follows the harmony (at 0.5 to 1).
 const HARMONY_CHANCE: f32 = 0.35;

@@ -25,6 +25,9 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
         if solver.particles().is_none() {
             let field = solver.fields().first().map_or("grid", |f| f.label);
             ui.weak(format!("{} is a grid solver: it draws its {} field.", solver.name(), field.to_lowercase()));
+            row(ui, "Relief", "Light the dye as a surface, its thickness the height: 0 flat colour, 1 fully lit.", |ui| {
+                widgets::eased_slider(ui, &mut s.relief, 0.0..=1.0);
+            });
             return;
         }
         widgets::toggle(

@@ -7,6 +7,7 @@ energy = "any"
 solver = "Stable fluids (GPU)"
 scene = "Wind tunnel"
 palette = "Aurora"
+relief = 0.5
 params = { vorticity = 0.3 }
 reactions = [
     { trigger = "kick", effect = "vortex", gain = 0.6 },

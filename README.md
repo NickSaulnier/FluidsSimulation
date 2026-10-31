@@ -31,7 +31,8 @@ cargo run --release -p app -- path/to/song.mp3 --visualizer
 - `--audit` plays every look in turn against the same music (a generated song, or a
   track given), scores its frames (dark, blown out, flat, still, following the music,
   frame rate; and, from full-size frames, banding, sharpness and shimmer) and writes a
-  contact sheet, worst first, to `Pictures\fluid-toy\audit`; `--audit-looks=TEXT`
+  contact sheet, worst first, with a full-size frame of each look, to
+  `Pictures\fluid-toy\audit`; `--audit-looks=TEXT`
   keeps to looks with that in their names (several, separated by commas),
   `--audit-reel` to eight looks that show the picture's artefacts, `--audit-random=N`
   audits random looks instead.
@@ -68,6 +69,9 @@ burners, chimney.
 The fluid fills the window edge to edge, the scene taking the window's shape, and
 bounces off its invisible edges. Gravity points any way, at any strength (in 3D, with a
 heading too).
+
+A grid solver's dye can be lit as a surface (a look's `relief`), its thickness the
+height, so ink and smoke have body.
 
 Tools: push, paint and erase walls (shaded, in the palette's colours, with a preview
 under the brush and Ctrl+Z to undo), a faucet. Fields (pressure,

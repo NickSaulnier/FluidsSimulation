@@ -146,6 +146,8 @@ pub struct Look {
     pub palette: Palette,
     /// Liquid surface (particle solvers).
     pub liquid: bool,
+    /// Dye lit as a surface (grid solvers): 0 flat, 1 fully.
+    pub relief: f32,
     /// 3D looks: how fast the camera circles the scene, rad/s.
     pub orbit: f32,
     /// How each frame carries the last one.
@@ -558,6 +560,7 @@ pub fn apply_3d(look: &Look, world: &mut sim3d::World3d, ui: &mut UiState) -> Ve
 /// orbit).
 pub fn apply_picture(look: &Look, ui: &mut UiState) {
     ui.palette = look.palette;
+    ui.relief = look.relief;
     ui.reactions = look.reactions.clone();
     ui.feedback = look.feedback;
     ui.waves = look.waves;

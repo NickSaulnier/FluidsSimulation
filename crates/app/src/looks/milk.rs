@@ -218,6 +218,7 @@ pub fn convert(text: &str, stem: &str) -> Result<Imported, String> {
         scene: String::new(),
         palette,
         liquid: false,
+        relief: 0.0,
         orbit: 0.0,
         feedback,
         waves,

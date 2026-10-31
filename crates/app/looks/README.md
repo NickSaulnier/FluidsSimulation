@@ -31,6 +31,7 @@ solver = "Stable fluids (dye)"
 scene = "Double dam break"
 palette = "Ink"
 liquid = false             # the liquid surface, for particle solvers
+relief = 0.0               # grid solvers' dye lit as a surface: 0 flat colour, 1 fully lit
 orbit = 0.0                # 3D looks: the camera's circling speed, radians per second
 params = { buoyancy = 0.2, vorticity = 0.3 }
 reactions = [
@@ -127,6 +128,10 @@ at the top of the file, as are equations that don't compile.
   `liquid` and `orbit` need a fluid; reactions can still flash and turn the colours).
 - `palette`: a palette's name (`Ocean`, `Lava`, `Slime`, `Ink`, `Mercury`), or its
   colours: `{ deep = [r, g, b], base = [r, g, b], highlight = [r, g, b] }` (0 to 255).
+- `relief`: for a grid solver (dye), how much its dye is lit as a surface, its
+  thickness the height: shaded from the upper left, with a highlight in the palette's
+  highlight colour; 0 (the default) flat colour, as it was. The View tab has it as a
+  slider.
 - `params`: solver parameters by key: the keys the Simulate tab shows for the solver.
   A toggle is on unless 0.
 - `reactions`: each one `trigger`, `effect`, `gain` (1 if left out) and, for

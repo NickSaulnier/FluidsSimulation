@@ -99,6 +99,8 @@ struct Sim {
     #[serde(default)]
     liquid: bool,
     #[serde(default)]
+    relief: f32,
+    #[serde(default)]
     orbit: f32,
     #[serde(default)]
     params: toml::Table,
@@ -185,8 +187,8 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
     let sim = doc.sim;
     let (solver, scene) = match (&sim.solver, &sim.scene) {
         (None, None) => {
-            if !sim.params.is_empty() || sim.liquid || sim.orbit != 0.0 {
-                return Err(fail(None, "a look without a solver has no fluid: `params`, `liquid` and `orbit` need one".into()));
+            if !sim.params.is_empty() || sim.liquid || sim.orbit != 0.0 || sim.relief != 0.0 {
+                return Err(fail(None, "a look without a solver has no fluid: `params`, `liquid`, `relief` and `orbit` need one".into()));
             }
             (String::new(), String::new())
         }
@@ -314,6 +316,7 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         scene,
         palette,
         liquid: sim.liquid,
+        relief: sim.relief.clamp(0.0, 1.0),
         orbit: sim.orbit,
         feedback,
         waves,
@@ -449,6 +452,9 @@ pub fn write(look: &Look) -> String {
     let _ = writeln!(out, "palette = {palette}");
     if look.liquid {
         let _ = writeln!(out, "liquid = true");
+    }
+    if look.relief != 0.0 {
+        let _ = writeln!(out, "relief = {}", value(toml::Value::Float(f64::from(look.relief))));
     }
     if look.orbit != 0.0 {
         let _ = writeln!(out, "orbit = {}", value(toml::Value::Float(f64::from(look.orbit))));
@@ -661,6 +667,31 @@ mod tests {
         assert!(e.message.contains("[[variant]] 1") && e.message.contains("only the picture") && e.line == Some(7), "{e:?}");
         assert!(error("[[variant]]\n[variant.composite]\nsymetry = \"mirror_x\"\n").message.contains("symetry"));
         assert!(error(&"[[variant]]\n".repeat(4)).message.contains("at most 3"));
+    }
+
+    /// Relief is read (kept to 0..1), written back, and needs a fluid to light.
+    #[test]
+    fn relief_needs_a_fluid() {
+        let base = "[meta]
+name = \"T\"
+[sim]
+solver = \"Stable fluids (dye)\"
+scene = \"Wind tunnel\"
+palette = \"Ink\"
+";
+        let look = parse(&format!("{base}relief = 0.6
+"), "t.toml", Source::Builtin("t.toml")).unwrap();
+        assert_eq!(look.relief, 0.6);
+        assert_eq!(parse(&write(&look), "t.toml", Source::Builtin("t.toml")).unwrap().relief, 0.6);
+        assert_eq!(parse(&format!("{base}relief = 3.0
+"), "t.toml", Source::Builtin("t.toml")).unwrap().relief, 1.0);
+        let none = parse("[meta]
+name = \"T\"
+[sim]
+palette = \"Ink\"
+relief = 0.5
+", "t.toml", Source::Builtin("t.toml"));
+        assert!(none.is_err_and(|e| e.message.contains("relief")));
     }
 
     #[test]

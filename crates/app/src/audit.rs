@@ -15,7 +15,8 @@
 //!   many random looks instead (seeded 1 to N, so the same each time).
 //! - Besides the small frames, every `FULL_EVERY_S` it grabs two frames in a row at the
 //!   window's size, for the fidelity measures (banding, sharpness, shimmer; see
-//!   `render::score`), shown on the sheet but not yet counted in the quality.
+//!   `render::score`), shown on the sheet but not yet counted in the quality. The middle
+//!   one is kept as `full_NNN.png`, for looking at closely (linked from the sheet).
 //! - The app runs as the visualizer in a 1280 × 720 window, muted, and doesn't save its
 //!   settings. It quits when done; the sheet is `index.html` in the folder
 //!   (`Pictures\fluid-toy\audit` unless given).
@@ -301,6 +302,12 @@ impl Audit {
             None => self.grabs.push((tag, image)),
             Some((n, false)) => {
                 self.flush_first();
+                if n == self.options_pairs() / 2 {
+                    let file = format!("full_{:03}.png", self.turn + 1);
+                    if let Err(e) = std::fs::create_dir_all(&self.options.out).and_then(|()| crate::output::write_png(&self.options.out.join(&file), &image).map_err(std::io::Error::other)) {
+                        log::warn!("couldn't write {file}: {e}");
+                    }
+                }
                 self.first = Some((n, image));
             }
             Some((n, true)) => match self.first.take() {
@@ -313,6 +320,11 @@ impl Audit {
             },
         }
         self.received += 1;
+    }
+
+    /// How many full-size pairs a look gets.
+    fn options_pairs(&self) -> u32 {
+        ((self.options.seconds - WARM_S - 1.0) / FULL_EVERY_S).ceil().max(1.0) as u32
     }
 
     /// A pair's first frame whose second never came: measured alone.
@@ -480,11 +492,12 @@ img {{ display: block; height: 72px; image-rendering: auto; }}
         let (sharpness, shimmer) = (s.sharpness.map_or("–".to_string(), |v| format!("{v:.2}")), s.shimmer.map_or("–".to_string(), |v| format!("{v:.2}")));
         let _ = writeln!(
             page,
-            "<tr><td class=\"q {class}\">{:.0}{change}</td><td>{}<br><span class=\"muted\">{}</span></td><td class=\"bad\">{}</td><td><img src=\"{}\" alt=\"\"></td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.3}</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.2}</td><td class=\"n\">{:.3}</td><td class=\"n\">{following}</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.0}</td><td class=\"n\">{banding}</td><td class=\"n\">{sharpness}</td><td class=\"n\">{shimmer}</td></tr>",
+            "<tr><td class=\"q {class}\">{:.0}{change}</td><td>{}<br><span class=\"muted\">{}</span></td><td class=\"bad\">{}</td><td><a href=\"full_{}\"><img src=\"{}\" alt=\"\"></a></td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.3}</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.2}</td><td class=\"n\">{:.3}</td><td class=\"n\">{following}</td><td class=\"n\">{:.0}%</td><td class=\"n\">{:.0}</td><td class=\"n\">{banding}</td><td class=\"n\">{sharpness}</td><td class=\"n\">{shimmer}</td></tr>",
             s.quality,
             escape(&e.name),
             escape(&e.fluid),
             escape(&problems),
+            e.strip,
             e.strip,
             100.0 * s.dark,
             100.0 * s.white,

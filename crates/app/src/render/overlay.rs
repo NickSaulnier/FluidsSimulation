@@ -12,7 +12,8 @@ struct Params {
     origin: [f32; 2],
     size: [f32; 2],
     opacity: f32,
-    _pad: [f32; 3],
+    relief: f32,
+    _pad: [f32; 2],
 }
 
 /// A field to draw this frame.
@@ -21,6 +22,8 @@ pub struct FieldFrame<'a> {
     pub values: &'a [f32],
     pub kind: FieldKind,
     pub opacity: f32,
+    /// Dye (a concentration) lit as a surface from its thickness: 0 flat, 1 fully.
+    pub relief: f32,
 }
 
 pub struct OverlayLayer {
@@ -177,7 +180,8 @@ impl OverlayLayer {
             size,
         );
         let extent = glam::Vec2::new(f.layout.nx as f32, f.layout.ny as f32) * f.layout.cell;
-        let params = Params { origin: f.layout.origin.into(), size: extent.into(), opacity: f.opacity, _pad: [0.0; 3] };
+        let relief = if f.kind == FieldKind::Concentration { f.relief.clamp(0.0, 1.0) } else { 0.0 };
+        let params = Params { origin: f.layout.origin.into(), size: extent.into(), opacity: f.opacity, relief, _pad: [0.0; 2] };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
         self.visible = true;
         Some(range)

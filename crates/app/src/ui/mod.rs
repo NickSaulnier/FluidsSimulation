@@ -181,6 +181,8 @@ pub struct UiState {
     pub faucet_speed: f32,
     /// Draw particles as a continuous liquid surface.
     pub liquid: bool,
+    /// Light a grid solver's dye as a surface: 0 flat, 1 fully.
+    pub relief: f32,
     /// In the 3D visualizer, how fast the camera circles the scene, rad/s.
     pub orbit: f32,
     pub blob_size: f32,
@@ -269,6 +271,7 @@ impl Default for UiState {
             show_particles: true,
             faucet_speed: 2.0,
             liquid: true,
+            relief: 0.0,
             orbit: 0.12,
             blob_size: 3.0,
             surface_threshold: 0.5,
