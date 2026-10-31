@@ -81,6 +81,9 @@ pub struct FeedbackSettings {
     pub echo: f32,
     pub echo_zoom: f32,
     pub echo_flip: EchoFlip,
+    /// How sharply the last frame is read: 0 bilinear (trails soften a little every
+    /// frame: a smoky smear), 1 Catmull-Rom (they keep their detail).
+    pub sharpness: f32,
 }
 
 impl FeedbackSettings {
@@ -99,6 +102,7 @@ impl FeedbackSettings {
         echo: 0.0,
         echo_zoom: 1.5,
         echo_flip: EchoFlip::None,
+        sharpness: 1.0,
     };
 
     /// The motion these settings make, per second, with the bass at `bass` (0..1): in
@@ -133,7 +137,8 @@ impl FeedbackSettings {
                 FeedbackMode::Brightest => 1,
             },
             aspect,
-            _pad: [0.0; 2],
+            sharpness: self.sharpness.clamp(0.0, 1.0),
+            _pad: 0.0,
             vars,
         }
     }
@@ -169,7 +174,8 @@ struct Uniforms {
     warp_phase: f32,
     mode: u32,
     aspect: f32,
-    _pad: [f32; 2],
+    sharpness: f32,
+    _pad: f32,
     vars: [[f32; 4]; 16],
 }
 
@@ -654,5 +660,34 @@ mod tests {
         let right_of_dot: f32 = (44..60).map(|x| at(&img, x, 32)).sum();
         let left_of_dot: f32 = (20..36).map(|x| at(&img, x, 32)).sum();
         assert!(right_of_dot > 2.0 && left_of_dot < 0.5, "zoom streaks: right {right_of_dot}, left {left_of_dot}");
+
+        // Stripes 8 pixels apart carried a third of a pixel a frame: read bilinearly they blur
+        // away within a second; sharply, they keep most of their contrast, and don't
+        // overshoot.
+        let stripes: Vec<[u16; 4]> = (0..size[1]).flat_map(|_| (0..size[0]).map(|x| if x % 8 < 4 { [0x3C00; 4] } else { [0, 0, 0, 0x3C00] })).collect();
+        let carried = |layer: &mut FeedbackLayer, sharpness: f32| {
+            layer.pause();
+            queue.write_texture(
+                scene.texture().as_image_copy(),
+                bytemuck::cast_slice(&stripes),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: None },
+                scene.texture().size(),
+            );
+            // A third of a pixel a frame, to the right.
+            let s = FeedbackSettings { enabled: true, mode: FeedbackMode::Brightest, trail: 0.98, drift: [20.0 / 64.0, 0.0], sharpness, ..FeedbackSettings::OFF };
+            frame(layer, &s, 1.0 / 60.0);
+            upload(None);
+            let mut img = Vec::new();
+            for _ in 0..60 {
+                img = frame(layer, &s, 1.0 / 60.0);
+            }
+            // (Black comes in from the left, 20 pixels by now.)
+            let row: Vec<f32> = (28..60).map(|x| at(&img, x, 32)).collect();
+            let contrast = row.iter().fold(0.0f32, |m, &v| m.max(v)) - row.iter().fold(1.0f32, |m, &v| m.min(v));
+            (contrast, row.iter().fold(0.0f32, |m, &v| m.max(v)))
+        };
+        let (soft, _) = carried(&mut layer, 0.0);
+        let (sharp, brightest) = carried(&mut layer, 1.0);
+        assert!(sharp > 0.3 && sharp > 5.0 * soft && brightest <= 1.0 + 1e-3, "stripes' contrast after a second: soft {soft}, sharp {sharp} (brightest {brightest})");
     }
 }

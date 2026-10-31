@@ -145,6 +145,7 @@ impl Settings {
             bass_zoom: clamp(f.bass_zoom, 0.0, 1.0),
             echo: clamp(f.echo, 0.0, 1.0),
             echo_zoom: clamp(f.echo_zoom, 0.5, 3.0),
+            sharpness: clamp(f.sharpness, 0.0, 1.0),
             ..*f
         };
         let w = &self.waves;

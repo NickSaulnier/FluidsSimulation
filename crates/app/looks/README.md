@@ -151,6 +151,7 @@ Rates are per second.
 |---|---|
 | `mode` | `smear` (a blend toward the scene) or `brightest` (bright things streak) |
 | `trail` | how much of the picture is left after a second, 0 to 0.98 |
+| `sharpness` | how sharply each frame reads the last: 1 (the default) trails keep their detail, 0 they soften a little every frame into a smoky smear (as MilkDrop's do; converted presets take 0) |
 | `zoom` | growth per second: 1 none, above 1 grows from the centre |
 | `rotation` | turn, radians per second |
 | `drift` | `[x, y]` shift, screen heights per second |

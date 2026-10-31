@@ -1,6 +1,7 @@
 // The feedback layer (see feedback.rs): each frame starts from the last one, warped
 // (zoomed, turned, stretched, shifted, waved, and carried along by the fluid's flow)
-// and faded, with the new scene combined over it.
+// and faded, with the new scene combined over it. The last frame is read sharply
+// (Catmull-Rom) as much as the look's sharpness says, so trails keep their detail.
 //
 // A template: feedback.rs puts the equation maths before it, declares the motion where
 // `MOTION` is, and puts a look's per-pixel code (see `expr::wgsl`) where `PIXEL` is.
@@ -14,7 +15,9 @@ struct Feedback {
     warp_phase: f32,
     mode: u32,
     aspect: f32,
-    _pad: vec2f,
+    // 0: the last frame read bilinearly (softening a little every frame), 1: sharply.
+    sharpness: f32,
+    _pad: f32,
     // The equations' shared values (`expr::SHARED`): inputs, motion (per second), q's.
     vars: array<vec4f, 16>,
 };
@@ -86,13 +89,56 @@ fn source(uv: vec2f) -> vec2f {
     return src;
 }
 
+/// The last frame at `uv`, bilinear mixed with Catmull-Rom by the sharpness. A bilinear
+/// read between texels is a small blur, which repeated every frame wipes out a trail's
+/// detail in a second or two. Catmull-Rom (cubic, through the texels) in nine bilinear
+/// taps, each pair of a row's middle weights folded into one tap between them; clamped
+/// to the four nearest texels' range, so edges don't ring and the overshoot can't build
+/// up from frame to frame.
+fn previous_at(uv: vec2f) -> vec3f {
+    let bilinear = textureSampleLevel(previous, linear_clamp, uv, 0.0).rgb;
+    if fb.sharpness <= 0.0 {
+        return bilinear;
+    }
+    let size = vec2f(textureDimensions(previous));
+    let pos = uv * size - 0.5;
+    let base = floor(pos);
+    let f = pos - base;
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    let w3 = f * f * (-0.5 + 0.5 * f);
+    let w12 = w1 + w2;
+    let t0 = (base - 0.5) / size;
+    let t12 = (base + 0.5 + w2 / w12) / size;
+    let t3 = (base + 2.5) / size;
+    let xs = array<f32, 3>(t0.x, t12.x, t3.x);
+    let ys = array<f32, 3>(t0.y, t12.y, t3.y);
+    let wx = array<f32, 3>(w0.x, w12.x, w3.x);
+    let wy = array<f32, 3>(w0.y, w12.y, w3.y);
+    var cubic = vec3f(0.0);
+    for (var j = 0; j < 3; j++) {
+        for (var i = 0; i < 3; i++) {
+            cubic += textureSampleLevel(previous, linear_clamp, vec2f(xs[i], ys[j]), 0.0).rgb * (wx[i] * wy[j]);
+        }
+    }
+    let last = vec2i(size) - 1;
+    let at = vec2i(base);
+    let a = textureLoad(previous, clamp(at, vec2i(0), last), 0).rgb;
+    let b = textureLoad(previous, clamp(at + vec2i(1, 0), vec2i(0), last), 0).rgb;
+    let c = textureLoad(previous, clamp(at + vec2i(0, 1), vec2i(0), last), 0).rgb;
+    let d = textureLoad(previous, clamp(at + vec2i(1, 1), vec2i(0), last), 0).rgb;
+    cubic = clamp(cubic, min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
+    return mix(bilinear, cubic, fb.sharpness);
+}
+
 @fragment
 fn fs_feedback(in: VOut) -> @location(0) vec4f {
     // From outside the frame (a turn or a shrink brings the edges in) comes black, not
     // the edge pixels smeared into streaks.
     let src_uv = source(in.uv);
     let outside = any(src_uv < vec2f(0.0)) || any(src_uv > vec2f(1.0));
-    let old = select(textureSampleLevel(previous, linear_clamp, src_uv, 0.0).rgb * fb.persistence, vec3f(0.0), outside);
+    let old = select(previous_at(src_uv) * fb.persistence, vec3f(0.0), outside);
     let now = textureSampleLevel(scene, linear_clamp, in.uv, 0.0).rgb;
     var c: vec3f;
     if fb.mode == SMEAR {

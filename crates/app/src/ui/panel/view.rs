@@ -74,6 +74,7 @@ fn feedback(ui: &mut egui::Ui, s: &mut FeedbackSettings) {
         });
     });
     slider(ui, "Trail", "How much of the picture is left after a second.", &mut s.trail, 0.0..=0.98);
+    slider(ui, "Sharpness", "How sharply each frame reads the last: 1 trails keep their detail, 0 they soften into a smoky smear.", &mut s.sharpness, 0.0..=1.0);
     slider(ui, "Flow", "How strongly the fluid's motion carries the picture (1: exactly with it).", &mut s.flow, 0.0..=3.0);
     row(ui, "Zoom", "Growth per second from the centre: above 1 a tunnel outward, below 1 inward.", |ui| {
         ui.add(egui::Slider::new(&mut s.zoom, 0.5..=2.0).logarithmic(true));

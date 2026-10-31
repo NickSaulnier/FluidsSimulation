@@ -531,6 +531,7 @@ fn random_feedback(d: &mut Dice, fluid: bool) -> FeedbackSettings {
         echo: if d.chance(0.2) { d.range(0.15, 0.3) } else { 0.0 },
         echo_zoom: d.range(0.7, 1.5),
         echo_flip: d.pick(&[EchoFlip::None, EchoFlip::Horizontal, EchoFlip::Vertical, EchoFlip::Both]),
+        sharpness: FeedbackSettings::OFF.sharpness,
     }
     .rounded()
 }

@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **phases A and B done** (2026-10-31); decision 1 made, 2 to 5 open (§4). A sharper, cleaner
+Status: **phases A to C done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -132,7 +132,7 @@ What's on screen in full screen should hold up close on a large display:
   display, with the tone curve mapping to the display's peak instead of to white
   (decision 2).
 
-## 4. Decisions (1 made)
+## 4. Decisions (1 and 5 made)
 
 1. **The tone curve (§3.2):** the same compression, on the brightest channel instead of
    each, with a gradual turn toward white (Khronos' PBR Neutral, without its toe), so
@@ -145,9 +145,9 @@ What's on screen in full screen should hold up close on a large display:
 4. **The frame budget:** the target (60 fps at 1080p or 1440p? 4K?) and the GPU it's
    measured on decide how far §3.3, §3.4 and §3.7 can go by default. Recommended: the
    user's own machine at its display's resolution, with the governor as the fallback.
-5. **Per-look settings or global (§3.3, §3.5):** sharpness and relief as look settings
-   (more control, more to tune) or one global setting each. Recommended: look settings,
-   with defaults from the contact sheet.
+5. **Per-look settings or global (§3.3, §3.5):** look settings, with defaults from the
+   contact sheet. Sharpness (phase C): per look, default 1 (sharp), MilkDrop's
+   converted presets 0.
 
 ## 5. Phases
 
@@ -264,3 +264,38 @@ fidelity reel audited, against the run before, and its frame time measured.
     blazing one; into an 8-bit target a dark gradient comes out without terraces and
     black stays black; changed: a hue turn keeps the lightness, in the composite and on
     the CPU) and clippy pass; the reel audited (above, no errors).
+- **Phase C, sharp feedback (done):** `render/feedback.wgsl`, `render/feedback.rs`.
+  - **The read:** the warp reads the last frame with Catmull-Rom in nine bilinear taps
+    (each row's two middle weights folded into one tap between them), clamped to the
+    range of the four nearest texels so edges don't ring and overshoot can't build up
+    frame on frame; mixed with the plain bilinear read by `sharpness`.
+  - **`sharpness`** in `[feedback]` (0 to 1, default 1) and a slider in the View tab's
+    feedback group, under Trail. Converted MilkDrop presets take 0: MilkDrop reads its
+    last frame bilinearly, and its presets are made for that blur. Random looks take the
+    default.
+  - **Why it matters, measured:** stripes 8 pixels apart carried a third of a pixel a
+    frame for a second keep 0.43 of their contrast read sharply, 0.02 bilinearly (a
+    bilinear read at that shift keeps 93 % of that detail a frame, Catmull-Rom 99 %).
+    Detail finer than that fades either way.
+  - **The reel** (sharpness 1 against phase B's bilinear run; Ink nebula and Julia
+    tunnel have no feedback, so theirs is the run's own variation):
+
+    | Look | Sharpness | Shimmer | Detail (small frames) |
+    |---|---|---|---|
+    | Smoke dance | 0.07 → 0.12 | 0.00 → 0.00 | 0.012 → 0.016 |
+    | Ink nebula | 0.61 → 0.57 | 0.00 → 0.00 | 0.034 → 0.034 |
+    | Aurora | 0.85 → 1.11 | 0.00 → 0.01 | 0.017 → 0.018 |
+    | Spiral galaxy | 0.70 → 0.96 | 0.02 → 0.01 | 0.010 → 0.013 |
+    | Julia tunnel | 3.25 → 2.69 | 0.81 → 0.72 | 0.050 → 0.050 |
+    | Firestorm | 0.16 → 0.26 | – | 0.012 → 0.014 |
+    | Bonfire 3D | 0.04 → 0.08 | – | 0.013 → 0.016 |
+    | Quicksilver | 0.64 → 0.93 | 0.16 → 0.16 | 0.038 → 0.048 |
+
+    Every look with feedback is sharper (by a third to a half), with no more shimmer
+    and no banding back. By eye, Spiral galaxy's zoom trails keep their rings instead
+    of melting into an even glow. Frame rates are as before (Quicksilver 112 → 142,
+    the others within 10, which is run-to-run variation): nine taps at the render
+    resolution cost nothing measurable here. So the default is 1.
+  - **Checked:** 246 app tests (the feedback pass's GPU test now also carries stripes:
+    sharp keeps them, bilinear blurs them, and nothing overshoots) and clippy pass; the
+    reel audited (above, no errors).

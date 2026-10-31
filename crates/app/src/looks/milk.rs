@@ -83,6 +83,8 @@ pub fn convert(text: &str, stem: &str) -> Result<Imported, String> {
         echo: num("fvideoechoalpha", 0.0).clamp(0.0, 1.0),
         echo_zoom: num("fvideoechozoom", 1.0).clamp(0.1, 10.0),
         echo_flip,
+        // MilkDrop reads the last frame bilinearly; its presets are made for that blur.
+        sharpness: 0.0,
         ..FeedbackSettings::OFF
     };
     if num("fzoomexponent", 1.0) != 1.0 {
