@@ -1345,6 +1345,7 @@ impl State {
             let reaction = self.music.react(&self.ui.reactions, self.world.scene.size, self.ui.gravity(), self.ui.presenting, real_dt, self.look_frame.intensity);
             self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
             self.fractal_morph = reaction.morph;
+            self.zoom_in(reaction.zoom);
             self.look_frame.params.clear();
             self.perf.record(now, None, 0.0);
             return;
@@ -1373,10 +1374,19 @@ impl State {
         self.modulate_params(&reaction.params, &values);
         self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
         self.fractal_morph = reaction.morph;
+        self.zoom_in(reaction.zoom);
         let wanted = real_dt * self.ui.speed;
         let sim_dt = self.sim_dt(real_dt);
         let report = sim_dt.map(|dt| self.world.advance(dt, &step_input));
         self.perf.record(now, report, if self.ui.paused { 0.0 } else { wanted });
+    }
+
+    /// The reactions' zoom (a share of growth per second, see `Effect::Zoom`), on top of
+    /// this frame's feedback motion.
+    fn zoom_in(&mut self, zoom: f32) {
+        if zoom != 0.0 {
+            self.look_frame.shared[expr::slot("zoom")] *= 1.0 + zoom;
+        }
     }
 
     /// The 3D frame: the camera (the mouse, and a slow orbit in the visualizer), the
@@ -1420,6 +1430,7 @@ impl State {
         self.modulate_params(&reaction.params, &values);
         self.palette_now = self.palette_base.modulated(reaction.hue_shift, reaction.flash);
         self.fractal_morph = reaction.morph;
+        self.zoom_in(reaction.zoom);
         let Some(world) = &mut self.world3d else { return };
         world.scene.gravity = gravity;
         if let Some(dt) = sim_dt {

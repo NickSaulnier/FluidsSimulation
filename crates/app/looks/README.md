@@ -106,10 +106,15 @@ at the top of the file, as are equations that don't compile.
 - `reactions`: each one `trigger`, `effect`, `gain` (1 if left out) and, for
   `effect = "param"`, the parameter's key. `enabled = false` keeps one off.
   - Triggers: `kick`, `snare`, `hat`, `beat` (every beat of a steady beat, even a quiet
-    one), `sub`, `bass`, `lowmid`, `mid`, `high`, `level`, `brightness`.
+    one), `sub`, `bass`, `lowmid`, `mid`, `high`, `level`, `brightness`; and on the
+    beat's own clock rather than a hit heard (only with a steady beat, fading in as the
+    tempo grows sure): `pulse` (rises into each beat and peaks on it; one-shot effects
+    fire on the beat) and `bar` (a step each downbeat, between two levels; one-shot
+    effects fire on the downbeat).
   - Effects: `splash`, `jet`, `vortex`, `flash`, `gust`, `slosh`, `breathe`, `hue`,
     `param`, `drop` (a drop at a random spot: ripples on shallow water), `morph`
-    (kicks the fractal: a Julia set's shape leaps on, and the zoom punches in).
+    (kicks the fractal: a Julia set's shape leaps on, and the zoom punches in), `zoom`
+    (the picture zooms in with the trigger: with `pulse`, on the beat).
 
 ## `[feedback]`
 

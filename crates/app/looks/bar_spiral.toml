@@ -11,6 +11,7 @@ params = { vorticity = 0.6, dissipation = 0.03 }
 reactions = [
     { trigger = "snare", effect = "vortex", gain = 0.6 },
     { trigger = "hat", effect = "flash", gain = 0.5 },
+    { trigger = "pulse", effect = "zoom", gain = 0.4 },
     { trigger = "brightness", effect = "hue", gain = 0.3 },
 ]
 

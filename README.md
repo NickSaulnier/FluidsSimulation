@@ -80,8 +80,10 @@ resolution in full screen if the simulation falls behind real time.
 - A latency setting (with a flash on every beat to set it by ear) for wireless
   headphones and big audio buffers.
 - Reactions map triggers (kick, snare, hat, beat, bands, level, brightness) to effects
-  on the fluid (splash, jet, vortex, gust, slosh, breathe, flash, hue, or any solver
-  parameter).
+  on the fluid (splash, jet, vortex, gust, slosh, breathe, flash, hue, zoom, or any
+  solver parameter). Two triggers run on the beat's own clock instead of the hits heard,
+  so their motion lands on the beat: pulse (rising into each beat, peaking on it) and
+  bar (a step each downbeat); with no steady beat they rest, and the hits carry on.
 - The song's shape: an energy, from how loud the song is now against its own quiet and
   loud parts, lifted through a build-up and full after a drop. Every look follows it
   (as much as its `dynamics` says): gentler reactions, slower motion and dimmer colour

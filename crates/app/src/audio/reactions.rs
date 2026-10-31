@@ -33,10 +33,15 @@ pub enum Trigger {
     High,
     Level,
     Brightness,
+    /// On the beat's phase, not a detected hit: a pulse rising into each beat and peaking
+    /// on it (one-shot effects fire on it). Only with a steady beat (see `beat_weight`).
+    Pulse,
+    /// On the bar's phase: a step each downbeat (one-shot effects fire on it).
+    Bar,
 }
 
 impl Trigger {
-    pub const ALL: [Trigger; 11] = [
+    pub const ALL: [Trigger; 13] = [
         Trigger::Kick,
         Trigger::Snare,
         Trigger::Hat,
@@ -48,6 +53,8 @@ impl Trigger {
         Trigger::High,
         Trigger::Level,
         Trigger::Brightness,
+        Trigger::Pulse,
+        Trigger::Bar,
     ];
 
     pub fn label(self) -> &'static str {
@@ -63,6 +70,8 @@ impl Trigger {
             Trigger::High => "High",
             Trigger::Level => "Level",
             Trigger::Brightness => "Brightness",
+            Trigger::Pulse => "Pulse",
+            Trigger::Bar => "Bar",
         }
     }
 
@@ -85,7 +94,7 @@ impl Trigger {
             Trigger::High => f.bands[4],
             Trigger::Level => f.level,
             Trigger::Brightness => f.brightness,
-            Trigger::Kick | Trigger::Snare | Trigger::Hat | Trigger::Beat => 0.0,
+            Trigger::Kick | Trigger::Snare | Trigger::Hat | Trigger::Beat | Trigger::Pulse | Trigger::Bar => 0.0,
         }
     }
 }
@@ -114,10 +123,12 @@ pub enum Effect {
     Drop,
     /// Kick the fractal: the Julia point leaps along its path, and the zoom punches in.
     Morph,
+    /// The picture's zoom pushes in with the trigger (the feedback's growth).
+    Zoom,
 }
 
 impl Effect {
-    pub const ALL: [Effect; 11] = [
+    pub const ALL: [Effect; 12] = [
         Effect::Splash,
         Effect::Jet,
         Effect::Vortex,
@@ -129,6 +140,7 @@ impl Effect {
         Effect::Param,
         Effect::Drop,
         Effect::Morph,
+        Effect::Zoom,
     ];
 
     pub fn label(self) -> &'static str {
@@ -144,6 +156,7 @@ impl Effect {
             Effect::Param => "Parameter",
             Effect::Drop => "Drop",
             Effect::Morph => "Morph",
+            Effect::Zoom => "Zoom",
         }
     }
 
@@ -160,6 +173,7 @@ impl Effect {
             Effect::Param => "Modulate a solver setting around its value.",
             Effect::Drop => "A drop lands at a random spot: ripples on shallow water (other fluids don't feel it).",
             Effect::Morph => "Kick the fractal: a Julia set's shape leaps on, and the zoom punches in.",
+            Effect::Zoom => "The picture zooms in with the trigger (with Pulse, on the beat).",
         }
     }
 
@@ -192,6 +206,8 @@ pub fn default_reactions() -> Vec<Reaction> {
         Reaction::new(Trigger::Kick, Effect::Splash, 1.0, true),
         Reaction::new(Trigger::Snare, Effect::Vortex, 1.0, true),
         Reaction::new(Trigger::Hat, Effect::Flash, 0.6, true),
+        Reaction::new(Trigger::Pulse, Effect::Zoom, 0.4, true),
+        Reaction::new(Trigger::Bar, Effect::Vortex, 0.6, true),
         Reaction::new(Trigger::Bass, Effect::Slosh, 0.6, true),
         Reaction::new(Trigger::Brightness, Effect::Hue, 0.5, true),
         Reaction::new(Trigger::Mid, Effect::Gust, 0.5, false),
@@ -212,6 +228,8 @@ pub struct ReactionOutput {
     pub flash: f32,
     /// The fractal's kick, 0..1 (see `render::fractal::Motion`).
     pub morph: f32,
+    /// Extra zoom for the feedback, a share of its growth per second (0 none).
+    pub zoom: f32,
     /// Solver parameters to set this frame: (key, value as a multiple of its base).
     pub params: Vec<(String, f32)>,
 }
@@ -240,6 +258,17 @@ const LANES: [f32; 3] = [0.3, 0.7, 0.5];
 const FEED_UNHEARD: f32 = 0.3;
 const FEED_OFF: f32 = 0.05;
 const FEED_BAR_S: f32 = 2.0;
+/// The Pulse trigger: after a beat it falls with this time constant (a share of the
+/// beat), and it rises again over the last `PULSE_RISE` of the beat, peaking on the next.
+const PULSE_FALL: f32 = 0.15;
+const PULSE_RISE: f32 = 0.3;
+/// The Bar trigger's step eases over this share of the bar.
+const BAR_EASE: f32 = 0.08;
+/// The Zoom effect at full: growth per second, on top.
+const ZOOM_MAX: f32 = 0.3;
+/// The beat-locked triggers fade in between these tempo confidences.
+const LOCK_FROM: f32 = 0.3;
+const LOCK_FULL: f32 = 0.6;
 /// Idle drift starts after this much silence and fades in over `IDLE_FADE_S`, seconds.
 const IDLE_AFTER_S: f32 = 5.0;
 const IDLE_FADE_S: f32 = 2.0;
@@ -273,6 +302,26 @@ pub struct ReactionEngine {
     rng: SplitMix64,
     /// Where the feeds are in the bar, 0..1, while no tempo is found.
     bar: f32,
+    /// The beat and bar phases last frame (to see them wrap: a beat, a downbeat), and
+    /// whether this is an odd bar (the Bar trigger's step).
+    last_phase: Option<(f32, f32)>,
+    odd_bar: bool,
+}
+
+/// How much the beat-locked triggers count, 0..1: none without a steady beat, full
+/// once the tempo is confident.
+fn beat_weight(f: &AudioFeatures) -> f32 {
+    if !f.musical.beating || f.silent {
+        return 0.0;
+    }
+    ((f.musical.confidence - LOCK_FROM) / (LOCK_FULL - LOCK_FROM)).clamp(0.0, 1.0)
+}
+
+/// The Pulse trigger's shape over a beat (`phase` 0 on the beat): high on it, falling
+/// fast, and rising again into the next.
+fn pulse(phase: f32) -> f32 {
+    let rise = ((phase - (1.0 - PULSE_RISE)) / PULSE_RISE).clamp(0.0, 1.0);
+    (-phase / PULSE_FALL).exp().max(rise * rise)
 }
 
 impl ReactionEngine {
@@ -308,6 +357,21 @@ impl ReactionEngine {
             self.hit_env[k] = self.hit_env[k].max(o.strength);
         }
         self.armed.resize(reactions.len(), true);
+        // The beat-locked triggers: a beat or a downbeat when the phase wraps round.
+        let weight = beat_weight(features);
+        let phases = (features.musical.beat_phase, features.musical.bar_phase);
+        let (on_beat, on_bar) = match self.last_phase {
+            Some((beat, bar)) if weight > 0.0 => (phases.0 < beat - 0.5, phases.1 < bar - 0.5),
+            _ => (false, false),
+        };
+        self.last_phase = Some(phases);
+        if on_bar {
+            self.odd_bar = !self.odd_bar;
+        }
+        let bar_step = {
+            let eased = (phases.1 / BAR_EASE).min(1.0);
+            if self.odd_bar { eased } else { 1.0 - eased }
+        };
 
         let (mut tilt_deg, mut gravity_scale) = (0.0f32, 1.0f32);
         for (r_index, r) in reactions.iter().enumerate().filter(|(_, r)| r.enabled) {
@@ -315,6 +379,8 @@ impl ReactionEngine {
             // The trigger's continuous value, and this frame's firings (with strengths).
             let (value, firings): (f32, Vec<f32>) = match r.trigger.hit() {
                 _ if r.trigger == Trigger::Beat => (self.beat_env, vec![1.0; self.beats]),
+                _ if r.trigger == Trigger::Pulse => (weight * pulse(phases.0), if on_beat { vec![weight] } else { Vec::new() }),
+                _ if r.trigger == Trigger::Bar => (weight * bar_step, if on_bar { vec![weight] } else { Vec::new() }),
                 Some(kind) => {
                     let k = OnsetKind::ALL.iter().position(|&x| x == kind).unwrap_or(0);
                     (self.hit_env[k], onsets.iter().filter(|o| o.kind == kind).map(|o| o.strength).collect())
@@ -352,6 +418,7 @@ impl ReactionEngine {
                 }
                 Effect::Breathe => gravity_scale *= (1.0 + gain * (value - 0.5)).clamp(0.2, 2.0),
                 Effect::Hue => out.hue_shift += 180.0 * gain * (value - 0.5),
+                Effect::Zoom => out.zoom += ZOOM_MAX * gain * value,
                 Effect::Param => {
                     if let Some(key) = &r.param {
                         out.params.push((key.clone(), (1.0 + gain * (2.0 * value - 1.0)).max(0.0)));
@@ -604,6 +671,64 @@ mod tests {
         let r = [Reaction::new(Trigger::Kick, Effect::Splash, 1.0, false)];
         let out = e.evaluate(&r, Some(&features(0.0, 0.5)), &[kick(1.0)], DOMAIN, G, 1.0, 0.01);
         assert!(out.brushes.is_empty());
+    }
+
+    /// A steady beat at 120 bpm (4/4) at `t` seconds, as confident as `confidence`.
+    fn on_beat(t: f32, confidence: f32) -> AudioFeatures {
+        let mut f = features(0.5, 0.5);
+        let beats = t / 0.5;
+        f.musical.beating = true;
+        f.musical.confidence = confidence;
+        f.musical.beat_phase = beats.fract();
+        f.musical.bar_phase = (beats / 4.0).fract();
+        f
+    }
+
+    /// When over 4 s of a steady beat `trigger` fires a flash, seconds.
+    fn flashes(trigger: Trigger) -> Vec<f32> {
+        let r = [Reaction::new(trigger, Effect::Flash, 1.0, true)];
+        let mut e = ReactionEngine::default();
+        let mut at = Vec::new();
+        for k in 0..400 {
+            let t = k as f32 * 0.01;
+            let before = e.flash;
+            e.evaluate(&r, Some(&on_beat(t, 1.0)), &[], DOMAIN, G, 1.0, 0.01);
+            if e.flash > before + 0.1 {
+                at.push(t);
+            }
+        }
+        at
+    }
+
+    /// The pulse peaks on the beat (rising into it, falling after), and a one-shot
+    /// effect on it fires once a beat, on the beat; the bar fires once a bar, on the
+    /// downbeat, and steps between two levels. Neither moves without a confident tempo.
+    #[test]
+    fn pulse_and_bar_lock_to_the_beat() {
+        let zoom = [Reaction::new(Trigger::Pulse, Effect::Zoom, 1.0, true)];
+        let mut e = ReactionEngine::default();
+        let mut at = |t: f32| e.evaluate(&zoom, Some(&on_beat(t, 1.0)), &[], DOMAIN, G, 1.0, 0.01).zoom;
+        let (before, on, after, between) = (at(0.49), at(0.501), at(0.65), at(0.75));
+        assert!(on > before && before > between && on > after && after > between, "{before} {on} {after} {between}");
+
+        // On every beat after the first (0 isn't a wrap), and every downbeat.
+        let near = |t: f32, every: f32| (t / every - (t / every).round()).abs() < 0.03;
+        let beats = flashes(Trigger::Pulse);
+        assert!(beats.len() == 7 && beats.iter().all(|&t| near(t, 0.5)), "{beats:?}");
+        let bars = flashes(Trigger::Bar);
+        assert!(bars.len() == 1 && near(bars[0], 2.0), "{bars:?}");
+
+        // The bar's step: one level through a bar, the other through the next.
+        let step = [Reaction::new(Trigger::Bar, Effect::Hue, 1.0, true)];
+        let mut e = ReactionEngine::default();
+        let hues: Vec<f32> = (0..600).map(|k| e.evaluate(&step, Some(&on_beat(k as f32 * 0.01, 1.0)), &[], DOMAIN, G, 1.0, 0.01).hue_shift).collect();
+        assert!((hues[100] - hues[150]).abs() < 1e-3 && (hues[300] - hues[150]).abs() > 50.0 && (hues[500] - hues[150]).abs() < 1e-3, "{} {} {}", hues[150], hues[300], hues[500]);
+
+        // No steady beat: nothing.
+        let mut e = ReactionEngine::default();
+        for k in 0..200 {
+            assert_eq!(e.evaluate(&zoom, Some(&on_beat(k as f32 * 0.01, 0.1)), &[], DOMAIN, G, 1.0, 0.01).zoom, 0.0);
+        }
     }
 
     /// A feed pours at its band's level, is off while the band is quiet or the music

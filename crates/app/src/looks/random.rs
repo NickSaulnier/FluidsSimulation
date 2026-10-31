@@ -138,7 +138,7 @@ fn reaction_set(kind: Kind) -> &'static [Pick] {
     use Effect as E;
     use Trigger as T;
     match kind {
-        Kind::None => &[(T::Kick, E::Flash, 0.4, 1.0), (T::Brightness, E::Hue, 0.3, 0.6), (T::Snare, E::Flash, 0.5, 0.8), (T::Hat, E::Flash, 0.3, 0.4)],
+        Kind::None => &[(T::Kick, E::Flash, 0.4, 1.0), (T::Brightness, E::Hue, 0.3, 0.6), (T::Snare, E::Flash, 0.5, 0.8), (T::Hat, E::Flash, 0.3, 0.4), (T::Pulse, E::Zoom, 0.3, 0.7), (T::Bar, E::Hue, 0.2, 0.4)],
         Kind::Particles => &[
             (T::Kick, E::Splash, 0.6, 1.4),
             (T::Bass, E::Slosh, 0.5, 0.8),
@@ -146,6 +146,8 @@ fn reaction_set(kind: Kind) -> &'static [Pick] {
             (T::Hat, E::Flash, 0.3, 0.8),
             (T::Brightness, E::Hue, 0.2, 0.5),
             (T::Kick, E::Jet, 0.8, 1.2),
+            (T::Pulse, E::Zoom, 0.2, 0.5),
+            (T::Bar, E::Vortex, 0.5, 0.9),
         ],
         Kind::Dye => &[
             (T::Snare, E::Vortex, 0.5, 1.4),
@@ -155,14 +157,18 @@ fn reaction_set(kind: Kind) -> &'static [Pick] {
             (T::Brightness, E::Hue, 0.3, 0.6),
             (T::Level, E::Breathe, 0.3, 0.5),
             (T::Beat, E::Vortex, 0.3, 0.5),
+            (T::Pulse, E::Zoom, 0.2, 0.5),
+            (T::Bar, E::Vortex, 0.6, 1.0),
         ],
-        Kind::Fire2d => &[(T::Kick, E::Jet, 0.4, 1.0), (T::Bass, E::Breathe, 0.4, 0.6), (T::Snare, E::Vortex, 0.5, 0.8), (T::Mid, E::Gust, 0.3, 0.5)],
+        Kind::Fire2d => &[(T::Kick, E::Jet, 0.4, 1.0), (T::Bass, E::Breathe, 0.4, 0.6), (T::Snare, E::Vortex, 0.5, 0.8), (T::Mid, E::Gust, 0.3, 0.5), (T::Pulse, E::Zoom, 0.2, 0.4), (T::Bar, E::Jet, 0.6, 1.0)],
         Kind::Fire3d => &[
             (T::Kick, E::Jet, 1.0, 1.4),
             (T::Snare, E::Vortex, 0.8, 1.2),
             (T::Level, E::Breathe, 0.3, 0.5),
             (T::Mid, E::Gust, 0.3, 0.5),
             (T::Bass, E::Slosh, 0.3, 0.5),
+            (T::Pulse, E::Zoom, 0.2, 0.4),
+            (T::Bar, E::Vortex, 0.6, 1.0),
         ],
         Kind::Water => &[
             (T::Kick, E::Drop, 0.5, 1.2),
@@ -171,8 +177,10 @@ fn reaction_set(kind: Kind) -> &'static [Pick] {
             (T::Bass, E::Slosh, 0.2, 0.5),
             (T::Kick, E::Splash, 0.5, 1.0),
             (T::Brightness, E::Hue, 0.2, 0.4),
+            (T::Pulse, E::Zoom, 0.2, 0.4),
+            (T::Bar, E::Drop, 0.8, 1.4),
         ],
-        Kind::Smoke3d => &[(T::Snare, E::Vortex, 0.5, 0.7), (T::Kick, E::Splash, 0.5, 0.7), (T::Hat, E::Flash, 0.3, 0.4), (T::Brightness, E::Hue, 0.4, 0.6)],
+        Kind::Smoke3d => &[(T::Snare, E::Vortex, 0.5, 0.7), (T::Kick, E::Splash, 0.5, 0.7), (T::Hat, E::Flash, 0.3, 0.4), (T::Brightness, E::Hue, 0.4, 0.6), (T::Pulse, E::Zoom, 0.2, 0.4), (T::Bar, E::Vortex, 0.5, 0.7)],
     }
 }
 

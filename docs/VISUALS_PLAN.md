@@ -1,6 +1,6 @@
 # Visuals Plan
 
-Status: **phases A to D done** (2026-10-30); decisions 4 and 5 open (§4). Better pictures and a closer
+Status: **phases A to E done** (2026-10-31); decisions 4 and 5 open (§4). Better pictures and a closer
 fit to the music, now that visualizing music is the app's main purpose. Grouped into
 phases; each phase is committed on its own.
 
@@ -310,3 +310,30 @@ before.
     energy, silence forgets the song; the energy calms and livens a look, build-ups and
     drops) and clippy pass; the energy printed over the generated songs and the drum
     clips. The contact sheet wasn't run again for this phase (at the user's word).
+- **Phase E, motion on the beat (done):** `audio/reactions.rs`.
+  - **Two triggers on the beat's own clock** (the tracker's phases, which already
+    include the latency setting, so the peak lands on the beat heard), usable with any
+    effect: **Pulse** (high on the beat, falling with a time constant of 0.15 of a beat,
+    rising again over the last 0.3 of it into the next; one-shot effects fire as the
+    beat's phase wraps round, so on the beat rather than a hop or two after it's heard)
+    and **Bar** (a step between two levels each downbeat, eased over the first 8 % of the
+    bar: a hue that changes each bar, a gust or a breath that turns on and off; one-shot
+    effects fire on the downbeat).
+  - **The tempo's confidence fades between them and the hits:** both are scaled by a
+    weight that's 0 without a steady beat (or in silence) and rises from confidence 0.3
+    to full at 0.6; the hit triggers carry on regardless, so with no steady beat
+    (ambient, a breakdown) only the hits move the picture, and with one the hits accent
+    the pulse.
+  - **A new effect, Zoom:** the picture's zoom (the feedback's growth) pushes in with the
+    trigger, up to 30 % more a second; with Pulse it breathes in on every beat, for any
+    look with feedback, fluid or not. It's added to the frame's motion after the look's
+    equations and the song's shape.
+  - **Using them:** the default reactions gain Pulse → Zoom (0.4) and Bar → Vortex (0.6);
+    every kind of fluid in the randomizer gets a Pulse → Zoom pick and a Bar pick (a
+    vortex, a jet for fire, a drop for shallow water, a hue step without fluid); Bar
+    spiral (the tempo vortex's look) gets Pulse → Zoom. The other built-in looks are as
+    they were.
+  - **Checked:** 238 app tests (new: the pulse peaks on the beat, one-shot effects fire
+    once a beat on the beat and once a bar on the downbeat, the bar steps, and nothing
+    moves without a confident tempo) and clippy pass; Bar spiral run in the app on the
+    funk drum loop (98, no errors). The contact sheet wasn't run again.
