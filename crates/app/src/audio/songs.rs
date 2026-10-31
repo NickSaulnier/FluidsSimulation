@@ -344,7 +344,7 @@ fn ambient() -> Song {
 /// roll speeding up from quarters to 32nds and a riser, no kick or bass), a drop (four on
 /// the floor, a bass line, claps, open hats and a lead), a breakdown (pads and soft hats
 /// again), another build-up and a last drop. For sections; the hits are all there too.
-fn anthem() -> Song {
+pub fn anthem() -> Song {
     let beat = 60.0 / 128.0;
     let bar = 4.0 * beat;
     let mut m = Mix::new(72.0, 6);

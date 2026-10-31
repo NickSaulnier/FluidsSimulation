@@ -1,6 +1,6 @@
 # Fractals Plan
 
-Status: **done** (2026-10-30): phases A to F and the dive; two decisions still open (§4: the fractal's dye, other kinds); decisions open (§4). Fractal visualizations as an option
+Status: **done** (2026-10-30): phases A to F and the dive; two decisions still open (§4: the fractal's dye, other kinds). Fractal visualizations as an option
 in looks, grouped into phases. Each phase is committed on its own.
 
 ## 1. Goal

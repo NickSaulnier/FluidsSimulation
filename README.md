@@ -28,6 +28,11 @@ cargo run --release -p app -- path/to/song.mp3 --visualizer
 - `--mute` analyses the track without playing it.
 - `--import <file or folder>` converts classic MilkDrop presets (`.milk`) into looks and
   exits; dropping them on the window does the same.
+- `--audit` plays every look in turn against the same music (a generated song, or a
+  track given), scores its frames (dark, blown out, flat, still, following the music,
+  frame rate) and writes a contact sheet, worst first, to `Pictures\fluid-toy\audit`;
+  `--audit-looks=TEXT` keeps to looks with that in their names, `--audit-random=N`
+  audits random looks instead.
 
 Use `--release`: a debug build of the solvers is far too slow (the dev profile already
 optimises the dependencies and the `sim` crate).
@@ -116,7 +121,8 @@ resolution in full screen if the simulation falls behind real time.
 - **Random looks:** D (or the dice) makes a new look: any fluid or none, its physics,
   colours, feedback, waves, symmetry, reactions and sometimes equations, all within
   ranges that stay watchable. Shift+D varies the look on screen. Save as keeps one;
-  the director can mix them in now and then (a setting, off by default).
+  the director can mix them in now and then (a setting, off by default). A random look
+  that comes out dark, empty or murky in its first seconds is replaced by another.
 - **Screen:** the display to show on (the app moves there at once; a map of your
   displays to pick from), the visualizer in a window kept on top, a frame-rate cap.
 - **Interface:** a dark, high-contrast theme in Inter and Orbitron, three sizes, and
@@ -189,5 +195,7 @@ A 30-minute soak test of the visualizer runs with
 The design notes and progress, phase by phase, are in `docs/`:
 [PLAN.md](docs/PLAN.md) (the fluid toy), [3D_PLAN.md](docs/3D_PLAN.md),
 [UI_REDESIGN.md](docs/UI_REDESIGN.md), [VISUALIZER_PLAN.md](docs/VISUALIZER_PLAN.md),
-[ANALYZER_PLAN.md](docs/ANALYZER_PLAN.md) and [MILKDROP_PLAN.md](docs/MILKDROP_PLAN.md).
+[ANALYZER_PLAN.md](docs/ANALYZER_PLAN.md), [MILKDROP_PLAN.md](docs/MILKDROP_PLAN.md),
+[IMPROVEMENTS_PLAN.md](docs/IMPROVEMENTS_PLAN.md), [FRACTALS_PLAN.md](docs/FRACTALS_PLAN.md)
+and [VISUALS_PLAN.md](docs/VISUALS_PLAN.md) (pictures that follow the music better).
 Not done (the optional extras left for later): Spout, MIDI and OSC.

@@ -14,7 +14,8 @@ pub mod live;
 pub mod media;
 pub mod reactions;
 pub mod sections;
-#[cfg(test)]
+// The audit plays one (`audit`); the rest are for the tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub mod songs;
 pub mod tempo;
 
@@ -217,6 +218,23 @@ impl Music {
             player.play();
             self.fed_frames = 0;
         }
+    }
+
+    /// Play from `seconds` into the track (from the start if it can't seek).
+    pub fn seek(&mut self, seconds: f32) {
+        self.restart();
+        if let Some(player) = &self.player
+            && let Err(e) = player.try_seek(Duration::from_secs_f32(seconds.max(0.0)))
+        {
+            log::warn!("couldn't seek: {e}");
+        }
+    }
+
+    /// Play generated audio (stereo frames at `rate`) as the track, named `name`.
+    pub fn play_frames(&mut self, name: &str, rate: u32, frames: &[analyzer::Frame]) {
+        let (Some(channels), Some(rate)) = (NonZero::new(2), NonZero::new(rate)) else { return };
+        let samples = frames.iter().flatten().copied().collect();
+        self.start(Loaded { name: name.to_string(), path: PathBuf::from(name), channels, rate, samples });
     }
 
     pub fn apply_volume(&self) {

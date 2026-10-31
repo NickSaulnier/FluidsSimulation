@@ -24,7 +24,7 @@ const QUEUE: usize = 8;
 
 /// `<home>\<under>\fluid-toy` (Pictures or Videos), or beside the settings without a
 /// home folder.
-fn folder(under: &str) -> Option<PathBuf> {
+pub fn folder(under: &str) -> Option<PathBuf> {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|h| !h.is_empty()).map(PathBuf::from);
     match home {
         Some(home) => Some(home.join(under).join("fluid-toy")),
@@ -58,7 +58,7 @@ pub fn save_screenshot(image: Image, stem: &str, done: std::sync::mpsc::Sender<R
     });
 }
 
-fn write_png(path: &Path, image: &Image) -> Result<(), String> {
+pub fn write_png(path: &Path, image: &Image) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), image.size[0], image.size[1]);
     encoder.set_color(png::ColorType::Rgba);

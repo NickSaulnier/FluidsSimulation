@@ -13,8 +13,12 @@
 //! `fluid-toy --import <file or folder>` converts classic MilkDrop presets (`.milk`)
 //! into looks in the user's looks folder and exits; dropping them on the window does the
 //! same (see `looks::milk`).
+//!
+//! `fluid-toy --audit [TRACK]` runs every look against the same music, scores its frames
+//! and writes a contact sheet, then quits (see `audit`).
 
 mod audio;
+mod audit;
 mod director;
 mod expr;
 mod governor;
@@ -81,6 +85,13 @@ fn main() -> anyhow::Result<()> {
     if let Some(i) = args.iter().position(|a| a == "--import") {
         let path = args.get(i + 1).ok_or_else(|| anyhow::anyhow!("--import needs a .milk file or a folder of them"))?;
         return import_presets(std::path::Path::new(path));
+    }
+    if args.iter().any(|a| a == "--audit-sheet")
+        && let Some(options) = audit::Options::parse(&args)
+    {
+        let page = audit::rewrite_sheet(&options).map_err(|e| anyhow::anyhow!(e))?;
+        println!("{}", page.display());
+        return Ok(());
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,fluid_toy=info")).init();
     let threads = sim::default_threads();
@@ -205,6 +216,16 @@ struct State {
     recentre: Option<(winit::monitor::MonitorHandle, u32)>,
     cursor_visible: bool,
     governor: governor::Governor,
+    /// The audit under way (`--audit`), and its grab for this frame.
+    audit: Option<audit::Audit>,
+    audit_grab: Option<audit::Tag>,
+    /// A new random look being watched (see `render::score::Check`), a frame of it to
+    /// grab, and how many looks in a row were thrown away before the next one.
+    check: Option<render::score::Check>,
+    check_grab: bool,
+    rolls: u32,
+    /// Quit after this frame.
+    quit: bool,
     /// The (solver, scene) the governor is judging (3D solvers count down from the
     /// top, so they never match a 2D one).
     governed: (usize, u64),
@@ -220,7 +241,9 @@ impl ApplicationHandler for App {
     /// Called once on every way out (window closed, Esc): remember the UI settings.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         let Some(state) = &mut self.state else { return };
-        if let Err(e) = ui::settings::save(&state.ui) {
+        // An audit's settings (its window, the director held) aren't the user's.
+        if state.audit.is_some() {
+        } else if let Err(e) = ui::settings::save(&state.ui) {
             log::warn!("couldn't save settings: {e:#}");
         }
         // Let a recording under way finish its file.
@@ -259,7 +282,12 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => state.gpu.resize(size),
-            WindowEvent::RedrawRequested => state.frame(),
+            WindowEvent::RedrawRequested => {
+                state.frame();
+                if state.quit {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::DroppedFile(path) => {
                 // MilkDrop presets (or a folder of them) are imported; anything else is music.
                 if path.is_dir() || path.extension().is_some_and(|x| x.eq_ignore_ascii_case("milk")) {
@@ -308,9 +336,13 @@ impl ApplicationHandler for App {
 
 impl State {
     fn new(event_loop: &ActiveEventLoop) -> anyhow::Result<Self> {
-        let attrs = Window::default_attributes()
-            .with_title("fluid toy")
-            .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 760.0));
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let audit = audit::Options::parse(&args);
+        let attrs = Window::default_attributes().with_title("fluid toy");
+        let attrs = match &audit {
+            Some(_) => attrs.with_inner_size(winit::dpi::PhysicalSize::new(audit::WINDOW[0], audit::WINDOW[1])).with_resizable(false),
+            None => attrs.with_inner_size(winit::dpi::LogicalSize::new(1440.0, 760.0)),
+        };
         let window = Arc::new(event_loop.create_window(attrs)?);
         let gpu = pollster::block_on(Gpu::new(window.clone(), event_loop.owned_display_handle()))?;
         // The scenes draw into the HDR scene texture; the composite writes the surface.
@@ -339,10 +371,12 @@ impl State {
         let world = World::with_solvers(&SOLVERS, 0, 0);
         log::info!("{} particles", world.initial_particles);
         let mut music = Music::default();
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        music.muted = args.iter().any(|a| a == "--mute");
+        music.muted = audit.is_some() || args.iter().any(|a| a == "--mute");
         if let Some(track) = args.iter().find(|a| !a.starts_with("--")) {
             music.load(track.into());
+        } else if audit.is_some() {
+            let song = audio::songs::anthem();
+            music.play_frames(song.name, audio::songs::RATE, &song.frames);
         }
         let track_given = args.iter().any(|a| !a.starts_with("--"));
         let visualizer = args.iter().any(|a| a == "--visualizer");
@@ -385,6 +419,14 @@ impl State {
                     saved.apply(&mut ui);
                 }
                 ui.presenting = visualizer;
+                if audit.is_some() {
+                    // The visualizer in its window, changing looks only when the audit says.
+                    ui.presenting = true;
+                    ui.screen = ui::Screen { windowed: true, ..Default::default() };
+                    ui.director.auto = false;
+                    ui.director.random_looks = false;
+                    ui.director.interval_s = f32::MAX;
+                }
                 if let Some(folder) = looks::Library::user_folder() {
                     let marks = std::mem::take(&mut ui.looks.marks);
                     ui.looks = looks::Library::with_folder(folder);
@@ -427,6 +469,12 @@ impl State {
             recentre: None,
             cursor_visible: true,
             governor: governor::Governor::default(),
+            audit: audit.map(audit::Audit::new),
+            audit_grab: None,
+            check: None,
+            check_grab: false,
+            rolls: 0,
+            quit: false,
             governed: (usize::MAX, u64::MAX),
             gravity_synced: u64::MAX, // take the first scene's gravity too
             gravity_synced_3d: None,
@@ -731,6 +779,16 @@ impl State {
                         r.push(t, image);
                     }
                 }
+                Grab::Audit(tag) => {
+                    if let Some(a) = &mut self.audit {
+                        a.receive(tag, image);
+                    }
+                }
+                Grab::Check(look) => {
+                    if let Some(c) = self.check.as_mut().filter(|c| c.look == look) {
+                        c.receive(&image);
+                    }
+                }
             }
         }
         while let Ok(result) = self.saved.1.try_recv() {
@@ -810,6 +868,10 @@ impl State {
     /// otherwise the new look's warp starts from the old picture, as a blend should.
     fn apply_look(&mut self, index: usize, fresh: bool) {
         let Some(look) = self.ui.looks.looks.get(index).cloned() else { return };
+        // A new random look is watched for its first seconds, and thrown away if it came
+        // out dead (a few in a row at most).
+        let rolls = std::mem::take(&mut self.rolls);
+        self.check = (look.source == looks::Source::Random && self.audit.is_none() && rolls < render::score::MAX_ROLLS).then(|| render::score::Check::new(look.name.clone(), rolls));
         // A new look's fractal starts at full detail.
         (self.fractal_governor, self.fractal_quality) = (governor::Governor::default(), 0);
         // Put back any parameters the last look's reactions were modulating.
@@ -992,6 +1054,72 @@ impl State {
         self.ui.show_notice(format!("{name}: Save as keeps it, Backspace goes back"));
     }
 
+    /// The audit's frame: which look to show, the music to play, a frame to grab.
+    fn step_audit(&mut self, dt: f32) {
+        let Some(mut audit) = self.audit.take() else { return };
+        let names: Vec<String> = self.ui.looks.looks.iter().filter(|l| l.source != looks::Source::Random).map(|l| l.name.clone()).collect();
+        let hits = self.music.onsets().iter().filter(|o| o.kind != audio::analyzer::OnsetKind::Hat).count();
+        let tick = audit::Tick {
+            dt,
+            track: self.music.track.as_ref().map(|t| t.duration),
+            looks: &names,
+            showing: self.applied_look.as_ref().map(|l| l.name.as_str()),
+            level: self.music.features().map_or(0.0, |f| f.level),
+            hits,
+        };
+        let library = &self.ui.looks.looks;
+        let fluid = |name: &str| {
+            library.iter().find(|l| l.name == name).map_or_else(String::new, |l| if l.has_fluid() { format!("{} · {}", l.solver, l.scene) } else { "no fluid".to_string() })
+        };
+        let action = audit.update(&tick, fluid);
+        if let Some(at) = action.seek {
+            self.music.seek(at);
+        }
+        let index = match action.start {
+            Some(audit::Item::Look(name)) => self.ui.looks.looks.iter().position(|l| l.name == name),
+            Some(audit::Item::Random(seed)) => {
+                self.rng = utils::rng::SplitMix64::new(seed);
+                Some(self.make_random(false, None))
+            }
+            None => None,
+        };
+        if let Some(i) = index {
+            audit.started(&self.ui.looks.looks[i].name);
+            self.ui.director.cut(i);
+        }
+        self.audit_grab = action.grab;
+        self.quit |= action.quit;
+        self.audit = Some(audit);
+    }
+
+    /// Watch a new random look's first seconds; if it came out dead or weak, show another.
+    fn check_random(&mut self, dt: f32) {
+        let Some(check) = &mut self.check else { return };
+        if self.applied_look.as_ref().is_none_or(|l| l.name != check.look) {
+            self.check = None;
+            return;
+        }
+        let silent = self.music.features().is_none_or(|f| f.silent);
+        if !silent && !self.ui.paused && !self.ui.director.changing() && check.tick(dt) {
+            self.check_grab = true;
+        }
+        let Some((weak, quality)) = check.verdict() else { return };
+        let (name, rolls) = (check.look.clone(), check.rolls);
+        self.check = None;
+        if !weak {
+            log::info!("{name} scored {quality:.0}: kept");
+            return;
+        }
+        log::info!("{name} came out weak (scored {quality:.0}): another");
+        let energy = self.applied_look.as_ref().map(|l| l.energy);
+        let index = self.make_random(false, energy);
+        self.rolls = rolls + 1;
+        self.ui.director.request(index);
+        if !self.ui.presenting {
+            self.ui.show_notice(format!("{name} came out dark or dull: here's another"));
+        }
+    }
+
     /// Make a random look (see `looks::random`), or `vary` the one on screen, and add it
     /// to the library; `energy`: one that suits it, if a few tries find one. Returns its
     /// index.
@@ -1145,6 +1273,8 @@ impl State {
             }
             self.apply_look(look, change.cut);
         }
+        self.step_audit(real_dt);
+        self.check_random(real_dt);
         if self.no_fluid.is_some_and(|at| self.world3d.is_some() || at != (self.world.solver_index, self.world.scene_generation)) {
             self.no_fluid = None;
         }
@@ -1483,6 +1613,27 @@ impl State {
                 self.grabber.end(&mut encoder);
             }
         }
+        if let Some(tag) = self.audit_grab.take()
+            && let Some(view) = self.grabber.begin(device, audit::GRAB, self.gpu.config.format, Grab::Audit(tag))
+        {
+            self.post.composite_again(device, &mut encoder, &picture, &view);
+            self.grabber.end(&mut encoder);
+        }
+        if std::mem::take(&mut self.check_grab)
+            && let Some(look) = self.check.as_ref().map(|c| c.look.clone())
+        {
+            match self.grabber.begin(device, render::score::CHECK_SIZE, self.gpu.config.format, Grab::Check(look)) {
+                Some(view) => {
+                    self.post.composite_again(device, &mut encoder, &picture, &view);
+                    self.grabber.end(&mut encoder);
+                }
+                None => {
+                    if let Some(c) = &mut self.check {
+                        c.refused();
+                    }
+                }
+            }
+        }
         if let Some(key) = self.thumbnail_key.take() {
             let thumbnail = self.thumbnailer.target(device, surface, self.gpu.config.format);
             self.post.composite_again(device, &mut encoder, &picture, &thumbnail);
@@ -1726,11 +1877,14 @@ fn import_presets(path: &std::path::Path) -> anyhow::Result<()> {
 type Saved = Result<std::path::PathBuf, String>;
 
 /// What a frame was grabbed for.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Grab {
     Screenshot,
     /// A recording's frame, grabbed this many seconds into it.
     Video(f64),
+    /// A frame for the audit, and of a new random look (by name) being checked.
+    Audit(audit::Tag),
+    Check(String),
 }
 
 /// `v` turned `degrees` anticlockwise.

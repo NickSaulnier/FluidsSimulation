@@ -14,6 +14,7 @@ pub mod palette;
 mod overlay;
 mod particles;
 pub mod post;
+pub mod score;
 mod solid;
 pub mod thumbnail;
 pub mod timer;
