@@ -180,6 +180,10 @@ impl Runtime {
         set("novelty", f.sections.novelty);
         set("buildup", f.sections.buildup);
         set("energy", f.energy);
+        for (name, &v) in INPUTS[slot("chroma_0")..].iter().zip(&f.harmony.chroma) {
+            set(name, v);
+        }
+        set("key", f.harmony.key as f32);
         for (name, v) in ["section", "drop", "breakdown"].into_iter().zip(self.section_pulses) {
             set(name, v);
         }

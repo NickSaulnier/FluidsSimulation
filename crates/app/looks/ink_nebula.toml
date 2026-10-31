@@ -2,6 +2,7 @@
 name = "Ink nebula"
 tags = ["fluid", "dye", "ink"]
 energy = "calm"
+harmony = 1.0
 
 [sim]
 solver = "Stable fluids (GPU)"

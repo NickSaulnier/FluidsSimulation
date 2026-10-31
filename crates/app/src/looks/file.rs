@@ -61,6 +61,8 @@ struct Meta {
     energy: EnergyDoc,
     #[serde(default = "full")]
     dynamics: f32,
+    #[serde(default)]
+    harmony: f32,
 }
 
 fn full() -> f32 {
@@ -280,6 +282,7 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
             EnergyDoc::Any => Energy::Any,
         },
         dynamics: meta.dynamics.clamp(0.0, 1.0),
+        harmony: meta.harmony.clamp(0.0, 1.0),
         solver,
         scene,
         palette,
@@ -316,6 +319,9 @@ pub fn write(look: &Look) -> String {
     let _ = writeln!(out, "energy = {}", text(energy));
     if look.dynamics != 1.0 {
         let _ = writeln!(out, "dynamics = {}", value(toml::Value::Float(f64::from(look.dynamics))));
+    }
+    if look.harmony != 0.0 {
+        let _ = writeln!(out, "harmony = {}", value(toml::Value::Float(f64::from(look.harmony))));
     }
     let _ = writeln!(out, "\n[sim]");
     if look.has_fluid() {

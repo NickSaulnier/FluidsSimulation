@@ -10,6 +10,7 @@
 //! and the camera orbits at its `orbit` speed.
 
 pub mod dynamics;
+pub mod harmony;
 mod file;
 pub mod milk;
 pub mod random;
@@ -134,6 +135,8 @@ pub struct Look {
     pub energy: Energy,
     /// How much it follows the song's shape (see `dynamics`): 1 fully, 0 not at all.
     pub dynamics: f32,
+    /// How much its colour follows the harmony (see `harmony`): 0 not at all, 1 fully.
+    pub harmony: f32,
     pub solver: String,
     pub scene: String,
     pub palette: Palette,

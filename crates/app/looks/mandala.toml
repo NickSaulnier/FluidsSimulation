@@ -2,6 +2,7 @@
 name = "Mandala"
 tags = ["no fluid", "shapes", "kaleidoscope"]
 energy = "calm"
+harmony = 1.0
 
 [sim]
 palette = { deep = [60, 10, 40], base = [220, 120, 40], highlight = [255, 240, 200] }

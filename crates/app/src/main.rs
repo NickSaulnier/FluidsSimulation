@@ -141,6 +141,8 @@ struct State {
     /// The look's equations, running, and this frame's results (the feedback, waves and
     /// the rest as drawn); the look as applied, to see when its file changes it.
     look_runtime: looks::runtime::Runtime,
+    /// The harmony's colour for the look playing (see `looks::harmony`).
+    look_colour: looks::harmony::Colour,
     look_frame: looks::runtime::Frame,
     look_pixel: String,
     applied_look: Option<looks::Look>,
@@ -403,6 +405,7 @@ impl State {
             waves,
             waveform: Vec::new(),
             look_runtime: looks::runtime::Runtime::default(),
+            look_colour: looks::harmony::Colour::default(),
             look_frame: looks::runtime::Frame::plain(&render::feedback::FeedbackSettings::OFF, &render::waves::WaveSettings::OFF, &render::composite::CompositeSettings::OFF),
             composite_clock: render::composite::CompositeClock::default(),
             blend_pattern: render::composite::BlendPattern::Dissolve,
@@ -685,6 +688,7 @@ impl State {
             tags: current.as_ref().map_or_else(Vec::new, |l| l.tags.clone()),
             energy: current.as_ref().map_or(looks::Energy::Any, |l| l.energy),
             dynamics: current.as_ref().map_or(1.0, |l| l.dynamics),
+            harmony: current.as_ref().map_or(0.0, |l| l.harmony),
             solver,
             scene,
             palette: self.ui.palette,
@@ -860,6 +864,7 @@ impl State {
     /// drift and kaleidoscope turn would carry over).
     fn start_code(&mut self, look: &looks::Look) {
         self.look_runtime = looks::runtime::Runtime::new(&look.code);
+        self.look_colour = looks::harmony::Colour::default();
         self.look_pixel = look.code.pixel.clone();
         self.composite_clock = render::composite::CompositeClock::default();
     }
@@ -1300,6 +1305,8 @@ impl State {
         if let Some(shape) = shape {
             shape.apply(&mut self.look_frame);
         }
+        let harmony = self.applied_look.as_ref().map_or(0.0, |l| l.harmony);
+        self.look_colour.apply(&mut self.look_frame, self.music.features(), harmony);
         self.composite_clock.advance(&self.look_frame.composite, self.frame_dt);
         self.waves.update(&self.waveform, &self.look_frame.waves, self.frame_dt);
         self.art.update(&self.look_frame.waves.art, self.frame_dt);

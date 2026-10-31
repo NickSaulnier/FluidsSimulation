@@ -11,6 +11,7 @@ pub mod analyzer;
 pub mod dynamics;
 #[cfg(test)]
 pub mod eval;
+pub mod harmony;
 pub mod live;
 pub mod media;
 pub mod reactions;

@@ -36,6 +36,8 @@
 //! - **Brightness:** the spectral centroid on a log scale, 0 (dull) to 1 (bright).
 //! - **Stereo:** balance and width, from the channels' levels and correlation.
 //! - **Silence:** momentary loudness under -50 LUFS for half a second.
+//! - **Harmony:** the pitch classes sounding, from the long FFT, and a hue and a key
+//!   from them (see `harmony`).
 //!
 //! The last `WAVEFORM_LEN` frames are kept for waveform displays. Nothing allocates per
 //! hop: every buffer is made once.
@@ -44,6 +46,7 @@
 //! (where a hit's energy rise is detected).
 
 use super::dynamics::Dynamics;
+use super::harmony::{Harmony, HarmonyTracker};
 use super::sections::{self, SectionTracker, Sections};
 use super::tempo::{Beat, BeatTracker, MusicalTime};
 use realfft::num_complex::Complex32;
@@ -174,6 +177,8 @@ pub struct AudioFeatures {
     /// The song's energy: how loud it is now against its own range, with its build-ups,
     /// drops and breakdowns, 0..1 (see `dynamics`).
     pub energy: f32,
+    /// The pitch classes sounding, and the hue and key from them (see `harmony`).
+    pub harmony: Harmony,
 }
 
 impl Default for AudioFeatures {
@@ -195,6 +200,7 @@ impl Default for AudioFeatures {
             musical: MusicalTime::default(),
             sections: Sections::default(),
             energy: 0.0,
+            harmony: Harmony::default(),
         }
     }
 }
@@ -383,6 +389,7 @@ pub struct Analyzer {
     sections: SectionTracker,
     low_end: usize,
     dynamics: Dynamics,
+    harmony: HarmonyTracker,
     /// Spill: `spill[from][to]`, the share of kind `from`'s rise that shows in kind `to`'s
     /// range (a kick's click in the snare's, a snare's top in the hat's), learned at
     /// `from`'s hits as a lower envelope (so the moments both sound together count
@@ -440,6 +447,7 @@ impl Analyzer {
             sections: SectionTracker::new(hop_seconds),
             low_end: (0..SPECTRUM_BANDS).take_while(|&b| band_centre(b as isize) < sections::LOW_HZ).count(),
             dynamics: Dynamics::default(),
+            harmony: HarmonyTracker::new(rate / LONG_FFT_SIZE as f32, LONG_FFT_SIZE / 2),
             spill: [[0.0; 3]; 3],
             prev_rises: [0.0; 3],
             quiet_for: 0.0,
@@ -524,6 +532,9 @@ impl Analyzer {
             }
             let (a, z) = self.low_bins[1];
             self.long_low = Some((low, self.long.power[a..z].iter().sum()));
+            let f = &self.features;
+            self.harmony.update(&self.long.power, f.brightness, f.silent, LONG_EVERY as f32 * self.hop_seconds);
+            self.features.harmony = self.harmony.state();
         }
         if let Some((low, long_total)) = &self.long_low {
             let (a, z) = self.low_bins[0];
@@ -1286,6 +1297,46 @@ pub mod tests {
         let (low, dip, high) = (s[band(45.0)], s[band(60.0)], s[band(80.0)]);
         // 0.1 on the spectrum's scale is 6 dB.
         assert!(dip < low - 0.1 && dip < high - 0.1, "45 Hz {low:.2}, 60 Hz {dip:.2}, 80 Hz {high:.2}");
+    }
+
+    /// A chord of `notes` (semitones from C4, the first loudest), each with a few
+    /// harmonics, for `seconds`.
+    fn chord(rate: u32, notes: &[i32], seconds: f32) -> Vec<f32> {
+        let mut out = vec![0.0; (seconds * rate as f32) as usize];
+        for (n, &semitone) in notes.iter().enumerate() {
+            let hz = 261.63 * 2f32.powf(semitone as f32 / 12.0);
+            let gain = if n == 0 { 0.15 } else { 0.1 };
+            for h in 1..=4 {
+                for (k, s) in out.iter_mut().enumerate() {
+                    *s += gain / h as f32 * (2.0 * PI * hz * h as f32 * k as f32 / rate as f32).sin();
+                }
+            }
+        }
+        out
+    }
+
+    /// A C major chord reads as C, E and G, keyed C and tonal; moving to G major turns
+    /// the hue a twelfth of a turn on (a fifth up the circle) and the key to G; noise
+    /// after it isn't tonal and leaves the hue where it was.
+    #[test]
+    fn chords_give_the_chroma_the_key_and_the_hue() {
+        let rate = 48_000;
+        let mut a = Analyzer::new(rate);
+        a.process_mono(&chord(rate, &[0, 4, 7], 6.0), 1.5);
+        let c = a.features().harmony;
+        let sounding = |h: &Harmony| (0..12).filter(|&k| h.chroma[k] > 0.5).collect::<Vec<_>>();
+        assert_eq!(sounding(&c), [0, 4, 7], "{:?}", c.chroma);
+        assert!(c.key == 0 && c.tonality > 0.5, "{c:?}");
+        a.process_mono(&chord(rate, &[7, 11, 14], 8.0), 1.5);
+        let g = a.features().harmony;
+        assert_eq!(sounding(&g), [2, 7, 11], "{:?}", g.chroma);
+        assert_eq!(g.key, 7);
+        assert!((g.hue - c.hue - 1.0 / 12.0).abs() < 0.02, "{} to {}", c.hue, g.hue);
+        let mut rng = SplitMix64::new(7);
+        let noise: Vec<f32> = (0..4 * rate).map(|_| 0.2 * rng.signed()).collect();
+        a.process_mono(&noise, 1.5);
+        let n = a.features().harmony;
+        assert!(n.tonality < 0.3 && (n.hue - g.hue).abs() < 0.03, "{n:?}");
     }
 
     /// Silence: no onsets, flagged silent, bands at zero.

@@ -1,6 +1,6 @@
 # Visuals Plan
 
-Status: **phases A to E done** (2026-10-31); decisions 4 and 5 open (§4). Better pictures and a closer
+Status: **phases A to F done** (2026-10-31); decision 5 open (§4). Better pictures and a closer
 fit to the music, now that visualizing music is the app's main purpose. Grouped into
 phases; each phase is committed on its own.
 
@@ -130,7 +130,7 @@ Each gets a built-in look or two, and joins the randomizer's scenes.
 - **The randomizer** makes variants of its own looks (as Shift+D does, kept with the
   look), and the editor lists them.
 
-## 4. Decisions (1 to 3 made)
+## 4. Decisions (1 to 4 made)
 
 1. **Which solvers and scenes go:** decided from the contact sheet (phase A) and the
    user's eye. Gone from the visualizer: the MPM fluids, FLIP outside the fountain, the
@@ -140,8 +140,8 @@ Each gets a built-in look or two, and joins the randomizer's scenes.
    otherwise (see phase B in §6).
 3. **Intensity for every look:** on for every look (the user's choice); a look can turn
    it down or off with its `dynamics`.
-4. **Harmony (§3.6):** in scope? It's new analysis (chroma), and the most uncertain to
-   look good. Recommended: yes, as a late phase, off by default.
+4. **Harmony (§3.6):** in scope (the user started phase F): off by default, on in a few
+   built-in looks and a share of random ones.
 5. **Variants (§3.7):** in scope? Recommended: yes, last.
 
 ## 5. Phases
@@ -337,3 +337,32 @@ before.
     once a beat on the beat and once a bar on the downbeat, the bar steps, and nothing
     moves without a confident tempo) and clippy pass; Bar spiral run in the app on the
     funk drum loop (98, no errors). The contact sheet wasn't run again.
+- **Phase F, colour from the harmony (done):** `audio/harmony.rs`, `looks/harmony.rs`.
+  - **Chroma** from the long FFT (about 6 Hz bins, so a semitone apart from 100 Hz up),
+    100 Hz to 5 kHz: each bin's magnitude folded onto its nearest pitch class (a bin
+    between two semitones counts half), smoothed over 0.4 s, the strongest 1. Updated
+    when the long FFT runs (every four hops); nothing allocates.
+  - **The hue:** the chroma over 2 s, less its mean, as a vector round the circle of
+    fifths. Its angle is the target; its length against the spread, times how far the
+    peak stands above the mean (noise's pitch classes are all alike), is the tonality.
+    The hue eases toward the target (0.8 s, the slower the less tonal), holds below a
+    tonality of 0.15 and in silence, and isn't wrapped, so it never jumps. Measured on
+    a C major chord into G major: the hue moves on 0.074 of a turn (a twelfth is 0.083),
+    the key goes from C to G after its hold, and noise after it reads as not tonal and
+    leaves the hue.
+  - **The key:** the 2 s chroma's strongest pitch class, changing once another has led
+    for 2 s (about a bar).
+  - **In looks:** `harmony` in `[meta]` (0 to 1, default 0): the picture's hue (the
+    composite's) turns by the chords' hue since the look began, a whole turn for the
+    whole circle at 1, so a look starts in its own colours; the saturation (±30 %) and
+    exposure (±12 %) follow the timbre (the brightness over 1.5 s). Applied after the
+    song's shape. On in Aurora, Ink nebula and Mandala (calm, colour-led looks; their
+    other reactions kept); random looks get 0.5 to 1 a third of the time (drawn last,
+    so a seed's look is otherwise as it was).
+  - **Equations:** `chroma_0` to `chroma_11` and `key`. They fill the shared block to
+    its limit (64 values, the feedback's uniforms).
+  - **Checked:** 240 app tests (new: chords give their chroma, key and hue step, and
+    noise holds the hue; a look starts in its colours and turns with the chords) and
+    clippy pass; Mandala audited alone on a generated chord track (C, Am, F, G, then the
+    same a fifth up, over kicks): 93, no errors, its orange turning through yellows and
+    greens as the chords change. The contact sheet wasn't run again.

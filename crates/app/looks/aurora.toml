@@ -2,6 +2,7 @@
 name = "Aurora"
 tags = ["no fluid", "spectrum", "sky"]
 energy = "calm"
+harmony = 1.0
 
 [sim]
 palette = { deep = [10, 30, 60], base = [40, 200, 140], highlight = [220, 160, 255] }

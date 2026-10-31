@@ -270,6 +270,7 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
         tags: vec!["random".to_string(), if fluid { "fluid" } else { "no fluid" }.to_string()],
         energy: Energy::Any,
         dynamics: 1.0,
+        harmony: 0.0,
         solver: solver.to_string(),
         scene: scene.to_string(),
         palette: random_palette(d),
@@ -283,6 +284,10 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
         code,
         source: Source::Random,
     };
+    // Drawn last, so the rest of a seed's look is as it was before harmony.
+    if d.chance(HARMONY_CHANCE) {
+        look.harmony = round(d.range(0.5, 1.0));
+    }
     tame(&mut look);
     look.energy = energy(&look);
     look
@@ -372,6 +377,9 @@ pub fn vary(look: &Look, rng: &mut SplitMix64, name: &str) -> Look {
     tame(&mut v);
     v
 }
+
+/// How often a random look's colour follows the harmony (at 0.5 to 1).
+const HARMONY_CHANCE: f32 = 0.35;
 
 /// How often a random look has a fractal: with no fluid (then it's often the whole
 /// picture), over a 2D fluid, over a 3D one.

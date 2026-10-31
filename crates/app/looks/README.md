@@ -24,6 +24,7 @@ author = "you"
 tags = ["ink", "spiral"]
 energy = "energetic"       # calm, energetic or any: when the director picks it
 dynamics = 1.0             # how much it follows the song's shape: 1 fully, 0 not at all
+harmony = 0.0              # how much its colour follows the chords: 0 not at all (the default), 1 fully
 
 [sim]
 solver = "Stable fluids (dye)"
@@ -251,6 +252,8 @@ only).
 | `buildup` | how much the music is building up (rising loudness and busier hits), 0 to 1 |
 | `section`, `drop`, `breakdown` | 1 at a change of section (any; a drop; a breakdown), falling to 0 over about a second and a half |
 | `energy` | the song's energy: how loud it is now against its own quiet and loud parts, lifted through a build-up, full after a drop, low through a breakdown, 0 to 1 (about 0.7 where a look is as set) |
+| `chroma_0` to `chroma_11` | how much each pitch class sounds (C, C#, D... B), 0 to 1, the strongest 1, smoothed over about a beat |
+| `key` | the strongest pitch class, held until another has led for about a bar: 0 (C) to 11 (B) |
 
 ### What they set
 

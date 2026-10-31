@@ -37,13 +37,14 @@ pub enum Stage {
 
 /// The read-only inputs, set before every frame: the clock, the music (MilkDrop's
 /// `bass`, `mid`, `treb` and their `_att`; the five bands; hits and beats as pulses that
-/// fall from 1; the song's sections: novelty, build-up, and changes as pulses) and the
-/// picture.
+/// fall from 1; the song's sections: novelty, build-up, and changes as pulses; the
+/// energy; the harmony: the twelve pitch classes and the strongest) and the picture.
 pub const INPUTS: &[&str] = &[
     "time", "frame", "fps", "dt", "aspect", "bass", "mid", "treb", "bass_att", "mid_att", "treb_att", "band_sub", "band_bass",
     "band_lowmid", "band_mid", "band_high", "level", "brightness", "loudness", "kick", "snare", "hat", "beat", "beat_phase",
     "bar_phase", "bpm", "beating", "silent", "novelty", "buildup", "section", "drop", "breakdown",
-    "energy",
+    "energy", "chroma_0", "chroma_1", "chroma_2", "chroma_3", "chroma_4", "chroma_5", "chroma_6", "chroma_7", "chroma_8", "chroma_9",
+    "chroma_10", "chroma_11", "key",
 ];
 /// The warp, per second: zoom (1 none), rotation (radians), shift (`dx`, `dy`: screen
 /// heights, y up), the centre of zoom and rotation (`cx`, `cy`: 0..1, y up), stretch

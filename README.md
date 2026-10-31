@@ -76,7 +76,7 @@ resolution in full screen if the simulation falls behind real time.
 
 - Analysis: a log-spaced spectrum, five bands, MilkDrop's bass/mid/treb, EBU R128
   loudness, kick, snare and hi-hat detection (SuperFlux), tempo, beat and bar phase,
-  section changes, drops, breakdowns and build-ups.
+  section changes, drops, breakdowns and build-ups, the pitch classes (chroma).
 - A latency setting (with a flash on every beat to set it by ear) for wireless
   headphones and big audio buffers.
 - Reactions map triggers (kick, snare, hat, beat, bands, level, brightness) to effects
@@ -89,6 +89,12 @@ resolution in full screen if the simulation falls behind real time.
   (as much as its `dynamics` says): gentler reactions, slower motion and dimmer colour
   through a breakdown, a zoom creeping in through a build-up, a flash and a burst at
   the drop. Equations read it as `energy`.
+- The harmony: the twelve pitch classes sounding (the chroma) and the strongest, and a
+  hue from the chords, round the circle of fifths so related chords are close colours.
+  A look with `harmony` turns its colours with the chord changes (from its own, as it
+  starts) and grows richer and brighter with a bright sound; off by default, on in
+  Aurora, Ink nebula and Mandala and in about a third of random looks. Equations read
+  `chroma_0` to `chroma_11` and `key`.
 
 ### The visualizer
 
