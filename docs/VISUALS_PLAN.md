@@ -1,6 +1,6 @@
 # Visuals Plan
 
-Status: **phases A to F done** (2026-10-31); decision 5 open (§4). Better pictures and a closer
+Status: **phases A to G done** (2026-10-31); every decision made (§4). Better pictures and a closer
 fit to the music, now that visualizing music is the app's main purpose. Grouped into
 phases; each phase is committed on its own.
 
@@ -130,7 +130,7 @@ Each gets a built-in look or two, and joins the randomizer's scenes.
 - **The randomizer** makes variants of its own looks (as Shift+D does, kept with the
   look), and the editor lists them.
 
-## 4. Decisions (1 to 4 made)
+## 4. Decisions (all made)
 
 1. **Which solvers and scenes go:** decided from the contact sheet (phase A) and the
    user's eye. Gone from the visualizer: the MPM fluids, FLIP outside the fountain, the
@@ -142,7 +142,7 @@ Each gets a built-in look or two, and joins the randomizer's scenes.
    it down or off with its `dynamics`.
 4. **Harmony (§3.6):** in scope (the user started phase F): off by default, on in a few
    built-in looks and a share of random ones.
-5. **Variants (§3.7):** in scope? Recommended: yes, last.
+5. **Variants (§3.7):** in scope (the user started phase G).
 
 ## 5. Phases
 
@@ -366,3 +366,43 @@ before.
     clippy pass; Mandala audited alone on a generated chord track (C, Am, F, G, then the
     same a fifth up, over kicks): 93, no errors, its orange turning through yellows and
     greens as the chords change. The contact sheet wasn't run again.
+- **Phase G, variants within a look (done):** `looks/mod.rs` (`Variant`), `looks/file.rs`,
+  `director.rs`, `ui/editor.rs`.
+  - **A variant is a picture:** the palette, feedback, waves (with the shapes, cover
+    and fractal) and composite, over the look's fluid, reactions and code. A look
+    carries up to three.
+  - **In files,** `[[variant]]` holds only what it changes: `palette`, and settings in
+    `[variant.feedback]`, `[variant.waves]`, `[variant.fractal]`, `[variant.art]`,
+    `[variant.composite]` merged over the look's sections, or `[[variant.shape]]`s in
+    place of its shapes. Reading it, the look's file with the changes merged in is read
+    as a look (so it's checked as closely as a look, with the error at the variant's
+    line) and its picture taken. Writing it, the changes are the difference between
+    the look's file and the variant's: a setting changed, one the look sets and the
+    variant leaves at its default (written as the default), a section turned on or off.
+  - **The director:** a change of section that isn't a drop or a breakdown moves a look
+    with variants to the next (round to its own picture), at most every 8 s; the move
+    is a blend over a bar (2.5 s without a steady beat) landing on the downbeat, as a
+    look's change does. The look's time runs on (the interval still changes it), and
+    a new look starts on its own picture. A look without variants is as before. With
+    the look locked, variants stay put.
+  - **The app** applies only the picture (`apply_variant`): the fluid, reactions,
+    equations and colour clocks carry on. Reloading a look's file keeps the variant on
+    screen; Save as while a variant shows saves the picture into that variant and
+    keeps the look's own.
+  - **The randomizer** gives every random look two variants, each changing two of: the
+    colours, the symmetry, the feedback's mode, the wave, the fractal's spot (drawn
+    after everything else, so a seed's look is as it was). Shift+D's variations keep
+    the variants.
+  - **The editor** lists the look's variants above its programs (hover: what each
+    changes, e.g. "colours, symmetry"); clicking one blends to it.
+  - **Built-ins:** Mandala (fewer petals turning the other way; blue and four-fold),
+    Ink nebula (the Ocean palette; mirrored), Julia tunnel (Lava and another Julia
+    point; a six-fold kaleidoscope).
+  - **Checked:** 242 app tests (new: variants merge over the look, turn sections on and
+    off, can't touch the fluid and write back as read; the director moves through
+    them at changes of section, waits between moves, and a drop still changes the
+    look; random looks' variants round-trip through their files) and clippy pass. In
+    the app, with only these three looks as favourites, on a generated track changing
+    section every 16 s: Mandala went to variant 1, 2, its own and 1 again, each about
+    2 s after the change, the look staying on. The contact sheet can't show variants
+    (the audit holds the director) and wasn't run.

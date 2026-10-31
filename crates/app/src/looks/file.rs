@@ -2,8 +2,12 @@
 //! equations that don't compile are errors with a line number), since a typo that's
 //! quietly ignored is worse than one that's reported. The format is in
 //! `looks/README.md`.
+//!
+//! A `[[variant]]` is written as the picture's settings it changes, over the look's: the
+//! look's file with them merged in is read like any look, and its picture taken. Written
+//! back the same way, from the difference between the two looks' files.
 
-use super::{Code, CodeSource, Energy, Look, Source};
+use super::{Code, CodeSource, Energy, Look, MAX_VARIANTS, Source, Variant};
 use crate::audio::reactions::{Effect, Reaction, Trigger};
 use crate::expr::{self, Program, Stage};
 use crate::render::feedback::{self, FeedbackSettings};
@@ -47,7 +51,12 @@ struct Doc {
     fractal: Option<FractalSettings>,
     #[serde(default)]
     code: CodeDoc,
+    #[serde(default)]
+    variant: Vec<toml::Table>,
 }
+
+/// What a variant can change: the palette (in `[sim]`), and these sections.
+const PICTURE: [&str; 6] = ["feedback", "waves", "shape", "art", "fractal", "composite"];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,7 +151,7 @@ fn simple(s: &str) -> String {
 pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> {
     let line_of = |offset: usize| text[..offset.min(text.len())].matches('\n').count() + 1;
     let fail = |offset: Option<usize>, message: String| LoadError { file: file.to_string(), line: offset.map(line_of), message };
-    let doc: Doc = toml::from_str(text).map_err(|e| fail(e.span().map(|s| s.start), e.message().trim().to_string()))?;
+    let mut doc: Doc = toml::from_str(text).map_err(|e| fail(e.span().map(|s| s.start), e.message().trim().to_string()))?;
     // Keys the settings don't know (they take defaults for missing ones, which also lets
     // unknown ones through).
     let raw: toml::Table = toml::from_str(text).map_err(|e| fail(None, e.message().to_string()))?;
@@ -271,6 +280,24 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
     }
 
     let code = compile_doc_code(text, &doc.code).map_err(|(offset, message)| fail(offset, message))?;
+
+    // The variants: the file with each one's changes merged in, read as a look.
+    let tables = std::mem::take(&mut doc.variant);
+    if tables.len() > MAX_VARIANTS {
+        return Err(fail(text.match_indices("[[variant]]").nth(MAX_VARIANTS).map(|(o, _)| o), format!("at most {MAX_VARIANTS} [[variant]]s")));
+    }
+    let mut variants = Vec::new();
+    let mut base = raw.clone();
+    base.remove("variant");
+    for (i, table) in tables.iter().enumerate() {
+        let at = text.match_indices("[[variant]]").nth(i).map(|(o, _)| o);
+        let wrong = |message: String| fail(at, format!("[[variant]] {}: {message}", i + 1));
+        let merged = merge_variant(&base, table).map_err(wrong)?;
+        let merged = toml::to_string(&merged).map_err(|e| wrong(e.to_string()))?;
+        let look = parse(&merged, file, source.clone()).map_err(|e| wrong(e.message))?;
+        variants.push(look.picture());
+    }
+
     let meta = doc.meta;
     Ok(Look {
         name: meta.name,
@@ -294,8 +321,96 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         params,
         reactions,
         code,
+        variants,
         source,
     })
+}
+
+/// A look's file (as a table, without variants) with a variant's changes merged in.
+fn merge_variant(base: &toml::Table, changes: &toml::Table) -> Result<toml::Table, String> {
+    let mut out = base.clone();
+    for (key, value) in changes {
+        match key.as_str() {
+            "palette" => {
+                if let Some(toml::Value::Table(sim)) = out.get_mut("sim") {
+                    sim.insert(key.clone(), value.clone());
+                }
+            }
+            "shape" => {
+                out.insert(key.clone(), value.clone());
+            }
+            k if PICTURE.contains(&k) => {
+                let Some(changes) = value.as_table() else { return Err(format!("`{k}` is a table of settings")) };
+                let section = out.entry(k).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+                if let toml::Value::Table(section) = section {
+                    section.extend(changes.iter().map(|(a, b)| (a.clone(), b.clone())));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "a variant changes only the picture: `palette`, [variant.feedback], [variant.waves], [[variant.shape]], [variant.art], [variant.fractal] or [variant.composite], not `{other}`"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The changes that make `look`'s file into `variant`'s (see `merge_variant`).
+fn variant_changes(look: &Look, variant: &Variant) -> toml::Table {
+    let table = |l: &Look| toml::from_str::<toml::Table>(&write(l)).unwrap_or_default();
+    let mut plain = look.clone();
+    plain.variants.clear();
+    let base = table(&plain);
+    plain.set_picture(variant);
+    let now = table(&plain);
+    let mut changes = toml::Table::new();
+    let palette = |t: &toml::Table| t.get("sim").and_then(|s| s.get("palette")).cloned();
+    if let (true, Some(p)) = (palette(&base) != palette(&now), palette(&now)) {
+        changes.insert("palette".into(), p);
+    }
+    let mut waves = keys(WaveSettings::OFF);
+    for k in ["shapes", "art", "fractal"] {
+        waves.remove(k);
+    }
+    let sections = [
+        ("feedback", keys(FeedbackSettings::OFF), true),
+        ("waves", waves, false),
+        ("art", keys(ArtSettings::OFF), true),
+        ("fractal", keys(FractalSettings::OFF), true),
+        ("composite", keys(CompositeSettings::OFF), false),
+    ];
+    for (name, defaults, switched) in sections {
+        let (was, is) = (base.get(name).and_then(toml::Value::as_table), now.get(name).and_then(toml::Value::as_table));
+        // A section that's there without `enabled` is on.
+        let default = |k: &str| if switched && k == "enabled" { Some(toml::Value::Boolean(true)) } else { defaults.get(k).cloned() };
+        if was.is_none() && is.is_none() {
+            continue;
+        }
+        // Switched off: written as off, the look's settings back to their defaults.
+        let off: toml::Table = [("enabled".to_string(), toml::Value::Boolean(false))].into_iter().collect();
+        let empty = toml::Table::new();
+        let now = match is {
+            Some(now) => now,
+            None if switched => &off,
+            None => &empty,
+        };
+        let was_ = was.unwrap_or(&empty);
+        let mut section: toml::Table = now.iter().filter(|(k, v)| was_.get(*k) != Some(v)).map(|(k, v)| (k.clone(), v.clone())).collect();
+        section.extend(was_.keys().filter(|k| !now.contains_key(*k)).filter_map(|k| Some((k.clone(), default(k)?))));
+        if switched && is.is_none() {
+            section.insert("enabled".into(), toml::Value::Boolean(false));
+        }
+        // A section newly there switches it on, even with nothing else changed.
+        if section.is_empty() && !(switched && was.is_none()) {
+            continue;
+        }
+        changes.insert(name.into(), toml::Value::Table(section));
+    }
+    if base.get("shape") != now.get("shape") {
+        changes.insert("shape".into(), now.get("shape").cloned().unwrap_or(toml::Value::Array(Vec::new())));
+    }
+    changes
 }
 
 /// `look` as a file, in the form `parse` reads: settings at their defaults are left out.
@@ -392,6 +507,13 @@ pub fn write(look: &Look) -> String {
             // closing quotes itself.
             let quoted = if src.contains("'''") { text(&src) } else { format!("'''\n{src}'''") };
             let _ = writeln!(out, "{key} = {quoted}");
+        }
+    }
+    if !look.variants.is_empty() {
+        let variants = look.variants.iter().map(|v| tidy(toml::Value::Table(variant_changes(look, v)))).collect();
+        let doc: toml::Table = [("variant".to_string(), toml::Value::Array(variants))].into_iter().collect();
+        if let Ok(text) = toml::to_string(&doc) {
+            let _ = write!(out, "\n{text}");
         }
     }
     out
@@ -509,6 +631,36 @@ mod tests {
 
     fn error(extra: &str) -> LoadError {
         load(extra).err().unwrap_or_else(|| panic!("{extra:?} loaded"))
+    }
+
+    /// A variant changes the picture it names over the look's, keeping the rest; it can
+    /// switch a section on or off; it can't touch the fluid; and it's written back as it
+    /// was read.
+    #[test]
+    fn variants_change_the_picture_over_the_look() {
+        let look = load(
+            "[feedback]\ntrail = 0.5\nrotation = 0.2\n[composite]\nvignette = 0.4\n\
+             [[variant]]\npalette = \"Lava\"\n[variant.feedback]\nmode = \"brightest\"\n[variant.fractal]\nkind = \"julia\"\n\
+             [[variant]]\n[variant.feedback]\nenabled = false\n[variant.composite]\nsymmetry = \"mirror_x\"\n",
+        )
+        .unwrap();
+        assert_eq!(look.variants.len(), 2);
+        let one = look.variant(1);
+        assert_eq!(one.palette, PALETTES.iter().find(|p| p.0 == "Lava").unwrap().1);
+        assert!(one.feedback.enabled && one.feedback.mode == feedback::FeedbackMode::Brightest && one.feedback.trail == 0.5 && one.feedback.rotation == 0.2);
+        assert!(one.waves.fractal.enabled && one.waves.fractal.kind == FractalKind::Julia && one.composite.vignette == 0.4);
+        assert_eq!((one.solver.as_str(), &one.code), (look.solver.as_str(), &look.code));
+        let two = look.variant(2);
+        assert!(!two.feedback.enabled && two.palette == look.palette && two.composite.vignette == 0.4);
+        assert_eq!(look.variant(0), look);
+        assert_eq!(look.describe_variant(1), "colours, feedback mode, fractal");
+        let back = parse(&write(&look), "t.toml", Source::Builtin("t.toml")).unwrap_or_else(|e| panic!("{e}\n{}", write(&look)));
+        assert_eq!(back.variants, look.variants, "{}", write(&look));
+
+        let e = error("[[variant]]\nsolver = \"PBF\"\n");
+        assert!(e.message.contains("[[variant]] 1") && e.message.contains("only the picture") && e.line == Some(7), "{e:?}");
+        assert!(error("[[variant]]\n[variant.composite]\nsymetry = \"mirror_x\"\n").message.contains("symetry"));
+        assert!(error(&"[[variant]]\n".repeat(4)).message.contains("at most 3"));
     }
 
     #[test]

@@ -20,3 +20,14 @@ bass_zoom = 0.15
 
 [composite]
 vignette = 0.4
+
+# Changes of section move on through these, and back to the look's own picture.
+[[variant]]
+palette = "Lava"
+[variant.fractal]
+julia = [0.285, 0.01]
+
+[[variant]]
+[variant.composite]
+symmetry = "kaleidoscope"
+segments = 6

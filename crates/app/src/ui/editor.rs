@@ -3,6 +3,7 @@
 //! the variables carry on; see `Runtime::replace`); a mistake is underlined, and the
 //! message shown under its program, while the look keeps running the last good version.
 //! Save writes the look to the user's folder (a built-in becomes the user's own copy).
+//! A look's variants are listed above, each a button that blends to it.
 
 use super::Frame;
 use super::theme;
@@ -64,6 +65,28 @@ fn contents(ui: &mut egui::Ui, f: &mut Frame<'_>) {
     ui.label(RichText::new(&name).strong());
     ui.weak("Changes apply as you type, whenever they compile. Every name is in looks/README.md.");
     ui.add_space(4.0);
+    if !look.variants.is_empty() {
+        let showing = s.director.variant();
+        let mut pick = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Variants").color(theme::HEADER))
+                .on_hover_text("Other pictures for this look, moved between at changes of section; Save as, while one shows, saves into it");
+            if ui.selectable_label(showing == 0, "Own").on_hover_text("The look's own picture").clicked() {
+                pick = Some(0);
+            }
+            for i in 1..=look.variants.len() {
+                let changes = look.describe_variant(i);
+                let tip = if changes.is_empty() { "The same as the look's own".to_string() } else { format!("Changes the {changes}") };
+                if ui.selectable_label(showing == i, i.to_string()).on_hover_text(tip).clicked() {
+                    pick = Some(i);
+                }
+            }
+        });
+        if let Some(i) = pick.filter(|&i| i != showing) {
+            s.director.request_variant(i);
+        }
+        ui.add_space(4.0);
+    }
 
     let editor = &mut s.editor;
     let mut edited = None;

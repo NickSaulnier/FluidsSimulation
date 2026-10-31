@@ -653,7 +653,7 @@ impl State {
             return;
         }
         if self.applied_look.as_ref().is_some_and(|old| old.same_scene(&look)) {
-            looks::apply_picture(&look, &mut self.ui);
+            looks::apply_picture(&look.variant(self.ui.director.variant()), &mut self.ui);
             self.start_code(&look);
             self.applied_look = Some(look);
         } else {
@@ -667,9 +667,11 @@ impl State {
     /// Save the settings as they stand as a look named `name`: the fluid (solver, scene as
     /// last loaded, every parameter at its own value, not as the music moves it), the
     /// colours, feedback, waves and reactions, and the current look's equations and
-    /// energy. It becomes the look on screen.
+    /// energy. It becomes the look on screen. While one of the look's variants is on
+    /// screen, the picture is saved as that variant, and the look's own kept.
     fn save_look(&mut self, name: String) {
         let current = self.ui.director.current.and_then(|i| self.ui.looks.looks.get(i)).cloned();
+        let (own, mut variants) = current.as_ref().map_or((None, Vec::new()), |l| (Some(l.picture()), l.variants.clone()));
         let bases = self.param_bases.1.clone();
         let (solver, scene, params, liquid, orbit) = match &mut self.world3d {
             Some(w) => {
@@ -700,8 +702,15 @@ impl State {
             params,
             reactions: self.ui.reactions.clone(),
             code: current.map(|l| l.code).unwrap_or_default(),
+            variants: Vec::new(),
             source: looks::Source::Builtin("unsaved"),
         };
+        let mut look = look;
+        if let (Some(own), Some(slot)) = (own, self.ui.director.variant().checked_sub(1).filter(|&k| k < variants.len())) {
+            variants[slot] = look.picture();
+            look.set_picture(&own);
+        }
+        look.variants = variants;
         let before: Vec<String> = self.ui.looks.looks.iter().map(|l| l.name.clone()).collect();
         match self.ui.looks.save(&look) {
             Ok(path) => {
@@ -928,6 +937,18 @@ impl State {
         }
         log::info!("look: {}", look.name);
         self.applied_look = Some(look);
+    }
+
+    /// Blend to variant `variant` of look `index` (the look on screen): its picture only,
+    /// the fluid, reactions and equations carrying on.
+    fn apply_variant(&mut self, index: usize, variant: usize) {
+        let Some(look) = self.ui.looks.looks.get(index).map(|l| l.variant(variant)) else { return };
+        let patterns = render::composite::BlendPattern::ALL;
+        self.blend_pattern = patterns[(self.rng.next_u64() % patterns.len() as u64) as usize];
+        self.blend_seed = 100.0 * self.rng.next_f32();
+        (self.fractal_governor, self.fractal_quality) = (governor::Governor::default(), 0);
+        looks::apply_picture(&look, &mut self.ui);
+        log::info!("look: {} (variant {variant})", look.name);
     }
 
     /// Parameter reactions: each key is set to its base value times the reaction's
@@ -1272,12 +1293,15 @@ impl State {
         if let Some(change) = self.ui.director.update(&self.ui.looks.looks, &weights, self.ui.presenting, self.music.features(), kicked, real_dt) {
             let mut look = change.look;
             // Now and then, a new random look in place of the director's own pick.
-            if self.ui.director.random_looks && self.ui.director.picked_itself() && self.rng.next_f32() < RANDOM_SHARE {
+            if change.variant.is_none() && self.ui.director.random_looks && self.ui.director.picked_itself() && self.rng.next_f32() < RANDOM_SHARE {
                 let energy = self.ui.looks.looks.get(look).map(|l| l.energy);
                 look = self.make_random(false, energy);
                 self.ui.director.substitute(look);
             }
-            self.apply_look(look, change.cut);
+            match change.variant {
+                Some(variant) => self.apply_variant(look, variant),
+                None => self.apply_look(look, change.cut),
+            }
         }
         self.step_audit(real_dt);
         self.check_random(real_dt);

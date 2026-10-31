@@ -73,6 +73,11 @@ rot = 0.15 + 0.1 * sin(phase)
 pixel = """
 rot = rot * (0.5 + rad)
 """
+
+[[variant]]                # up to three other pictures (see Variants)
+palette = "Lava"
+[variant.composite]
+symmetry = "mirror_x"
 ```
 
 The app's look browser (B, or the grid button in the Looks group) finds looks by name and
@@ -82,6 +87,26 @@ look is never picked, and the browser can keep them to your favourites or to the
 picked there. Its equation editor (E, or the function button) edits
 the `[code]` of the look on screen while it runs; Save there writes the look as Save as
 does, under its own name.
+
+## Variants
+
+A look can carry up to three `[[variant]]`s: other pictures for the same fluid,
+reactions and equations. Each one is written as what it changes over the look:
+`palette`, and settings in `[variant.feedback]`, `[variant.waves]`, `[variant.fractal]`,
+`[variant.art]` and `[variant.composite]` (each merged over the look's own section;
+`enabled = false` turns one off, and a section the look hasn't got is turned on), or
+`[[variant.shape]]`s (in place of the look's shapes). A variant can't change the fluid,
+the reactions, the code or `[meta]`.
+
+In full screen, when the director changes looks by itself, a change of section (other
+than a drop or a breakdown) moves a look with variants on to the next one, and round
+to its own picture, blended over a bar, at most every 8 seconds; the look stays on,
+and the interval keeps running. Drops and breakdowns still change the look. The
+equation editor lists the variants of the look on screen (hover for what each
+changes); clicking one blends to it. Saving with Save as while a variant shows saves
+the picture into that variant, keeping the look's own. Random looks come with two
+variants of their own, each changing two of the colours, the symmetry, the feedback's
+mode, the wave and the fractal's spot.
 
 ## Classic MilkDrop presets
 

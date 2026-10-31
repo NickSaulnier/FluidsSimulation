@@ -7,8 +7,11 @@
 //!   or a track was loaded), or else guessed from at least `SONG_GAP_S` of silence; then
 //!   after `LISTEN_S` of sound.
 //! - **The song's sections** (see `audio::sections`): a drop cuts to an energetic look;
-//!   a breakdown blends slowly into a calm one; any other change of section makes a
-//!   change due, once half the interval has passed.
+//!   a breakdown blends slowly into a calm one; any other change of section moves to
+//!   the look's next variant (see `looks::Variant`), blended over a bar, if it has
+//!   variants and the last move was at least `MIN_VARIANT_S` ago, or else makes a change
+//!   due, once half the interval has passed. A variant keeps the look's fluid, reactions
+//!   and equations, and the look's own time (the interval runs on).
 //! - **A timer:** once `interval_s` has passed.
 //!
 //! Section changes wait at least `MIN_LOOK_S` into a look. The next look suits the
@@ -51,6 +54,8 @@ const SONG_GAP_S: f32 = 2.0;
 /// How long a new song is heard before its look is chosen.
 const LISTEN_S: f32 = 2.0;
 const MIN_LOOK_S: f32 = 15.0;
+/// The least time between moves to another variant (and from a look's start).
+const MIN_VARIANT_S: f32 = 8.0;
 /// How long a change waits for a kick, without a steady beat.
 const KICK_WAIT_S: f32 = 4.0;
 /// How many looks back `back` can go.
@@ -66,20 +71,22 @@ pub enum Transition {
     Cut,
 }
 
-/// A look to apply now, and whether by a cut (no blend).
+/// A look to apply now, and whether by a cut (no blend); or, with `variant`, only a move
+/// to that variant of the look on screen (its picture: 0 the look's own).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Change {
     pub look: usize,
     pub cut: bool,
+    pub variant: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Fade {
     None,
-    /// A change on its way: to `target`, `length` seconds after it began. `captured`:
-    /// whether the app has the old picture; `held`: a blend still under way when it
-    /// began, held where it was.
-    Out { t: f32, target: usize, length: f32, transition: Transition, captured: bool, held: f32 },
+    /// A change on its way: to `target` (only its variant `variant`, if given),
+    /// `length` seconds after it began. `captured`: whether the app has the old picture;
+    /// `held`: a blend still under way when it began, held where it was.
+    Out { t: f32, target: usize, variant: Option<usize>, length: f32, transition: Transition, captured: bool, held: f32 },
     /// The new look blending in over `length` seconds.
     In { t: f32, length: f32 },
 }
@@ -88,6 +95,7 @@ enum Fade {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pending {
     target: usize,
+    variant: Option<usize>,
     waited: f32,
     transition: Transition,
     /// The director's own pick (not a refresh of the locked look).
@@ -109,6 +117,9 @@ pub struct Director {
     pub random_looks: bool,
     /// The look on screen, if a look was applied.
     pub current: Option<usize>,
+    /// Its variant on screen (0 its own picture), and seconds since it was.
+    variant: usize,
+    variant_elapsed: f32,
     elapsed: f32,
     silence: f32,
     slow: f32,
@@ -142,6 +153,8 @@ impl Default for Director {
             tags_only: false,
             random_looks: false,
             current: None,
+            variant: 0,
+            variant_elapsed: 0.0,
             elapsed: 0.0,
             silence: 0.0,
             slow: 0.0,
@@ -163,7 +176,19 @@ impl Default for Director {
 impl Director {
     /// Blend to look `target` (a manual choice, or the director's own), now.
     pub fn request(&mut self, target: usize) {
-        self.change(target, 0.0, Transition::Blend(BLEND_S), false);
+        self.change(target, 0.0, Transition::Blend(BLEND_S), false, None);
+    }
+
+    /// Blend to variant `variant` of the look on screen (0 its own picture), now.
+    pub fn request_variant(&mut self, variant: usize) {
+        if let Some(current) = self.current {
+            self.change(current, 0.0, Transition::Blend(BLEND_S), false, Some(variant));
+        }
+    }
+
+    /// The variant of the look on screen (0 its own picture).
+    pub fn variant(&self) -> usize {
+        self.variant
     }
 
     /// A new song has begun (known, not guessed from silence): change look for it after
@@ -175,7 +200,7 @@ impl Director {
     /// Change to look `target` at once, without a blend.
     pub fn cut(&mut self, target: usize) {
         self.fade = Fade::None;
-        self.change(target, 0.0, Transition::Cut, false);
+        self.change(target, 0.0, Transition::Cut, false, None);
     }
 
     /// Blend back to the look shown before this one, if there was one (and step further
@@ -214,13 +239,14 @@ impl Director {
         self.shown[look] = self.applied;
     }
 
-    /// Start a change to `target`, `length` seconds from now (unless one is already on
-    /// its way). `own`: the director's own pick.
-    fn change(&mut self, target: usize, length: f32, transition: Transition, own: bool) {
+    /// Start a change to `target` (only its variant `variant`, if given), `length`
+    /// seconds from now (unless one is already on its way). `own`: the director's own
+    /// pick.
+    fn change(&mut self, target: usize, length: f32, transition: Transition, own: bool, variant: Option<usize>) {
         if !matches!(self.fade, Fade::Out { .. }) {
-            self.own = own;
+            self.own = own && variant.is_none();
             let held = self.blend();
-            self.fade = Fade::Out { t: 0.0, target, length, transition, captured: false, held };
+            self.fade = Fade::Out { t: 0.0, target, variant, length, transition, captured: false, held };
             self.waiting = None;
             self.going_back = false;
         }
@@ -300,6 +326,7 @@ impl Director {
     /// look to apply now.
     pub fn update(&mut self, looks: &[Look], weights: &[f32], presenting: bool, features: Option<&AudioFeatures>, kicked: bool, dt: f32) -> Option<Change> {
         self.elapsed += dt;
+        self.variant_elapsed += dt;
         let level = features.map_or(0.0, |f| f.level);
         self.slow += (level - self.slow) * (1.0 - (-dt / SLOW_S).exp());
         // A new section since last frame (a new analyzer starts its count again).
@@ -315,7 +342,7 @@ impl Director {
         self.silence = if silent { self.silence + dt } else { 0.0 };
 
         match self.fade {
-            Fade::Out { t, target, length, transition, captured, held } => {
+            Fade::Out { t, target, variant, length, transition, captured, held } => {
                 let t = t + dt;
                 let ready = captured || transition == Transition::Cut || t >= length + CAPTURE_WAIT_S;
                 if t >= length && ready {
@@ -327,6 +354,11 @@ impl Director {
                         self.fade = Fade::None;
                         return None;
                     }
+                    if let Some(variant) = variant {
+                        // The same look, another picture: its time runs on.
+                        (self.variant, self.variant_elapsed) = (variant, 0.0);
+                        return Some(Change { look: target, cut: transition == Transition::Cut, variant: Some(variant) });
+                    }
                     if let Some(left) = self.current.filter(|&c| c != target && !self.going_back) {
                         self.history.push(left);
                         if self.history.len() > HISTORY {
@@ -335,12 +367,13 @@ impl Director {
                     }
                     self.going_back = false;
                     (self.current, self.elapsed, self.due) = (Some(target), 0.0, false);
+                    (self.variant, self.variant_elapsed) = (0, 0.0);
                     self.applied += 1;
                     self.shown.resize(looks.len(), 0);
                     self.shown[target] = self.applied;
-                    return Some(Change { look: target, cut: transition == Transition::Cut });
+                    return Some(Change { look: target, cut: transition == Transition::Cut, variant: None });
                 }
-                self.fade = Fade::Out { t, target, length, transition, captured, held };
+                self.fade = Fade::Out { t, target, variant, length, transition, captured, held };
                 return None;
             }
             Fade::In { t, length } => {
@@ -362,7 +395,7 @@ impl Director {
                 && ((settled && song_change) || told || self.due)
                 && self.waiting.is_none()
             {
-                self.waiting = Some(Pending { target: current, waited: 0.0, transition: blend, own: false });
+                self.waiting = Some(Pending { target: current, variant: None, waited: 0.0, transition: blend, own: false });
             }
             self.land(features, kicked, dt);
             return None;
@@ -377,17 +410,29 @@ impl Director {
                 None
             } else if heard >= LISTEN_S {
                 let target = self.choose(looks, weights, sum / heard > ENERGETIC);
-                self.change(target, 0.0, blend, true);
+                self.change(target, 0.0, blend, true, None);
                 None
             } else {
                 Some((heard, sum))
             };
             return None;
         }
-        let pending = |target, transition| Some(Pending { target, waited: 0.0, transition, own: true });
+        let pending = |target, transition| Some(Pending { target, variant: None, waited: 0.0, transition, own: true });
+        let variants = self.current.and_then(|c| looks.get(c)).map_or(0, |l| l.variants.len());
         match section {
             Some(SectionKind::Drop) if settled => self.waiting = pending(self.choose(looks, weights, true), Transition::Cut),
             Some(SectionKind::Breakdown) if settled => self.waiting = pending(self.choose(looks, weights, false), Transition::Blend(SLOW_BLEND_S)),
+            Some(SectionKind::Change) if variants > 0 => {
+                if let Some(current) = self.current
+                    && self.variant_elapsed >= MIN_VARIANT_S
+                    && self.waiting.is_none()
+                {
+                    // Over a bar, with a steady beat.
+                    let bar = features.map(|f| f.musical).filter(|m| m.beating && m.bpm > 0.0).map_or(BLEND_S, |m| 240.0 / m.bpm);
+                    let next = (self.variant + 1) % (variants + 1);
+                    self.waiting = Some(Pending { target: current, variant: Some(next), waited: 0.0, transition: Transition::Blend(bar), own: false });
+                }
+            }
             Some(SectionKind::Change) if self.elapsed >= MIN_LOOK_S.max(0.5 * self.interval_s) => self.due = true,
             _ => {}
         }
@@ -419,7 +464,7 @@ impl Director {
             None => (p.transition == Transition::Cut || kicked || waited >= KICK_WAIT_S).then_some(0.0),
         };
         match start {
-            Some(length) => self.change(p.target, length, p.transition, p.own),
+            Some(length) => self.change(p.target, length, p.transition, p.own, p.variant),
             None => self.waiting = Some(Pending { waited, ..p }),
         }
     }
@@ -616,6 +661,39 @@ mod tests {
         assert_eq!(run(&mut d, &sectioned(0.3, 2, SectionKind::Change), Some(30), 2.0).len(), 1, "didn't change past half the interval");
     }
 
+    /// Changes of section move a look with variants on to the next (round to its own
+    /// picture), no more often than `MIN_VARIANT_S`, without changing the look; a drop
+    /// still changes it, to the new look's own picture.
+    #[test]
+    fn changes_of_section_move_through_a_looks_variants() {
+        let mut with: Vec<Look> = looks().to_vec();
+        let picture = with[1].picture();
+        with[0].variants = vec![picture, picture];
+        let mut d = Director { current: Some(0), ..Director::default() };
+        let go = |d: &mut Director, f: &AudioFeatures, seconds: f32| {
+            let mut out = Vec::new();
+            for _ in 0..(seconds / FRAME) as usize {
+                out.extend(d.update(&with, &[], true, Some(f), false, FRAME));
+                if d.capturing() {
+                    d.captured();
+                }
+            }
+            out
+        };
+        let variant = |v| vec![Change { look: 0, cut: false, variant: Some(v) }];
+        go(&mut d, &music(0.3), 10.0);
+        assert_eq!(go(&mut d, &sectioned(0.3, 1, SectionKind::Change), 5.0), variant(1));
+        assert_eq!(d.variant(), 1);
+        assert!(go(&mut d, &sectioned(0.3, 2, SectionKind::Change), 5.0).is_empty(), "moved again within {MIN_VARIANT_S} s");
+        go(&mut d, &music(0.3), 8.0);
+        assert_eq!(go(&mut d, &sectioned(0.3, 3, SectionKind::Change), 5.0), variant(2));
+        go(&mut d, &music(0.3), 8.0);
+        assert_eq!(go(&mut d, &sectioned(0.3, 4, SectionKind::Change), 5.0), variant(0));
+        go(&mut d, &music(0.3), 3.0);
+        let dropped = go(&mut d, &sectioned(0.3, 5, SectionKind::Drop), 1.0);
+        assert!(dropped.len() == 1 && dropped[0].look != 0 && dropped[0].variant.is_none() && d.variant() == 0, "{dropped:?}");
+    }
+
     /// With a steady beat, the timer's change switches on a downbeat.
     #[test]
     fn changes_land_on_the_bar_line() {
@@ -664,7 +742,7 @@ mod tests {
         assert_eq!(d.update(looks(), &[], false, None, false, FRAME), None, "switched before the old picture was captured");
         assert!(d.capturing());
         d.captured();
-        assert_eq!(d.update(looks(), &[], false, None, false, FRAME), Some(Change { look: 2, cut: false }));
+        assert_eq!(d.update(looks(), &[], false, None, false, FRAME), Some(Change { look: 2, cut: false, variant: None }));
         assert!(d.blend() < 0.05, "{}", d.blend());
         let mut last = d.blend();
         for _ in 0..(BLEND_S / FRAME) as usize + 2 {
@@ -758,7 +836,7 @@ mod tests {
         assert_eq!(go(&mut d), Some(0));
         assert!(!d.back(), "nothing further back");
         d.cut(7);
-        assert_eq!(d.update(looks(), &[], false, None, false, FRAME), Some(Change { look: 7, cut: true }));
+        assert_eq!(d.update(looks(), &[], false, None, false, FRAME), Some(Change { look: 7, cut: true, variant: None }));
         assert_eq!(d.blend(), 1.0, "a cut doesn't blend");
     }
 

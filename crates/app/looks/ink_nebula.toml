@@ -19,3 +19,11 @@ reactions = [
 [composite]
 contrast = 1.1
 vignette = 0.35
+
+# Changes of section move on through these, and back to the look's own picture.
+[[variant]]
+palette = "Ocean"
+
+[[variant]]
+[variant.composite]
+symmetry = "mirror_x"

@@ -223,6 +223,7 @@ pub fn convert(text: &str, stem: &str) -> Result<Imported, String> {
         params: Vec::new(),
         reactions: Vec::new(),
         code: Code { ..code },
+        variants: Vec::new(),
         source: Source::Builtin("milkdrop"),
     };
     let mut text = format!("# Imported from the MilkDrop preset \"{stem}\".\n");

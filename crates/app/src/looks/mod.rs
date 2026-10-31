@@ -8,6 +8,10 @@
 //! Solvers and scenes are named, not indexed, so the library survives registry changes.
 //! A look naming a 3D solver (`sim3d::SOLVERS`) is a 3D look: its scene is a 3D preset,
 //! and the camera orbits at its `orbit` speed.
+//!
+//! A look can carry up to `MAX_VARIANTS` variants: other pictures (colours, feedback,
+//! waves, shapes, fractal, composite) for the same fluid, reactions and equations, which
+//! the director moves between at changes of section.
 
 pub mod dynamics;
 pub mod harmony;
@@ -154,10 +158,71 @@ pub struct Look {
     pub params: Vec<(String, f32)>,
     pub reactions: Vec<Reaction>,
     pub code: Code,
+    /// Other pictures for the same fluid, reactions and code (see `variant`).
+    pub variants: Vec<Variant>,
     pub source: Source,
 }
 
+/// The most variants a look carries.
+pub const MAX_VARIANTS: usize = 3;
+
+/// A look's picture: what a variant changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Variant {
+    pub palette: Palette,
+    pub feedback: FeedbackSettings,
+    pub waves: WaveSettings,
+    pub composite: CompositeSettings,
+}
+
 impl Look {
+    /// Its picture as it stands.
+    pub fn picture(&self) -> Variant {
+        Variant { palette: self.palette, feedback: self.feedback, waves: self.waves, composite: self.composite }
+    }
+
+    pub fn set_picture(&mut self, v: &Variant) {
+        (self.palette, self.feedback, self.waves, self.composite) = (v.palette, v.feedback, v.waves, v.composite);
+    }
+
+    /// The look as variant `i` shows it: 0 as it is, 1 on its `variants` (past the last,
+    /// as it is).
+    pub fn variant(&self, i: usize) -> Look {
+        let mut look = self.clone();
+        if let Some(v) = i.checked_sub(1).and_then(|k| self.variants.get(k)) {
+            look.set_picture(v);
+        }
+        look
+    }
+
+    /// What variant `i` (from 1) changes from the look, for listing: "colours,
+    /// symmetry" (nothing, if it changes nothing).
+    pub fn describe_variant(&self, i: usize) -> String {
+        let (a, Some(b)) = (self.picture(), i.checked_sub(1).and_then(|k| self.variants.get(k))) else { return String::new() };
+        let (wa, wb) = (&a.waves, &b.waves);
+        let (ca, cb) = (&a.composite, &b.composite);
+        let mut parts = Vec::new();
+        let mut note = |changed: bool, what: &'static str| {
+            if changed {
+                parts.push(what);
+            }
+        };
+        note(a.palette != b.palette, "colours");
+        note(a.feedback.mode != b.feedback.mode || a.feedback.enabled != b.feedback.enabled, "feedback mode");
+        note(a.feedback != b.feedback && a.feedback.mode == b.feedback.mode && a.feedback.enabled == b.feedback.enabled, "feedback");
+        note(wa.mode != wb.mode, "wave");
+        note(wa.shapes != wb.shapes, "shapes");
+        note(wa.art != wb.art, "cover");
+        note(wa.fractal.kind != wb.fractal.kind || wa.fractal.enabled != wb.fractal.enabled, "fractal");
+        note(wa.fractal != wb.fractal && wa.fractal.kind == wb.fractal.kind && wa.fractal.enabled == wb.fractal.enabled, "fractal's spot");
+        let waves_rest = WaveSettings { mode: wa.mode, shapes: wa.shapes, art: wa.art, fractal: wa.fractal, ..*wb };
+        note(waves_rest != *wa, "wave settings");
+        note(ca.symmetry != cb.symmetry || ca.segments != cb.segments, "symmetry");
+        note(CompositeSettings { symmetry: ca.symmetry, segments: ca.segments, ..*cb } != *ca, "grading");
+        parts.join(", ")
+    }
+
+
     /// Whether it has a fluid at all (a look without one is only waves, shapes and the
     /// feedback).
     pub fn has_fluid(&self) -> bool {

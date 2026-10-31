@@ -118,7 +118,11 @@ resolution in full screen if the simulation falls behind real time.
   (compiled to WGSL), reading the music and setting the warp, waves, shapes, composite
   and solver parameters. The editor (E) runs edits as you type.
 - **The director:** in full screen it changes looks on new songs, drops and
-  breakdowns, and at least every interval. Changes blend the old picture into the new
+  breakdowns, and at least every interval. A look can carry variants (other
+  colours, symmetry, feedback, waves or fractal over the same fluid): other changes
+  of section move it on to its next variant, blended over a bar, instead of changing
+  the look. Mandala, Ink nebula and Julia tunnel have two, and so does every random
+  look; the equation editor lists them. Changes blend the old picture into the new
   look (a dissolve, from the middle out, in patches, or a zoom blur) and land on the
   downbeat; drops cut on the beat. Better-rated looks come round more often, and it can
   keep to favourites or to picked tags.

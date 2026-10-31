@@ -13,7 +13,7 @@
 //! Some looks get a fractal (`random_fractal`): alone with the feedback, or over a
 //! fluid, fainter, often bent by its flow; diving, touring or wandering with the music.
 
-use super::{Code, CodeSource, Energy, Look, Source, compile_code};
+use super::{Code, CodeSource, Energy, Look, Source, Variant, compile_code};
 use crate::audio::reactions::{Effect, Reaction, Trigger};
 use crate::render::composite::{CompositeSettings, Symmetry};
 use crate::render::feedback::{EchoFlip, FeedbackMode, FeedbackSettings};
@@ -282,6 +282,7 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
         params,
         reactions,
         code,
+        variants: Vec::new(),
         source: Source::Random,
     };
     // Drawn last, so the rest of a seed's look is as it was before harmony.
@@ -289,8 +290,58 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
         look.harmony = round(d.range(0.5, 1.0));
     }
     tame(&mut look);
+    for _ in 0..VARIANTS {
+        let variant = random_variant(d, &look);
+        look.variants.push(variant);
+    }
     look.energy = energy(&look);
     look
+}
+
+/// How many variants a random look carries, and how many of its choices each changes.
+const VARIANTS: usize = 2;
+const VARIANT_CHANGES: usize = 2;
+
+/// A variant of `look`: `VARIANT_CHANGES` of its choices changed (of the colours, the
+/// symmetry, the feedback's mode, the wave and the fractal's spot), its numbers as they
+/// are.
+fn random_variant(d: &mut Dice, look: &Look) -> Variant {
+    let mut v = look.clone();
+    let spots = fractal::spots(v.waves.fractal.kind);
+    let mut choices = vec![0, 1];
+    if v.feedback.enabled {
+        choices.push(2);
+    }
+    if v.waves.mode != WaveMode::Off || !v.has_fluid() {
+        choices.push(3);
+    }
+    if v.waves.fractal.enabled && spots.len() > 1 {
+        choices.push(4);
+    }
+    for _ in 0..VARIANT_CHANGES {
+        match choices.swap_remove(d.index(choices.len())) {
+            0 => v.palette = random_palette(d),
+            1 => {
+                let others: Vec<Symmetry> = Symmetry::ALL.into_iter().filter(|&s| s != v.composite.symmetry).collect();
+                v.composite.symmetry = d.pick(&others);
+                v.composite.segments = 2 * d.range(2.0, 5.99) as u32;
+            }
+            2 => v.feedback.mode = if v.feedback.mode == FeedbackMode::Smear { FeedbackMode::Brightest } else { FeedbackMode::Smear },
+            3 => {
+                let others: Vec<WaveMode> = WAVES.into_iter().filter(|&m| m != v.waves.mode).collect();
+                v.waves.mode = d.pick(&others);
+            }
+            _ => {
+                let f = &mut v.waves.fractal;
+                let others: Vec<([f32; 2], f32)> = spots.iter().copied().filter(|&s| s != (f.centre, f.zoom)).collect();
+                if !others.is_empty() {
+                    (f.centre, f.zoom) = d.pick(&others);
+                }
+            }
+        }
+    }
+    tame(&mut v);
+    v.picture()
 }
 
 /// `look` nudged: its numbers by up to ±20 % (staying in range), and sometimes one of

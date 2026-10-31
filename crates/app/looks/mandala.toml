@@ -41,6 +41,17 @@ segments = 10
 symmetry_spin = 0.1
 vignette = 0.4
 
+# Changes of section move on through these, and back to the look's own picture.
+[[variant]]
+[variant.composite]
+segments = 6
+symmetry_spin = -0.15
+
+[[variant]]
+palette = { deep = [10, 20, 60], base = [60, 140, 220], highlight = [230, 245, 255] }
+[variant.composite]
+symmetry = "quad"
+
 [code]
 # The square circles the middle, so the kaleidoscope folds it into petals.
 frame = """
