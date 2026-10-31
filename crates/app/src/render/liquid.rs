@@ -239,6 +239,18 @@ impl LiquidLayer {
 mod tests {
     use super::*;
 
+    /// The liquid's and the field overlay's shaders parse and validate.
+    #[test]
+    fn the_shaders_validate() {
+        use wgpu::naga;
+        for (name, source) in [("liquid.wgsl", include_str!("liquid.wgsl")), ("overlay.wgsl", include_str!("overlay.wgsl"))] {
+            let module = naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+        }
+    }
+
     /// Sum the splat weights at a point inside an infinite square lattice of particles
     /// spaced at two radii: it must match `expected_density` for any blob size.
     #[test]

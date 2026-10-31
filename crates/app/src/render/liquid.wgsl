@@ -1,5 +1,6 @@
 // Screen-space liquid: particles splatted as Gaussians into an offscreen density field,
-// then thresholded and shaded into a continuous surface.
+// then thresholded and shaded into a continuous surface: wet, with a reflection that
+// grows toward its edges (Fresnel) and a body that deepens with depth (Beer's law).
 // (Globals duplicated from scene.wgsl; a separate module keeps its bind groups free.)
 struct Globals {
     scale: vec2f,
@@ -83,6 +84,18 @@ fn smoothed(p: vec2i, step: i32) -> f32 {
     return s / 16.0;
 }
 
+// How strongly the body's colour deepens toward the middle of the fluid (Beer's law:
+// each channel's share kept falls as the colour's own power, so deep reads darker and
+// more saturated), and the reflectance head on (water's, about 4 %).
+const BEER: f32 = 2.0;
+const F0: f32 = 0.04;
+
+// What the surface reflects: a sky above (the palette's highlight, dimmed) fading to
+// the deep colour below, by the reflected ray's height.
+fn environment(r: vec3f) -> vec3f {
+    return mix(0.3 * g.deep.rgb, 0.8 * g.highlight.rgb, smoothstep(-0.3, 0.9, r.y));
+}
+
 @fragment
 fn fs_composite(@builtin(position) frag: vec4f) -> @location(0) vec4f {
     let p = vec2i(frag.xy);
@@ -94,16 +107,21 @@ fn fs_composite(@builtin(position) frag: vec4f) -> @location(0) vec4f {
         discard;
     }
 
-    // Normal from the smoothed density gradient (screen y points down, world y up),
-    // flattened deep inside the fluid so highlights stay at the surface.
-    let gx = smoothed(p + vec2i(step, 0), step) - smoothed(p - vec2i(step, 0), step);
-    let gy = smoothed(p - vec2i(0, step), step) - smoothed(p + vec2i(0, step), step);
+    // Normal from the density's gradient smoothed at twice the blob scale (screen y
+    // points down, world y up): a surface that bulges smoothly over the particles
+    // instead of following each one, flattened deep inside so highlights stay at the
+    // surface. The depth below the surface from wider still (eight times): about 0 at
+    // the edge, 1 several blobs in.
+    let wide = 2 * step;
+    let gx = smoothed(p + vec2i(wide, 0), wide) - smoothed(p - vec2i(wide, 0), wide);
+    let gy = smoothed(p - vec2i(0, wide), wide) - smoothed(p + vec2i(0, wide), wide);
+    let depth = clamp((smoothed(p, 8 * step) - thr) / max(1.0 - thr, 0.05), 0.0, 1.0);
     let interior = clamp((d - thr) * 2.0, 0.0, 1.0);
-    let n = normalize(vec3f(-gx, -gy, 0.4 + 3.0 * interior));
+    let n = normalize(vec3f(-2.0 * gx, -2.0 * gy, 0.35 + 3.0 * interior));
     let light = normalize(vec3f(-0.45, 0.65, 0.6));
-    let diffuse = 0.8 + 0.2 * dot(n, light);
+    let diffuse = 0.75 + 0.25 * dot(n, light);
     let halfway = normalize(light + vec3f(0.0, 0.0, 1.0));
-    let spec = 0.45 * pow(max(dot(n, halfway), 0.0), 40.0);
+    let spec = 0.6 * pow(max(dot(n, halfway), 0.0), 80.0);
 
     // The fluid palette (linear; the surface is sRGB).
     let shallow = g.base.rgb;
@@ -111,8 +129,15 @@ fn fs_composite(@builtin(position) frag: vec4f) -> @location(0) vec4f {
     let foam = g.highlight.rgb;
     let sample = textureLoad(accum, p, 0);
     let speed = sample.g / max(sample.r, 1e-4);
-    var colour = mix(shallow, deep, interior);                                  // thicker reads darker
+    // The body: the base colour, deepening with depth, and toward the deep colour.
+    var colour = mix(pow(max(shallow, vec3f(1e-4)), vec3f(1.0 + BEER * depth)), deep, 0.5 * depth);
     colour = mix(colour, foam, 0.6 * clamp(speed / g.max_speed, 0.0, 1.0));     // fast water whitens
-    colour = mix(colour, foam, 0.3 * (1.0 - smoothstep(thr, thr + 0.25, d)));   // light rim at the surface
-    return vec4f(colour * diffuse + spec, alpha);
+    colour = mix(colour, foam, 0.25 * (1.0 - smoothstep(thr, thr + 0.25, d)));  // light rim at the surface
+    // Fresnel (Schlick): the reflection grows as the surface turns away from the view,
+    // so the rounded edges shine like a liquid's.
+    let fresnel = F0 + (1.0 - F0) * pow(1.0 - n.z, 5.0);
+    let reflected = vec3f(2.0 * n.z * n.x, 2.0 * n.z * n.y, 2.0 * n.z * n.z - 1.0);
+    colour = mix(colour * diffuse, environment(reflected), fresnel);
+    // Thin at the edge, a little see-through.
+    return vec4f(colour + spec, alpha * mix(0.8, 1.0, depth));
 }

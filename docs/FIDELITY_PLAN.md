@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **phases A to E done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
+Status: **phases A to F done** (2026-10-31); decisions 1 and 5 made, 2 to 4 open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -372,3 +372,32 @@ fidelity reel audited, against the run before, and its frame time measured.
     fixed it again.
   - **Checked:** 249 app tests (new: relief is read, kept to 0..1, written back, and
     needs a fluid) and clippy pass; the reel and the relief looks audited (no errors).
+- **Phase F, wet liquid (done):** `render/liquid.wgsl`.
+  - **The surface:** its normal from the splatted density's gradient smoothed at twice
+    the blob scale (it was the blob scale), so it bulges smoothly over the particles
+    instead of following each one; slopes drawn twice as steep, so the rounded edges
+    turn away from the view.
+  - **Fresnel** (Schlick, 4 % head on): the colour mixes toward what the surface
+    reflects (a sky in the palette's highlight, dimmed, fading to its deep colour below,
+    by the reflected ray's height) as the surface turns away, so edges, sheets and the
+    jet catch a glossy rim. A sharper highlight (Blinn, exponent 80).
+  - **Beer's law:** the depth below the surface (the density smoothed at eight times
+    the blob scale: 0 at the edge, 1 several blobs in) deepens the body: each channel
+    of the base colour raised to 1 + 2 × depth (darker and more saturated), and halfway
+    to the deep colour at full depth. Thin liquid at the edge is a little see-through
+    (alpha 0.8 to 1).
+  - **Left out: refraction.** The liquid is drawn into the scene over the backdrop and
+    the walls only (the feedback's picture is combined after), so there is next to
+    nothing behind it to bend; it would need the liquid drawn after the feedback.
+  - **By eye** (FLIP's fountain and PBF's dam break, no feedback, old shader against
+    new): the outlines are smooth where they were fizzy, the scattered specks are gone,
+    thin sheets and the jet are paler with a glossy rim, and the pool reads deeper
+    blue where it's thick. A settled pool changes little (its surface is a line).
+  - **The liquid looks** (Ocean pulse, Fountain of light, Slime pit, new against old):
+    sharpness 1.32 → 1.31, 1.00 → 1.02, 0.39 → 0.34; shimmer 0.06 → 0.06, 0.36 → 0.37,
+    – → –; frame rates within the runs' variation. All three run the liquid through
+    heavy feedback (and Ocean pulse a kaleidoscope), which the measures mostly see.
+  - **The reel** takes Ocean pulse in place of Quicksilver: Quicksilver draws its
+    particles as discs, not the liquid surface.
+  - **Checked:** 250 app tests (new: the liquid's and the field overlay's shaders
+    validate) and clippy pass; the liquid looks and the probes audited (no errors).

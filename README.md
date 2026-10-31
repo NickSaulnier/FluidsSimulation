@@ -71,7 +71,8 @@ bounces off its invisible edges. Gravity points any way, at any strength (in 3D,
 heading too).
 
 A grid solver's dye can be lit as a surface (a look's `relief`), its thickness the
-height, so ink and smoke have body.
+height, so ink and smoke have body. Particle fluids can be drawn as a continuous liquid
+surface: smooth, glossy at its edges (Fresnel), deeper in colour where it's thick.
 
 Tools: push, paint and erase walls (shaded, in the palette's colours, with a preview
 under the brush and Ctrl+Z to undo), a faucet. Fields (pressure,

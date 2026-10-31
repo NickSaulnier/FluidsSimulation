@@ -48,9 +48,9 @@ const TRACK_FROM_S: f32 = 30.0;
 const FULL_EVERY_S: f32 = 3.0;
 /// The fidelity reel: a dark smoke and a dark ink look (banding), long trails (banding
 /// in the fade, softening), a fractal dive (shimmer), fire in 2D and 3D (the tone
-/// curve, the raymarch's grain), and a particle liquid. None with film grain, which
+/// curve, the raymarch's grain), and a liquid surface. None with film grain, which
 /// the measures read as noise (it hides banding, as a dither does, and flickers).
-pub const REEL: [&str; 8] = ["Smoke dance", "Ink nebula", "Aurora", "Spiral galaxy", "Julia tunnel", "Firestorm", "Bonfire 3D", "Quicksilver"];
+pub const REEL: [&str; 8] = ["Smoke dance", "Ink nebula", "Aurora", "Spiral galaxy", "Julia tunnel", "Firestorm", "Bonfire 3D", "Ocean pulse"];
 
 pub struct Options {
     pub track: Option<PathBuf>,
