@@ -103,7 +103,10 @@ resolution in full screen if the simulation falls behind real time.
 - **Picture:** an HDR scene at a render scale, bloom, MilkDrop's feedback (zoom, turn,
   drift, wobble, echo, and trails that follow the fluid's own flow), waves and shapes
   drawn from the sound, and a composite (kaleidoscope and mirrors, hue, saturation,
-  contrast, palette mapping, invert, chromatic aberration, vignette, grain).
+  contrast, palette mapping, invert, chromatic aberration, vignette, grain). Highlights
+  roll off keeping their hue and pale toward white; hue turns and palette blends are
+  in OKLab, so they keep their lightness; the output is dithered, so gradients don't
+  band.
 - **Fractals:** Mandelbrot, Julia, Burning Ship, Tricorn and Newton, and in 3D the
   Mandelbulb and the Menger sponge (raymarched, behind the gas in 3D looks), in the
   look's colours, over the fluid or alone. They move with the music: a Julia set's shape

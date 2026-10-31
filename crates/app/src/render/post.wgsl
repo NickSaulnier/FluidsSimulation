@@ -4,7 +4,8 @@
 // textures (13-tap filter), then blurred back up level by level (3×3 tent), each level
 // added onto the one above. The composite folds the picture into its symmetry, adds the
 // echo and the bloom, tone-maps, then grades the colours (see composite.rs). During a
-// blend between looks it mixes in a still of the old picture.
+// blend between looks it mixes in a still of the old picture. Last, it dithers, so the
+// 8-bit target doesn't band.
 
 struct Post {
     // Brightness (linear) where glow starts, and the width of the soft start.
@@ -39,6 +40,11 @@ struct Post {
     blend: f32,
     blend_pattern: u32,
     blend_seed: f32,
+    // 1 to dither (an 8-bit target), 0 not.
+    dither: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
     deep: vec4f,
     base: vec4f,
     highlight: vec4f,
@@ -55,6 +61,8 @@ struct Post {
 /// Brightness up to here passes the tone curve unchanged, so ordinary colours look as
 /// they did before HDR; above it, highlights roll off smoothly toward 1.
 const TONE_KNEE: f32 = 0.85;
+/// How fast a compressed highlight turns toward white, per unit compressed.
+const TONE_WHITE: f32 = 0.4;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -121,15 +129,22 @@ fn fs_up(in: VOut) -> @location(0) vec4f {
     return vec4f(c / 16.0, 1.0);
 }
 
-/// Unchanged up to the knee, then Reinhard-style toward 1 (slower than an exponential,
-/// so bright fire keeps some gradation instead of going flat white).
-fn tone(x: f32) -> f32 {
-    if x <= TONE_KNEE {
-        return x;
+/// Unchanged while the brightest channel is under the knee; above it, that channel
+/// rolls off toward 1 (Reinhard-style: slower than an exponential, so bright fire keeps
+/// some gradation) and the others are scaled with it, so the hue and saturation stay;
+/// and the more it was compressed, the more it turns toward white (in OKLab, keeping
+/// the hue), as bright light does on film. After Khronos' PBR Neutral tone mapper (its compression is this curve),
+/// without its toe, so dark colours are untouched.
+fn tone(c: vec3f) -> vec3f {
+    let peak = max(c.r, max(c.g, c.b));
+    if peak <= TONE_KNEE {
+        return c;
     }
     let room = 1.0 - TONE_KNEE;
-    let over = x - TONE_KNEE;
-    return TONE_KNEE + over / (1.0 + over / room);
+    let new_peak = 1.0 - room * room / (peak - TONE_KNEE + room);
+    let white = 1.0 - 1.0 / (TONE_WHITE * (peak - new_peak) + 1.0);
+    // Toward white in OKLab, so the hue holds as the colour pales.
+    return max(from_oklab(mix(oklab(c * (new_peak / peak)), oklab(vec3f(new_peak)), white)), vec3f(0.0));
 }
 
 /// `uv` reflected back into the picture (beyond an edge, the picture mirrored), so a
@@ -172,24 +187,88 @@ fn luma(c: vec3f) -> f32 {
     return dot(c, vec3f(0.2126, 0.7152, 0.0722));
 }
 
-/// `c` turned `angle` radians round the grey axis (Rodrigues' rotation).
-fn hue_turn(c: vec3f, angle: f32) -> vec3f {
-    let k = vec3f(0.57735027);
-    let s = sin(angle);
-    let co = cos(angle);
-    return c * co + cross(k, c) * s + k * dot(k, c) * (1.0 - co);
+/// Linear sRGB to OKLab (Ottosson, 2020): lightness, then two opponent axes, so equal
+/// steps look about equal and a turn of the hue keeps the lightness.
+fn oklab(c: vec3f) -> vec3f {
+    let lms = vec3f(
+        dot(c, vec3f(0.4122214708, 0.5363325363, 0.0514459929)),
+        dot(c, vec3f(0.2119034982, 0.6806995451, 0.1073969566)),
+        dot(c, vec3f(0.0883024619, 0.2817188376, 0.6299787005)),
+    );
+    let l = pow(max(lms, vec3f(0.0)), vec3f(1.0 / 3.0));
+    return vec3f(
+        dot(l, vec3f(0.2104542553, 0.7936177850, -0.0040720468)),
+        dot(l, vec3f(1.9779984951, -2.4285922050, 0.4505937099)),
+        dot(l, vec3f(0.0259040371, 0.7827717662, -0.8086757660)),
+    );
 }
 
-/// Brightness (0..1) onto the palette: black, deep, base, highlight.
+fn from_oklab(lab: vec3f) -> vec3f {
+    let l = vec3f(
+        dot(lab, vec3f(1.0, 0.3963377774, 0.2158037573)),
+        dot(lab, vec3f(1.0, -0.1055613458, -0.0638541728)),
+        dot(lab, vec3f(1.0, -0.0894841775, -1.2914855480)),
+    );
+    let lms = l * l * l;
+    return vec3f(
+        dot(lms, vec3f(4.0767416621, -3.3077115913, 0.2309699292)),
+        dot(lms, vec3f(-1.2684380046, 2.6097574011, -0.3413193965)),
+        dot(lms, vec3f(-0.0041960863, -0.7034186147, 1.7076147010)),
+    );
+}
+
+/// `c` with its hue turned `angle` radians in OKLCH (red toward yellow, green, blue),
+/// its lightness and chroma kept.
+fn hue_turn(c: vec3f, angle: f32) -> vec3f {
+    let lab = oklab(c);
+    let s = sin(angle);
+    let co = cos(angle);
+    return from_oklab(vec3f(lab.x, lab.y * co - lab.z * s, lab.y * s + lab.z * co));
+}
+
+/// Brightness (0..1) onto the palette: black, deep, base, highlight, blended in OKLab.
 fn gradient(l: f32) -> vec3f {
     let t = clamp(l, 0.0, 1.0) * 3.0;
-    if t < 1.0 {
-        return mix(vec3f(0.0), post.deep.rgb, t);
+    var a = vec3f(0.0);
+    var b = post.deep.rgb;
+    var f = t;
+    if t >= 2.0 {
+        a = post.base.rgb;
+        b = post.highlight.rgb;
+        f = t - 2.0;
+    } else if t >= 1.0 {
+        a = post.deep.rgb;
+        b = post.base.rgb;
+        f = t - 1.0;
     }
-    if t < 2.0 {
-        return mix(post.deep.rgb, post.base.rgb, t - 1.0);
-    }
-    return mix(post.base.rgb, post.highlight.rgb, t - 2.0);
+    return max(from_oklab(mix(oklab(a), oklab(b), f)), vec3f(0.0));
+}
+
+/// Linear light to sRGB's encoding, and back.
+fn encode(c: vec3f) -> vec3f {
+    return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055, 12.92 * c, c <= vec3f(0.0031308));
+}
+
+fn decode(s: vec3f) -> vec3f {
+    return select(pow((s + 0.055) / 1.055, vec3f(2.4)), s / 12.92, s <= vec3f(0.04045));
+}
+
+/// Interleaved gradient noise (Jimenez, 2014): 0..1, spread evenly over neighbouring
+/// pixels, so it reads as a fine, even grain rather than clumps.
+fn ign(p: vec2f) -> f32 {
+    return fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715))));
+}
+
+/// `c` (linear, 0..1) dithered for an 8-bit sRGB target: in the target's encoding,
+/// triangular noise of about a level each way (two noises, the frame's own offsets, so
+/// it moves and averages out), then back to linear for the target to encode. Black
+/// stays black.
+fn dither(c: vec3f, p: vec2f) -> vec3f {
+    let frame = post.seed / 1.618;
+    let n = ign(p + 5.588238 * frame) + ign(p + vec2f(37.0, 17.0) + 5.588238 * (frame + 0.5)) - 1.0;
+    let s = encode(c);
+    let dithered = clamp(s + post.dither * n / 255.0, vec3f(0.0), vec3f(1.0));
+    return select(decode(dithered), c, s <= vec3f(0.0));
 }
 
 /// A pseudo-random number in 0..1 for a pixel and a seed.
@@ -248,7 +327,7 @@ fn old_picture(uv: vec2f, amount: f32) -> vec3f {
 }
 
 /// The picture folded into its symmetry, with chromatic aberration and its echo, plus
-/// bloom, tone-mapped per channel (bright fire goes white, as it should), then graded.
+/// bloom, tone-mapped (bright fire turning white, as it should), graded, then dithered.
 @fragment
 fn fs_composite(in: VOut) -> @location(0) vec4f {
     let uv = fold(in.uv);
@@ -270,7 +349,7 @@ fn fs_composite(in: VOut) -> @location(0) vec4f {
     }
     let glow = textureSampleLevel(bloom, linear_clamp, uv, 0.0).rgb;
     let lit = max(scene + post.strength * glow, vec3f(0.0));
-    var c = vec3f(tone(lit.r), tone(lit.g), tone(lit.b));
+    var c = tone(lit);
 
     // Grading, on the tone-mapped colours (each step leaves them alone at its default).
     if post.hue != 0.0 {
@@ -300,5 +379,5 @@ fn fs_composite(in: VOut) -> @location(0) vec4f {
     if post.blend < 1.0 {
         c = mix(old_picture(in.uv, post.blend), c, blend_mask(in.uv, post.blend));
     }
-    return vec4f(c, 1.0);
+    return vec4f(dither(c, in.pos.xy), 1.0);
 }

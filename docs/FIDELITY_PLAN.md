@@ -1,6 +1,6 @@
 # Fidelity Plan
 
-Status: **phase A done** (2026-10-31); decisions open (§4). A sharper, cleaner
+Status: **phases A and B done** (2026-10-31); decision 1 made, 2 to 5 open (§4). A sharper, cleaner
 picture: fewer artefacts (banding, blur, shimmer), truer colour, and more detail in the
 fluids, at the frame rates we have now. Grouped into phases; each phase is committed on
 its own.
@@ -132,11 +132,12 @@ What's on screen in full screen should hold up close on a large display:
   display, with the tone curve mapping to the display's peak instead of to white
   (decision 2).
 
-## 4. Decisions (open)
+## 4. Decisions (1 made)
 
-1. **The tone curve (§3.2):** it changes every look's colours a little. Recommended: on
-   brightness with a controlled bleed to white, compared side by side on the contact
-   sheet against today's before switching; looks retuned only where they suffer.
+1. **The tone curve (§3.2):** the same compression, on the brightest channel instead of
+   each, with a gradual turn toward white (Khronos' PBR Neutral, without its toe), so
+   colours under the knee are as they were; compared on the reel's fire looks before
+   switching (see phase B in §6). No look needed retuning.
 2. **HDR output (§3.8):** in scope? It needs an HDR display to see and to test.
    Recommended: last, if the user has one.
 3. **Which fluids move to the GPU (§3.5):** Smoke & fire is the largest single piece of
@@ -216,3 +217,50 @@ fidelity reel audited, against the run before, and its frame time measured.
     frames, sharpness tells sharp from soft and noise, shimmer finds flickering detail
     and not still or smoothly moving pictures) and clippy pass; the reel audited
     (above, no errors).
+- **Phase B, output (done):** `render/post.wgsl`, `render/post.rs`, `render/palette.rs`.
+  - **Found on the way:** today's tone curve was already Khronos PBR Neutral's
+    compression (knee at 0.85, the same Reinhard-style roll-off), applied to each channel
+    on its own; that's what turned bright orange toward yellow.
+  - **The tone curve:** applied to the brightest channel, the others scaled with it (hue
+    and saturation kept), then turned toward white by how much it was compressed
+    (`1 - 1 / (0.4 × compressed + 1)`), the turn made in OKLab so the hue holds as it
+    pales (mixed in RGB, an orange went pink). Colours whose brightest channel is under
+    the knee are untouched, as before. Checked: an orange at 1.5 keeps its OKLab hue
+    within 4°; one at 12 comes out a warm white. On the reel, Bonfire 3D's cores are
+    peach-white with orange edges instead of yellow-white; Firestorm, less bright,
+    looks the same.
+  - **OKLab and OKLCH:** the composite's hue turn (harmony's, the hue drift, the Hue
+    setting) turns in OKLCH, keeping lightness and chroma (a red turned 120° is a green
+    as light, not the brighter green of before); the palette map blends deep, base and
+    highlight in OKLab; the reactions' palette hue shift (`Palette::modulated`) turns in
+    OKLCH on the CPU instead of HSV. The CPU colour maps for fields and the dye ramp
+    (`render/colormap.rs`, blended in sRGB, close to perceptual already) are as they
+    were.
+  - **Dithering:** the last step of the composite: in the target's sRGB encoding,
+    triangular noise of about a level each way (two interleaved-gradient noises at the
+    frame's offsets, so it moves and averages out), then back to linear for the target
+    to encode. Black stays black. Only into an 8-bit target (the screen, screenshots,
+    recordings, thumbnails); float targets (the GPU tests) aren't. Interleaved gradient
+    noise rather than a blue-noise texture: no texture to make or bind, and as even.
+  - **The measures** now ignore detail, and changes, under a level and a half: the
+    dither's noise had read as detail (sharpness up to 7) and flicker. So the baseline
+    below replaces phase A's for sharpness and shimmer; banding is measured as before.
+  - **The reel after** (banding against phase A's):
+
+    | Look | Quality | Banding (was) | Sharpness | Shimmer |
+    |---|---|---|---|---|
+    | Smoke dance | 100 | 0.3 % (37 %) | 0.07 | 0.00 |
+    | Ink nebula | 100 | 0.1 % (9 %) | 0.61 | 0.00 |
+    | Aurora | 94 | 0.1 % (64 %) | 0.85 | 0.00 |
+    | Spiral galaxy | 97 | 0.5 % (48 %) | 0.70 | 0.02 |
+    | Julia tunnel | 100 | 0.2 % (19 %) | 3.25 | 0.81 |
+    | Firestorm | 95 | 0.1 % (21 %) | 0.16 | – |
+    | Bonfire 3D | 100 | 0.1 % (45 %) | 0.04 | – |
+    | Quicksilver | 100 | 0.0 % (10 %) | 0.64 | 0.16 |
+
+    Banding is gone; the Julia dive still shimmers (phase D); sharpness is low for the
+    smooth fluids, as they are (phase C will show whether the feedback softens them).
+  - **Checked:** 246 app tests (new: the tone curve keeps an orange's hue and whitens a
+    blazing one; into an 8-bit target a dark gradient comes out without terraces and
+    black stays black; changed: a hue turn keeps the lightness, in the composite and on
+    the CPU) and clippy pass; the reel audited (above, no errors).

@@ -25,7 +25,7 @@ const MIN_LEVEL: u32 = 8;
 const AUTO_FULL_PIXELS: u32 = 2560 * 1440;
 const AUTO_SCALE: f32 = 0.75;
 
-/// Must match `Post` in post.wgsl (144 bytes).
+/// Must match `Post` in post.wgsl (160 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
@@ -52,13 +52,16 @@ struct Uniforms {
     blend: f32,
     blend_pattern: u32,
     blend_seed: f32,
+    /// 1 to dither (for an 8-bit target), 0 not.
+    dither: f32,
+    _pad: [f32; 3],
     deep: [f32; 4],
     base: [f32; 4],
     highlight: [f32; 4],
 }
 
 impl Uniforms {
-    fn new(strength: f32, echo: Echo, aspect: f32, c: &Composite) -> Self {
+    fn new(strength: f32, echo: Echo, aspect: f32, c: &Composite, dither: bool) -> Self {
         let s = &c.settings;
         Self {
             threshold: THRESHOLD,
@@ -84,6 +87,8 @@ impl Uniforms {
             blend: c.blend.amount.clamp(0.0, 1.0),
             blend_pattern: c.blend.pattern.index(),
             blend_seed: c.blend.seed,
+            dither: f32::from(u8::from(dither)),
+            _pad: [0.0; 3],
             deep: composite::linear(c.palette.deep),
             base: composite::linear(c.palette.base),
             highlight: composite::linear(c.palette.highlight),
@@ -301,7 +306,9 @@ impl PostProcess {
     ) {
         let t = self.targets.as_ref().expect("scene_target first");
         let aspect = t.size[0] as f32 / t.size[1].max(1) as f32;
-        let uniforms = Uniforms::new(strength, echo, aspect, composite);
+        // Only a target of 8 bits a channel bands (a float one, in tests, doesn't).
+        let dither = matches!(self.output.remove_srgb_suffix(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm);
+        let uniforms = Uniforms::new(strength, echo, aspect, composite, dither);
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         if strength > 0.0 {
             let prefilter = self.group(device, source, &self.blank, &self.blank);
@@ -465,7 +472,9 @@ pub(crate) mod tests {
         let g = grey[0];
         assert!(close(g[0], g[1], 2e-3) && close(g[1], g[2], 2e-3), "saturation 0 isn't grey: {g:?}");
         let turned = render(&|_, _| [0.5, 0.0, 0.0], CompositeSettings { hue: 120.0, ..off })[0];
-        assert!(close(turned[0], 0.0, 0.01) && close(turned[1], 0.5, 0.01) && close(turned[2], 0.0, 0.01), "red turned 120° isn't green: {turned:?}");
+        // In OKLCH: green, as light as the red was.
+        let lightness = |c: [f32; 4]| crate::render::palette::oklab([c[0], c[1], c[2]])[0];
+        assert!(turned[1] > 4.0 * turned[0].max(turned[2]) && close(lightness(turned), lightness([0.5, 0.0, 0.0, 1.0]), 0.03), "red turned 120° isn't green: {turned:?}");
         let inverted = render(&|_, _| [0.2; 3], CompositeSettings { invert: 1.0, ..off })[0];
         assert!(close(inverted[0], 0.8, 2e-3), "0.2 inverted: {inverted:?}");
         let vignetted = render(&|_, _| [0.5; 3], CompositeSettings { vignette: 1.0, ..off });
@@ -475,6 +484,61 @@ pub(crate) mod tests {
         let highlight = crate::render::composite::linear(palette.highlight);
         let white = at(&ramp, 60, 10);
         assert!(at(&ramp, 4, 10)[0] < 1e-3 && (0..3).all(|c| close(white[c], highlight[c], 0.02)), "palette map: black {:?}, white {white:?} (highlight {highlight:?})", at(&ramp, 4, 10));
+
+        // The tone curve keeps a bright colour's hue (an orange stays orange, not
+        // yellow), and turns a very bright one toward white.
+        let hue = |c: [f32; 4]| {
+            let [_, a, b] = crate::render::palette::oklab([c[0], c[1], c[2]]);
+            b.atan2(a).to_degrees()
+        };
+        let orange = [1.5, 0.5, 0.1];
+        let toned = render(&|_, _| orange, off)[0];
+        assert!(toned[0] < 1.0 && (hue(toned) - hue([orange[0], orange[1], orange[2], 1.0])).abs() < 4.0, "orange toned to {toned:?}");
+        let blazing = render(&|_, _| [12.0, 4.0, 0.8], off)[0];
+        assert!(blazing[2] > 0.5 && blazing[0] <= 1.0, "a blazing orange toned to {blazing:?}");
+    }
+
+    /// Into an 8-bit target the composite dithers: a dark gradient comes out without the
+    /// terraces 8 bits would give it, and black stays black.
+    #[test]
+    fn dithering_smooths_a_dark_gradient() {
+        let gpu = match sim3d::GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => return eprintln!("skipping: {e:#}"),
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut post = PostProcess::new(device, format);
+        let size = [256u32, 64];
+        let scene = post.scene_target(device, size);
+        let data: Vec<half_float::F16x4> = (0..size[1])
+            .flat_map(|y| (0..size[0]).map(move |x| (x, y)))
+            .map(|(x, _)| half_float::F16x4::grey(if x < 16 { 0.0 } else { 0.002 + 0.01 * x as f32 / 256.0 }))
+            .collect();
+        queue.write_texture(
+            scene.texture().as_image_copy(),
+            bytemuck::cast_slice(&data),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: None },
+            wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+        );
+        let mut grabber = crate::render::grab::Grabber::default();
+        let view = grabber.begin(device, size, format, ()).expect("a free slot");
+        let mut encoder = device.create_command_encoder(&Default::default());
+        post.run(device, queue, &mut encoder, &scene, &view, 0.0, Echo::NONE, &Composite::NONE, None);
+        grabber.end(&mut encoder);
+        queue.submit([encoder.finish()]);
+        let mut image = None;
+        for _ in 0..100 {
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            if let Some((_, i)) = grabber.poll(device).pop() {
+                image = Some(i);
+                break;
+            }
+        }
+        let image = image.expect("the frame came back");
+        let banding = crate::render::score::fidelity(&image).banding;
+        let black = (0..size[1] as usize).all(|y| (0..12).all(|x| image.rgba[(y * size[0] as usize + x) * 4..][..3] == [0, 0, 0]));
+        assert!(banding < 0.25 && black, "banding {banding}, black kept {black}");
     }
 
     /// Blends on a headless GPU: a captured still shows at the start and the new picture

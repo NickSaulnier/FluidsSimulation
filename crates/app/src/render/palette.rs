@@ -99,32 +99,46 @@ impl Palette {
     }
 }
 
-/// Rotate a colour's hue (HSV) by `deg`, keeping saturation and value.
+/// Rotate a colour's hue by `deg` in OKLCH (red toward yellow, green, blue), keeping
+/// its lightness and chroma, so a turning palette doesn't pulse in brightness; a colour
+/// the turn takes outside sRGB is clipped back in.
 fn rotate_hue(c: [u8; 3], deg: f32) -> [u8; 3] {
-    let [r, g, b] = c.map(|v| f32::from(v) / 255.0);
-    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-    let delta = max - min;
-    if delta <= 0.0 {
-        return c;
-    }
-    let hue = if max == r {
-        60.0 * ((g - b) / delta).rem_euclid(6.0)
-    } else if max == g {
-        60.0 * ((b - r) / delta + 2.0)
-    } else {
-        60.0 * ((r - g) / delta + 4.0)
+    let lin = |v: u8| {
+        let s = f32::from(v) / 255.0;
+        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
     };
-    let h = (hue + deg).rem_euclid(360.0) / 60.0;
-    let x = delta * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
-    let (r1, g1, b1) = match h as u32 {
-        0 => (delta, x, 0.0),
-        1 => (x, delta, 0.0),
-        2 => (0.0, delta, x),
-        3 => (0.0, x, delta),
-        4 => (x, 0.0, delta),
-        _ => (delta, 0.0, x),
+    let [l, a, b] = oklab(c.map(lin));
+    let (sin, cos) = deg.to_radians().sin_cos();
+    let rgb = from_oklab([l, a * cos - b * sin, a * sin + b * cos]);
+    let encode = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        let s = if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0).round() as u8
     };
-    [r1, g1, b1].map(|v| ((v + min) * 255.0).round().clamp(0.0, 255.0) as u8)
+    rgb.map(encode)
+}
+
+/// Linear sRGB to OKLab (Ottosson, 2020), and back.
+pub fn oklab([r, g, b]: [f32; 3]) -> [f32; 3] {
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b).max(0.0).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).max(0.0).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).max(0.0).cbrt();
+    [
+        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    ]
+}
+
+pub fn from_oklab([l, a, b]: [f32; 3]) -> [f32; 3] {
+    let l_ = (l + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
+    let m_ = (l - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
+    let s_ = (l - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+    [
+        4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_94 * s_,
+        -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_38 * s_,
+        -0.004_196_086_3 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_,
+    ]
 }
 
 /// How long a palette takes to ease most of the way to a new one, seconds.
@@ -244,8 +258,17 @@ mod tests {
     fn modulation_rotates_hue_and_lightens() {
         let p = Palette::default();
         assert_eq!(p.modulated(0.0, 0.0), p);
-        assert_eq!(rotate_hue([255, 0, 0], 120.0), [0, 255, 0]);
         assert_eq!(rotate_hue([128, 128, 128], 90.0), [128, 128, 128], "grey has no hue");
+        // An orange turned a little keeps its lightness (in OKLab), and goes toward
+        // yellow one way and red the other.
+        let lightness = |c: [u8; 3]| oklab(Palette { deep: c, base: c, highlight: c }.linear()[0][..3].try_into().unwrap())[0];
+        let orange = [230, 120, 40];
+        for deg in [-40.0, 40.0] {
+            assert!((lightness(rotate_hue(orange, deg)) - lightness(orange)).abs() < 0.02, "{deg}: {:?}", rotate_hue(orange, deg));
+        }
+        assert!(rotate_hue(orange, 30.0)[1] > orange[1] && rotate_hue(orange, -30.0)[1] < orange[1]);
+        let round = from_oklab(oklab([0.2, 0.5, 0.8]));
+        assert!(round.iter().zip([0.2, 0.5, 0.8]).all(|(a, b)| (a - b).abs() < 1e-4), "{round:?}");
         let full_turn = p.modulated(360.0, 0.0);
         assert!(full_turn.base.iter().zip(p.base).all(|(a, b)| a.abs_diff(b) <= 1));
         let flashed = p.modulated(0.0, 1.0);

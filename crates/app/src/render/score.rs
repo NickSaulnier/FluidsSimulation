@@ -23,7 +23,9 @@
 //!   background has none (no step), nor has a dithered or noisy gradient (no runs).
 //! - **Sharpness:** the fine detail (each pixel's luma less its 3 × 3 neighbourhood's
 //!   mean) over the same at a quarter of the size, times 4: about 1 for sharp edges,
-//!   well under for a soft picture (the fine scale empty), over 1 for noise.
+//!   well under for a soft picture (the fine scale empty), over 1 for noise. Detail of
+//!   under a level and a half (`DITHER`) doesn't count, nor does a change that small
+//!   for shimmer: the output's dither isn't detail.
 //! - **Shimmer:** between two frames in a row, how much the fine detail changes where
 //!   the coarse picture (the neighbourhood means) hardly moves, over how much fine
 //!   detail is there: about 0 for a still or smoothly moving picture, toward 1 and over
@@ -55,6 +57,9 @@ const TERRACE_STEP: u8 = 2;
 const STILL: f32 = 2.0 / 255.0;
 const SOME_DETAIL: f32 = 2.0 / 255.0;
 const SHIMMER_SHARE: f32 = 0.01;
+/// Fine detail, and its change, count only beyond this (luma): a dither's noise of a
+/// level or so isn't detail.
+const DITHER: f32 = 1.5 / 255.0;
 
 /// One frame's measures.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -172,7 +177,7 @@ pub fn fidelity(image: &Image) -> Fidelity {
     let quarter = shrink(&y, w, h, 4);
     let fine = |l: &[f32], w: usize, h: usize| {
         let mean = box3(l, w, h);
-        l.iter().zip(&mean).map(|(a, b)| (a - b).abs()).sum::<f32>() / l.len().max(1) as f32
+        l.iter().zip(&mean).map(|(a, b)| ((a - b).abs() - DITHER).max(0.0)).sum::<f32>() / l.len().max(1) as f32
     };
     let coarse = fine(&quarter, w / 4, h / 4);
     let sharpness = if coarse > 1e-5 { 4.0 * fine(&y, w, h) / coarse } else { 0.0 };
@@ -192,7 +197,7 @@ pub fn shimmer(a: &Image, b: &Image) -> Option<f32> {
     for i in 0..w * h {
         let (fa, fb) = (ya[i] - ma[i], yb[i] - mb[i]);
         if (ma[i] - mb[i]).abs() < STILL && fa.abs() >= SOME_DETAIL {
-            change += (fb - fa).abs();
+            change += ((fb - fa).abs() - DITHER).max(0.0);
             detail += fa.abs();
             counted += 1;
         }
