@@ -82,6 +82,11 @@ resolution in full screen if the simulation falls behind real time.
 - Reactions map triggers (kick, snare, hat, beat, bands, level, brightness) to effects
   on the fluid (splash, jet, vortex, gust, slosh, breathe, flash, hue, or any solver
   parameter).
+- The song's shape: an energy, from how loud the song is now against its own quiet and
+  loud parts, lifted through a build-up and full after a drop. Every look follows it
+  (as much as its `dynamics` says): gentler reactions, slower motion and dimmer colour
+  through a breakdown, a zoom creeping in through a build-up, a flash and a burst at
+  the drop. Equations read it as `energy`.
 
 ### The visualizer
 

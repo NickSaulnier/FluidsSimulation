@@ -59,6 +59,12 @@ struct Meta {
     tags: Vec<String>,
     #[serde(default)]
     energy: EnergyDoc,
+    #[serde(default = "full")]
+    dynamics: f32,
+}
+
+fn full() -> f32 {
+    1.0
 }
 
 #[derive(Deserialize, Default)]
@@ -273,6 +279,7 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
             EnergyDoc::Energetic => Energy::Energetic,
             EnergyDoc::Any => Energy::Any,
         },
+        dynamics: meta.dynamics.clamp(0.0, 1.0),
         solver,
         scene,
         palette,
@@ -306,7 +313,11 @@ pub fn write(look: &Look) -> String {
         Energy::Energetic => "energetic",
         Energy::Any => "any",
     };
-    let _ = writeln!(out, "energy = {}\n\n[sim]", text(energy));
+    let _ = writeln!(out, "energy = {}", text(energy));
+    if look.dynamics != 1.0 {
+        let _ = writeln!(out, "dynamics = {}", value(toml::Value::Float(f64::from(look.dynamics))));
+    }
+    let _ = writeln!(out, "\n[sim]");
     if look.has_fluid() {
         let _ = writeln!(out, "solver = {}\nscene = {}", text(&look.solver), text(&look.scene));
     }

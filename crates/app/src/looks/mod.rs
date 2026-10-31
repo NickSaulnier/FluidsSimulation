@@ -9,6 +9,7 @@
 //! A look naming a 3D solver (`sim3d::SOLVERS`) is a 3D look: its scene is a 3D preset,
 //! and the camera orbits at its `orbit` speed.
 
+pub mod dynamics;
 mod file;
 pub mod milk;
 pub mod random;
@@ -131,6 +132,8 @@ pub struct Look {
     pub author: String,
     pub tags: Vec<String>,
     pub energy: Energy,
+    /// How much it follows the song's shape (see `dynamics`): 1 fully, 0 not at all.
+    pub dynamics: f32,
     pub solver: String,
     pub scene: String,
     pub palette: Palette,

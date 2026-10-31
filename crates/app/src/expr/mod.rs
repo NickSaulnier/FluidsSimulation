@@ -43,6 +43,7 @@ pub const INPUTS: &[&str] = &[
     "time", "frame", "fps", "dt", "aspect", "bass", "mid", "treb", "bass_att", "mid_att", "treb_att", "band_sub", "band_bass",
     "band_lowmid", "band_mid", "band_high", "level", "brightness", "loudness", "kick", "snare", "hat", "beat", "beat_phase",
     "bar_phase", "bpm", "beating", "silent", "novelty", "buildup", "section", "drop", "breakdown",
+    "energy",
 ];
 /// The warp, per second: zoom (1 none), rotation (radians), shift (`dx`, `dy`: screen
 /// heights, y up), the centre of zoom and rotation (`cx`, `cy`: 0..1, y up), stretch

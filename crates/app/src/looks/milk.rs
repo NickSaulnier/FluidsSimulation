@@ -210,6 +210,7 @@ pub fn convert(text: &str, stem: &str) -> Result<Imported, String> {
         author,
         tags: vec!["milkdrop".into(), "no fluid".into()],
         energy: Energy::Any,
+        dynamics: 1.0,
         solver: String::new(),
         scene: String::new(),
         palette,

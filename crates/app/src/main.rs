@@ -684,6 +684,7 @@ impl State {
             author: current.as_ref().map_or_else(String::new, |l| l.author.clone()),
             tags: current.as_ref().map_or_else(Vec::new, |l| l.tags.clone()),
             energy: current.as_ref().map_or(looks::Energy::Any, |l| l.energy),
+            dynamics: current.as_ref().map_or(1.0, |l| l.dynamics),
             solver,
             scene,
             palette: self.ui.palette,
@@ -1281,8 +1282,13 @@ impl State {
         // The look's equations, from its settings as they stand and the music.
         let sound = looks::runtime::Sound { features: self.music.features(), onsets: self.music.onsets(), beats: self.music.beat_count() };
         let aspect = self.gpu.config.width as f32 / self.gpu.config.height.max(1) as f32;
+        // The song's shape, which every look follows (see `looks::dynamics`).
+        let shape = looks::dynamics::Shape::new(self.music.features(), self.applied_look.as_ref().map_or(1.0, |l| l.dynamics));
         // The fractal's own movement first, so the equations can still override it.
         let mut waves = self.ui.waves;
+        if let Some(shape) = shape {
+            waves.fractal.dive *= shape.dive();
+        }
         let music = self.music.features().map_or(render::fractal::Music::QUIET, |f| render::fractal::Music {
             bass: f.milk.bass_att,
             level: f.level,
@@ -1291,6 +1297,9 @@ impl State {
         });
         waves.fractal = self.fractal_motion.apply(&waves.fractal, &music, self.frame_dt);
         self.look_frame = self.look_runtime.step(&self.ui.feedback, &waves, &self.ui.composite, sound, self.frame_dt, aspect);
+        if let Some(shape) = shape {
+            shape.apply(&mut self.look_frame);
+        }
         self.composite_clock.advance(&self.look_frame.composite, self.frame_dt);
         self.waves.update(&self.waveform, &self.look_frame.waves, self.frame_dt);
         self.art.update(&self.look_frame.waves.art, self.frame_dt);

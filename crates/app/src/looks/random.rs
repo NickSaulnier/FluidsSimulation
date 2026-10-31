@@ -261,6 +261,7 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
         author: AUTHOR.to_string(),
         tags: vec!["random".to_string(), if fluid { "fluid" } else { "no fluid" }.to_string()],
         energy: Energy::Any,
+        dynamics: 1.0,
         solver: solver.to_string(),
         scene: scene.to_string(),
         palette: random_palette(d),

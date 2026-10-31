@@ -1,6 +1,6 @@
 # Visuals Plan
 
-Status: **phases A to C done** (2026-10-30); decisions 3 to 5 open (§4). Better pictures and a closer
+Status: **phases A to D done** (2026-10-30); decisions 4 and 5 open (§4). Better pictures and a closer
 fit to the music, now that visualizing music is the app's main purpose. Grouped into
 phases; each phase is committed on its own.
 
@@ -130,7 +130,7 @@ Each gets a built-in look or two, and joins the randomizer's scenes.
 - **The randomizer** makes variants of its own looks (as Shift+D does, kept with the
   look), and the editor lists them.
 
-## 4. Decisions (1 and 2 made)
+## 4. Decisions (1 to 3 made)
 
 1. **Which solvers and scenes go:** decided from the contact sheet (phase A) and the
    user's eye. Gone from the visualizer: the MPM fluids, FLIP outside the fountain, the
@@ -138,8 +138,8 @@ Each gets a built-in look or two, and joins the randomizer's scenes.
    chaotic looks of their own on them).
 2. **Their built-in looks:** moved where the look is good apart from its fluid, dropped
    otherwise (see phase B in §6).
-3. **Intensity for every look:** on by default for all looks (recommended), or only for
-   looks that ask for it?
+3. **Intensity for every look:** on for every look (the user's choice); a look can turn
+   it down or off with its `dynamics`.
 4. **Harmony (§3.6):** in scope? It's new analysis (chroma), and the most uncertain to
    look good. Recommended: yes, as a late phase, off by default.
 5. **Variants (§3.7):** in scope? Recommended: yes, last.
@@ -276,3 +276,37 @@ before.
     bar) and the workspace's pass, clippy clean; the four looks audited on the anthem and
     the drum loop; 16 seeded random looks (three on the new scenes, 99 to 100; the two
     weak ones are on the campfire, as before).
+- **Phase D, the song's shape (done):** `audio/dynamics.rs` (the energy) and
+  `looks/dynamics.rs` (what it moves).
+  - **Names:** the plan's song intensity is the **energy** (the equation input
+    `energy`, and `AudioFeatures::energy`), and a look's own amount is **`dynamics`**
+    (in `[meta]`, 0 to 1, default 1), because `intensity` already names the equation
+    output that scales the reactions.
+  - **The energy,** worked out by the analyzer each hop: the momentary loudness through
+    an envelope (rising over 0.3 s, falling over 1.5 s), against the song's own quiet and
+    loud (the 10 % and 95 % quantiles of that envelope over the last 90 s, at least 8 dB
+    apart). For the first 30 s of a song the range means little (the intro is the
+    loudest part so far), so it starts at the neutral 0.7 and eases over. On top: a
+    build-up adds up to 0.35, a drop fills it (fading over 8 s), a breakdown halves it
+    (recovering over 8 s). Silence lets it fall and forgets the range, so each song is
+    measured on its own. On the generated anthem it rises through the build-up, is 1
+    just after each drop and about 0.9 through it, about 0 through the whole breakdown,
+    and climbs into the second drop; steady clips sit at 0.75 to 0.9. Analysing still
+    allocates nothing (the range is sorted into a kept buffer, once per sample).
+  - **What it moves,** after the look's equations, every frame, scaled by the look's
+    `dynamics`; at 0.7 a look is exactly as set, and without music nothing changes:
+    the reactions' strength (0.4 to 1.25 times), the feedback's motion (zoom growth,
+    turn, shift, wobble: 0.35 to 1.3), exposure (0.75 to 1.1), saturation (0.7 to 1.15),
+    wave thickness (0.6 to 1.3) and a fractal's dive speed (0.4 to 1.3). Through a
+    build-up the zoom creeps in (up to 12 % more growth a second), the picture brightens
+    and the reactions strengthen; at a drop, for about half a second, a flash (exposure
+    up to 1.6 times) and a burst (the reactions 2.5 times), on whichever look the drop
+    cuts to. Bloom isn't moved: it's the user's setting, not the look's (exposure does
+    the brightening).
+  - **Not done:** the plan's "the fluid quickening" through a build-up is the stronger
+    reactions, not a faster simulation (changing the simulation's speed would change its
+    stability).
+  - **Checked:** 237 app tests (new: a breakdown stays low, the song's shape moves the
+    energy, silence forgets the song; the energy calms and livens a look, build-ups and
+    drops) and clippy pass; the energy printed over the generated songs and the drum
+    clips. The contact sheet wasn't run again for this phase (at the user's word).

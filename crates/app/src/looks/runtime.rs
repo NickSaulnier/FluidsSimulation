@@ -179,6 +179,7 @@ impl Runtime {
         set("silent", f32::from(u8::from(f.silent)));
         set("novelty", f.sections.novelty);
         set("buildup", f.sections.buildup);
+        set("energy", f.energy);
         for (name, v) in ["section", "drop", "breakdown"].into_iter().zip(self.section_pulses) {
             set(name, v);
         }

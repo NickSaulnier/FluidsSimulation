@@ -8,6 +8,7 @@
 //! background thread so a long track doesn't freeze the window.
 
 pub mod analyzer;
+pub mod dynamics;
 #[cfg(test)]
 pub mod eval;
 pub mod live;

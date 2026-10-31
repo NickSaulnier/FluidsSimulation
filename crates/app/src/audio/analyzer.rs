@@ -43,6 +43,7 @@
 //! Times are seconds since the analyzer started, at the centre of each analysis window
 //! (where a hit's energy rise is detected).
 
+use super::dynamics::Dynamics;
 use super::sections::{self, SectionTracker, Sections};
 use super::tempo::{Beat, BeatTracker, MusicalTime};
 use realfft::num_complex::Complex32;
@@ -170,6 +171,9 @@ pub struct AudioFeatures {
     pub musical: MusicalTime,
     /// Section changes and build-ups (see `sections`).
     pub sections: Sections,
+    /// The song's energy: how loud it is now against its own range, with its build-ups,
+    /// drops and breakdowns, 0..1 (see `dynamics`).
+    pub energy: f32,
 }
 
 impl Default for AudioFeatures {
@@ -190,6 +194,7 @@ impl Default for AudioFeatures {
             silent: false,
             musical: MusicalTime::default(),
             sections: Sections::default(),
+            energy: 0.0,
         }
     }
 }
@@ -377,6 +382,7 @@ pub struct Analyzer {
     /// The song's sections, and the filter bank's low-end bands.
     sections: SectionTracker,
     low_end: usize,
+    dynamics: Dynamics,
     /// Spill: `spill[from][to]`, the share of kind `from`'s rise that shows in kind `to`'s
     /// range (a kick's click in the snare's, a snare's top in the hat's), learned at
     /// `from`'s hits as a lower envelope (so the moments both sound together count
@@ -433,6 +439,7 @@ impl Analyzer {
             tracker: BeatTracker::new(hop_seconds),
             sections: SectionTracker::new(hop_seconds),
             low_end: (0..SPECTRUM_BANDS).take_while(|&b| band_centre(b as isize) < sections::LOW_HZ).count(),
+            dynamics: Dynamics::default(),
             spill: [[0.0; 3]; 3],
             prev_rises: [0.0; 3],
             quiet_for: 0.0,
@@ -692,6 +699,8 @@ impl Analyzer {
         self.features.musical = self.tracker.time();
         self.sections.push(time, &self.bank, self.low_end, heard, strength);
         self.features.sections = self.sections.state();
+        let f = &self.features;
+        self.features.energy = self.dynamics.update(f.loudness, f.silent, &f.sections, time, dt);
         self.hops += 1;
     }
 }

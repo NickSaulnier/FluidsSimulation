@@ -23,6 +23,7 @@ name = "Spiral ink"        # what the look is called (unique)
 author = "you"
 tags = ["ink", "spiral"]
 energy = "energetic"       # calm, energetic or any: when the director picks it
+dynamics = 1.0             # how much it follows the song's shape: 1 fully, 0 not at all
 
 [sim]
 solver = "Stable fluids (dye)"
@@ -244,6 +245,7 @@ only).
 | `novelty` | how different the last two seconds are from the eight before: about 1 for music carrying on, 3 or more at a change of section |
 | `buildup` | how much the music is building up (rising loudness and busier hits), 0 to 1 |
 | `section`, `drop`, `breakdown` | 1 at a change of section (any; a drop; a breakdown), falling to 0 over about a second and a half |
+| `energy` | the song's energy: how loud it is now against its own quiet and loud parts, lifted through a build-up, full after a drop, low through a breakdown, 0 to 1 (about 0.7 where a look is as set) |
 
 ### What they set
 
