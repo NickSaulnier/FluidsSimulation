@@ -55,6 +55,9 @@ struct Doc {
     variant: Vec<toml::Table>,
 }
 
+/// The most particles a Voronoi cell may stand for.
+const MAX_VORONOI: u32 = 16;
+
 /// What a variant can change: the palette (in `[sim]`), and these sections.
 const PICTURE: [&str; 6] = ["feedback", "waves", "shape", "art", "fractal", "composite"];
 
@@ -100,6 +103,8 @@ struct Sim {
     liquid: bool,
     #[serde(default)]
     relief: f32,
+    #[serde(default)]
+    voronoi: u32,
     #[serde(default)]
     orbit: f32,
     #[serde(default)]
@@ -187,8 +192,8 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
     let sim = doc.sim;
     let (solver, scene) = match (&sim.solver, &sim.scene) {
         (None, None) => {
-            if !sim.params.is_empty() || sim.liquid || sim.orbit != 0.0 || sim.relief != 0.0 {
-                return Err(fail(None, "a look without a solver has no fluid: `params`, `liquid`, `relief` and `orbit` need one".into()));
+            if !sim.params.is_empty() || sim.liquid || sim.orbit != 0.0 || sim.relief != 0.0 || sim.voronoi != 0 {
+                return Err(fail(None, "a look without a solver has no fluid: `params`, `liquid`, `voronoi`, `relief` and `orbit` need one".into()));
             }
             (String::new(), String::new())
         }
@@ -317,6 +322,7 @@ pub fn parse(text: &str, file: &str, source: Source) -> Result<Look, LoadError> 
         palette,
         liquid: sim.liquid,
         relief: sim.relief.clamp(0.0, 1.0),
+        voronoi: sim.voronoi.min(MAX_VORONOI),
         orbit: sim.orbit,
         feedback,
         waves,
@@ -452,6 +458,9 @@ pub fn write(look: &Look) -> String {
     let _ = writeln!(out, "palette = {palette}");
     if look.liquid {
         let _ = writeln!(out, "liquid = true");
+    }
+    if look.voronoi != 0 {
+        let _ = writeln!(out, "voronoi = {}", look.voronoi);
     }
     if look.relief != 0.0 {
         let _ = writeln!(out, "relief = {}", value(toml::Value::Float(f64::from(look.relief))));
@@ -692,6 +701,24 @@ palette = \"Ink\"
 relief = 0.5
 ", "t.toml", Source::Builtin("t.toml"));
         assert!(none.is_err_and(|e| e.message.contains("relief")));
+    }
+
+    /// Voronoi cells are read (kept to `MAX_VORONOI`), written back, and need a fluid.
+    #[test]
+    fn voronoi_cells_need_a_fluid() {
+        let look = load("voronoi = 4
+").unwrap();
+        assert_eq!(look.voronoi, 4);
+        assert_eq!(parse(&write(&look), "t.toml", Source::Builtin("t.toml")).unwrap().voronoi, 4);
+        assert_eq!(load("voronoi = 99
+").unwrap().voronoi, MAX_VORONOI);
+        let none = parse("[meta]
+name = \"T\"
+[sim]
+palette = \"Ink\"
+voronoi = 2
+", "t.toml", Source::Builtin("t.toml"));
+        assert!(none.is_err_and(|e| e.message.contains("voronoi")));
     }
 
     #[test]

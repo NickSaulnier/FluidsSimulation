@@ -219,6 +219,7 @@ pub fn convert(text: &str, stem: &str) -> Result<Imported, String> {
         palette,
         liquid: false,
         relief: 0.0,
+        voronoi: 0,
         orbit: 0.0,
         feedback,
         waves,

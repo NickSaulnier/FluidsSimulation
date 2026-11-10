@@ -202,6 +202,8 @@ pub struct UiState {
     pub hdr_available: bool,
     /// Draw particles as a continuous liquid surface.
     pub liquid: bool,
+    /// Draw particles as Voronoi cells, around every Nth (0: not).
+    pub voronoi: u32,
     /// Light a grid solver's dye as a surface: 0 flat, 1 fully.
     pub relief: f32,
     /// In the 3D visualizer, how fast the camera circles the scene, rad/s.
@@ -292,6 +294,7 @@ impl Default for UiState {
             show_particles: true,
             faucet_speed: 2.0,
             liquid: true,
+            voronoi: 0,
             hdr_available: false,
             relief: 0.0,
             orbit: 0.12,
@@ -334,6 +337,10 @@ impl Default for UiState {
 }
 
 impl UiState {
+    pub fn voronoi_style(&self) -> Option<crate::render::VoronoiStyle> {
+        (self.voronoi > 0).then_some(crate::render::VoronoiStyle { stride: self.voronoi })
+    }
+
     pub fn liquid_style(&self) -> Option<crate::render::LiquidStyle> {
         self.liquid
             .then_some(crate::render::LiquidStyle { splat_scale: self.blob_size, threshold: self.surface_threshold })

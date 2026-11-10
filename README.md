@@ -75,6 +75,10 @@ A grid solver's dye can be lit as a surface (a look's `relief`), its thickness t
 height, so ink and smoke have body. Particle fluids can be drawn as a continuous liquid
 surface: smooth, glossy at its edges (Fresnel), deeper in colour where it's thick.
 
+Particles can be drawn as discs, as a continuous liquid surface, or as a mosaic of
+Voronoi cells (each the patch nearest a particle, found on the GPU by jump flooding):
+small cells where the fluid is packed, large where it spreads, amber where it's fast.
+
 Tools: push, paint and erase walls (shaded, in the palette's colours, with a preview
 under the brush and Ctrl+Z to undo), a faucet. Fields (pressure,
 speed, vorticity, temperature...) can be overlaid with a legend. A governor lowers the
@@ -123,7 +127,7 @@ resolution in full screen if the simulation falls behind real time.
   new section, and a dive travels endlessly into the fractal (or out), looping where the
   picture repeats itself. The fluid's flow can bend them.
 - **Looks:** a look bundles a fluid (or none), colours, the picture's settings,
-  reactions and equations. There are 48 built in, 16 of them without fluid; they keep to
+  reactions and equations. There are 49 built in, 16 of them without fluid; they keep to
   the fluids that look good in full screen (no MPM, no test rigs). Each is a
   TOML file (format in [crates/app/looks/README.md](crates/app/looks/README.md)); your
   own go in `%APPDATA%\fluid-toy\looks` and reload when saved. "Save as" writes the

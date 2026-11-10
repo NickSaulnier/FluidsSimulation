@@ -1,0 +1,20 @@
+[meta]
+name = "Stained glass"
+tags = ["fluid", "particles", "cells", "voronoi"]
+energy = "any"
+
+[sim]
+solver = "PBF"
+scene = "Double dam break"
+palette = { deep = [20, 10, 40], base = [40, 120, 220], highlight = [255, 200, 90] }
+voronoi = 4
+reactions = [
+    { trigger = "kick", effect = "splash", gain = 1.1 },
+    { trigger = "bass", effect = "slosh", gain = 0.7 },
+    { trigger = "bar", effect = "hue", gain = 0.5 },
+]
+
+[composite]
+saturation = 1.25
+contrast = 1.1
+vignette = 0.4

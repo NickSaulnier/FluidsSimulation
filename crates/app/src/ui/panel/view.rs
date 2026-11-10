@@ -44,6 +44,9 @@ pub fn show(ui: &mut egui::Ui, f: &mut Frame<'_>) {
                 ui.add(egui::Slider::new(&mut s.surface_threshold, 0.15..=0.9));
             });
         }
+        row(ui, "Voronoi cells", "Draw the fluid as a mosaic of cells, each the patch nearest a particle (or every Nth: bigger cells); 0: off", |ui| {
+            ui.add(egui::Slider::new(&mut s.voronoi, 0..=16));
+        });
         widgets::toggle(ui, &mut s.show_particles, &tip("Show particles", Action::ToggleParticles), "");
     });
     widgets::group(ui, "Picture", |ui| picture(ui, f.state));

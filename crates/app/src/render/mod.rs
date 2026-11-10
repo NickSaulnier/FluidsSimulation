@@ -17,6 +17,7 @@ pub mod post;
 pub mod score;
 mod solid;
 pub mod thumbnail;
+mod voronoi;
 pub mod timer;
 pub mod ui_layer;
 pub mod waves;
@@ -27,10 +28,12 @@ pub use liquid::LiquidStyle;
 pub use overlay::FieldFrame;
 pub use palette::Palette;
 pub use solid::WallBrush;
+pub use voronoi::VoronoiStyle;
 use liquid::LiquidLayer;
 use overlay::OverlayLayer;
 use particles::ParticleLayer;
 use solid::SolidLayer;
+use voronoi::VoronoiLayer;
 
 /// Must match `Globals` in scene.wgsl (and its copies) byte for byte (80 bytes, a
 /// multiple of 16 as uniform buffers require).
@@ -54,6 +57,8 @@ pub struct DrawOptions<'a> {
     pub show_particles: bool,
     /// Draw particles as a continuous liquid surface instead of discs.
     pub liquid: Option<LiquidStyle>,
+    /// Or as Voronoi cells (over the liquid surface, if both are asked for).
+    pub voronoi: Option<VoronoiStyle>,
     /// Target size in pixels (the liquid pass renders offscreen at this size).
     pub target_size: (u32, u32),
     /// Target pixels per window pixel (the render scale), for sizes set in pixels.
@@ -77,6 +82,7 @@ pub struct Renderer {
     solid: SolidLayer,
     overlay: OverlayLayer,
     liquid: LiquidLayer,
+    voronoi: VoronoiLayer,
     /// Whether the last frame previewed a brush.
     brush: bool,
 }
@@ -148,7 +154,8 @@ impl Renderer {
         let solid = SolidLayer::new(device, &bind_group_layout, &shader, format);
         let overlay = OverlayLayer::new(device, &bind_group_layout, format);
         let liquid = LiquidLayer::new(device, &bind_group_layout, format);
-        Self { globals, bind_group, backdrop, particles, solid, overlay, liquid, brush: false }
+        let voronoi = VoronoiLayer::new(device, &bind_group_layout, format);
+        Self { globals, bind_group, backdrop, particles, solid, overlay, liquid, voronoi, brush: false }
     }
 
     pub fn render(
@@ -159,7 +166,7 @@ impl Renderer {
         target: &wgpu::TextureView,
         options: DrawOptions<'_>,
     ) -> Option<(f32, f32)> {
-        let DrawOptions { view, world, field, show_particles, liquid, target_size, pixel_scale, black_letterbox, palette, walls, brush } = options;
+        let DrawOptions { view, world, field, show_particles, liquid, voronoi, target_size, pixel_scale, black_letterbox, palette, walls, brush } = options;
         let particles = world.solver.particles();
         let globals = Globals {
             scale: view.scale.into(),
@@ -176,7 +183,12 @@ impl Renderer {
         self.solid.upload(device, queue, &world.scene.solid, world.scene_generation, brush);
         self.brush = brush.is_some();
         let field_range = self.overlay.upload(device, queue, field, &palette);
-        let liquid = liquid.filter(|_| show_particles && particles.is_some());
+        let voronoi = voronoi.filter(|_| show_particles && particles.is_some());
+        if let Some(style) = voronoi {
+            self.voronoi.prepare(device, queue, target_size, style, globals.radius * view.px_per_metre * pixel_scale);
+            self.voronoi.flood(encoder, &self.bind_group, &self.particles);
+        }
+        let liquid = liquid.filter(|_| show_particles && particles.is_some() && voronoi.is_none());
         if let Some(style) = liquid {
             let splat_px = globals.radius * style.splat_scale * view.px_per_metre * pixel_scale;
             self.liquid.prepare(device, queue, target_size, style, splat_px);
@@ -200,7 +212,9 @@ impl Renderer {
         pass.set_pipeline(&self.backdrop);
         pass.draw(0..4, 0..1);
         self.overlay.draw(&mut pass);
-        if liquid.is_some() {
+        if voronoi.is_some() {
+            self.voronoi.shade(&mut pass);
+        } else if liquid.is_some() {
             self.liquid.composite(&mut pass);
         } else if particles.is_some() && show_particles {
             self.particles.draw(&mut pass);
@@ -296,6 +310,7 @@ mod tests {
                 view: &view,
                 world: &world,
                 field: None,
+                voronoi: None,
                 show_particles: false,
                 liquid: None,
                 target_size: (size[0], size[1]),

@@ -50,6 +50,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("quicksilver.toml", include_str!("../../looks/quicksilver.toml")),
     ("neon_scope.toml", include_str!("../../looks/neon_scope.toml")),
     ("slime_pit.toml", include_str!("../../looks/slime_pit.toml")),
+    ("stained_glass.toml", include_str!("../../looks/stained_glass.toml")),
     ("bass_bloom.toml", include_str!("../../looks/bass_bloom.toml")),
     ("dye_tornado.toml", include_str!("../../looks/dye_tornado.toml")),
     ("ripple_pool.toml", include_str!("../../looks/ripple_pool.toml")),
@@ -146,6 +147,8 @@ pub struct Look {
     pub palette: Palette,
     /// Liquid surface (particle solvers).
     pub liquid: bool,
+    /// Voronoi cells around every Nth particle (particle solvers; 0: not).
+    pub voronoi: u32,
     /// Dye lit as a surface (grid solvers): 0 flat, 1 fully.
     pub relief: f32,
     /// 3D looks: how fast the camera circles the scene, rad/s.
@@ -561,6 +564,7 @@ pub fn apply_3d(look: &Look, world: &mut sim3d::World3d, ui: &mut UiState) -> Ve
 pub fn apply_picture(look: &Look, ui: &mut UiState) {
     ui.palette = look.palette;
     ui.relief = look.relief;
+    ui.voronoi = look.voronoi;
     ui.reactions = look.reactions.clone();
     ui.feedback = look.feedback;
     ui.waves = look.waves;

@@ -278,6 +278,7 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
         palette: random_palette(d),
         liquid: kind == Kind::Particles && d.chance(0.5),
         relief: 0.0,
+        voronoi: 0,
         orbit: if three_d { round(d.range(0.05, 0.2)) } else { 0.0 },
         feedback,
         waves,
@@ -300,6 +301,10 @@ pub fn random(rng: &mut SplitMix64, name: &str) -> Look {
     // Drawn after the rest too: lit dye, now and then.
     if kind == Kind::Dye && d.chance(RELIEF_CHANCE) {
         look.relief = round(d.range(0.4, 0.9));
+    }
+    // And Voronoi cells for particles, now and then (over the liquid surface, if any).
+    if kind == Kind::Particles && d.chance(VORONOI_CHANCE) {
+        look.voronoi = d.range(2.0, 6.99) as u32;
     }
     look.energy = energy(&look);
     look
@@ -435,6 +440,10 @@ pub fn vary(look: &Look, rng: &mut SplitMix64, name: &str) -> Look {
     tame(&mut v);
     v
 }
+
+/// How often a random particle look is drawn as Voronoi cells (around every 2nd to 6th
+/// particle).
+const VORONOI_CHANCE: f32 = 0.3;
 
 /// How often a random dye look's dye is lit as a surface (at 0.4 to 0.9).
 const RELIEF_CHANCE: f32 = 0.4;
